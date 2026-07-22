@@ -34,6 +34,18 @@ def consultar_saldo(empresa: str, dia: Optional[str] = None) -> list:
     return r.json()
 
 
+def listar_empresas() -> list:
+    r = requests.get(f"{API_BASE_URL}/empresas")
+    r.raise_for_status()
+    return r.json()
+
+
+def historico_movimentos(empresa: str) -> list:
+    r = requests.get(f"{API_BASE_URL}/movimentos/empresa/{empresa}")
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_ambiguos() -> list:
     r = requests.get(f"{API_BASE_URL}/ambiguos")
     r.raise_for_status()

@@ -1,13 +1,90 @@
 from datetime import date
 
+import altair as alt
+import pandas as pd
 import streamlit as st
 
 import api_client as api
 
+# Paleta de estado validada (skill de dataviz - references/palette.md):
+# bom/fechado = verde, precisa de decisão humana = amarelo, informativo = azul,
+# ainda não processado = cinza neutro. Nunca escolhida "a olho".
+COR_CASADOS = "#0ca30c"
+COR_AMBIGUOS = "#fab219"
+COR_NOVOS = "#2a78d6"
+COR_POR_PROCESSAR = "#898781"
+
+# Duas séries na mesma unidade (EUR) - hues categóricos 1 e 3, não usados
+# como cor de estado noutro sítio do dashboard.
+COR_SALDO_CONTABILISTICO = "#2a78d6"
+COR_SALDO_DISPONIVEL = "#1baf7a"
+
+# Par divergente (fluxo diário à volta de zero) - ver references/palette.md.
+COR_FLUXO_POSITIVO = "#2a78d6"
+COR_FLUXO_NEGATIVO = "#e34948"
+
 st.set_page_config(page_title="Tesouraria - Dashboard", layout="wide")
 st.title("Dashboard de Tesouraria")
 
-aba_reconciliacao, aba_saldos, aba_ambiguos = st.tabs(["Reconciliação", "Saldos", "Ambíguos"])
+aba_visao_geral, aba_reconciliacao, aba_saldos, aba_contas, aba_ambiguos = st.tabs(
+    ["Visão Geral", "Reconciliação", "Saldos", "Análise de Contas", "Ambíguos"]
+)
+
+with aba_visao_geral:
+    st.subheader("Visão geral do dia")
+    dia_vg = st.date_input("Dia", value=date.today(), key="dia_visao_geral")
+    dia_vg_str = dia_vg.isoformat()
+
+    try:
+        movimentos_vg = api.listar_movimentos(dia_vg_str)
+    except Exception as e:
+        st.error(f"Erro a ligar à API: {e}")
+        movimentos_vg = []
+
+    try:
+        ambiguos_globais = api.listar_ambiguos()
+    except Exception:
+        ambiguos_globais = []
+
+    total = len(movimentos_vg)
+    casados = sum(1 for m in movimentos_vg if m["tipo_match"] == "exato")
+    ambiguos_dia = sum(1 for m in movimentos_vg if m["tipo_match"] == "ambiguo")
+    novos = sum(1 for m in movimentos_vg if m["tipo_match"] == "novo")
+    por_processar = sum(1 for m in movimentos_vg if m["tipo_match"] is None)
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Movimentos do dia", total)
+    col2.metric("Casados", casados)
+    col3.metric("Novos", novos)
+    col4.metric("Ambíguos (dia)", ambiguos_dia)
+    col5.metric("Ambíguos por resolver (todos os dias)", len(ambiguos_globais))
+
+    if total > 0:
+        dados_grafico = pd.DataFrame({
+            "estado": ["Casados", "Ambíguos", "Novos", "Por processar"],
+            "quantidade": [casados, ambiguos_dia, novos, por_processar],
+        })
+        cores = {
+            "Casados": COR_CASADOS,
+            "Ambíguos": COR_AMBIGUOS,
+            "Novos": COR_NOVOS,
+            "Por processar": COR_POR_PROCESSAR,
+        }
+        grafico = alt.Chart(dados_grafico).mark_bar(
+            cornerRadiusTopLeft=4, cornerRadiusTopRight=4,
+        ).encode(
+            x=alt.X("estado:N", title=None, sort=list(cores.keys())),
+            y=alt.Y("quantidade:Q", title="Movimentos"),
+            color=alt.Color(
+                "estado:N",
+                scale=alt.Scale(domain=list(cores.keys()), range=list(cores.values())),
+                legend=None,
+            ),
+            tooltip=["estado", "quantidade"],
+        ).properties(height=280)
+        st.altair_chart(grafico, use_container_width=True)
+    else:
+        st.info("Sem movimentos importados para este dia.")
 
 with aba_reconciliacao:
     st.subheader("Reconciliação do dia")
@@ -64,6 +141,87 @@ with aba_saldos:
                     st.warning("Nenhum saldo encontrado para essa empresa/dia.")
             except Exception as e:
                 st.error(f"Erro: {e}")
+
+with aba_contas:
+    st.subheader("Análise de uma conta")
+
+    try:
+        empresas_disponiveis = api.listar_empresas()
+    except Exception as e:
+        st.error(f"Erro a ligar à API: {e}")
+        empresas_disponiveis = []
+
+    if not empresas_disponiveis:
+        st.info("Ainda não há empresas com movimentos importados.")
+    else:
+        empresa_escolhida = st.selectbox("Conta / empresa", empresas_disponiveis)
+
+        st.markdown("**Saldo ao longo do tempo**")
+        try:
+            saldos = api.consultar_saldo(empresa_escolhida)
+        except Exception as e:
+            st.error(f"Erro: {e}")
+            saldos = []
+
+        if saldos:
+            df_saldos = pd.DataFrame(saldos).sort_values("dia")
+            df_saldos_longo = df_saldos.melt(
+                id_vars=["dia"],
+                value_vars=["saldo_contabilistico", "saldo_disponivel"],
+                var_name="tipo", value_name="valor",
+            )
+            df_saldos_longo["tipo"] = df_saldos_longo["tipo"].map({
+                "saldo_contabilistico": "Saldo contabilístico",
+                "saldo_disponivel": "Saldo disponível",
+            })
+            cores_saldo = {
+                "Saldo contabilístico": COR_SALDO_CONTABILISTICO,
+                "Saldo disponível": COR_SALDO_DISPONIVEL,
+            }
+            grafico_saldo = alt.Chart(df_saldos_longo).mark_line(point=True, strokeWidth=2).encode(
+                x=alt.X("dia:T", title=None),
+                y=alt.Y("valor:Q", title="EUR"),
+                color=alt.Color(
+                    "tipo:N",
+                    scale=alt.Scale(domain=list(cores_saldo.keys()), range=list(cores_saldo.values())),
+                    legend=alt.Legend(title=None),
+                ),
+                tooltip=["dia:T", "tipo:N", "valor:Q"],
+            ).properties(height=300)
+            st.altair_chart(grafico_saldo, use_container_width=True)
+        else:
+            st.info("Sem saldos guardados para esta empresa (precisas de correr /saldos/atualizar primeiro).")
+
+        st.markdown("**Fluxo diário (movimentos)**")
+        try:
+            historico = api.historico_movimentos(empresa_escolhida)
+        except Exception as e:
+            st.error(f"Erro: {e}")
+            historico = []
+
+        if historico:
+            df_hist = pd.DataFrame(historico)
+            df_fluxo = df_hist.groupby("dia", as_index=False)["valor"].sum()
+            df_fluxo["sinal"] = df_fluxo["valor"].apply(
+                lambda v: "Entradas" if v >= 0 else "Saídas"
+            )
+            cores_fluxo = {"Entradas": COR_FLUXO_POSITIVO, "Saídas": COR_FLUXO_NEGATIVO}
+            grafico_fluxo = alt.Chart(df_fluxo).mark_bar().encode(
+                x=alt.X("dia:T", title=None),
+                y=alt.Y("valor:Q", title="EUR (líquido do dia)"),
+                color=alt.Color(
+                    "sinal:N",
+                    scale=alt.Scale(domain=list(cores_fluxo.keys()), range=list(cores_fluxo.values())),
+                    legend=alt.Legend(title=None),
+                ),
+                tooltip=["dia:T", "valor:Q"],
+            ).properties(height=250)
+            st.altair_chart(grafico_fluxo, use_container_width=True)
+
+            with st.expander("Ver movimentos individuais"):
+                st.dataframe(df_hist, use_container_width=True)
+        else:
+            st.info("Sem movimentos importados para esta empresa.")
 
 with aba_ambiguos:
     st.subheader("Casos ambíguos por resolver")

@@ -53,6 +53,13 @@ class MovimentoStatusOut(BaseModel):
     linha_imputacao: Optional[str] = None
 
 
+class MovimentoHistoricoOut(BaseModel):
+    id: int
+    dia: date
+    descricao: str
+    valor: float
+
+
 class ResolverAmbiguoRequest(BaseModel):
     linha_id: Optional[int] = None
     resolvido_por: str

@@ -4,6 +4,8 @@ from app.db.models import CasoAmbiguo, LinhaMapa, MovimentoBancario, Reconciliac
 from app.services.reconciliador import (
     auditoria_dia,
     chave_empresa,
+    listar_empresas,
+    listar_movimentos_da_empresa,
     listar_movimentos_do_dia,
     reconciliar_dia,
     resolver_ambiguo,
@@ -168,3 +170,39 @@ def test_listar_movimentos_do_dia_mostra_por_processar_antes_de_reconciliar(db_s
     resultado = listar_movimentos_do_dia(db_session, DIA)
 
     assert resultado[0]["tipo_match"] is None
+
+
+def test_listar_empresas_devolve_nomes_distintos_ordenados(db_session):
+    db_session.add(MovimentoBancario(
+        dia=DIA, empresa="PALAVRADICIONAL,LDA", descricao="X", valor=-1.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.add(MovimentoBancario(
+        dia=DIA, empresa="ANCORA APOGEU,LDA", descricao="Y", valor=-1.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.add(MovimentoBancario(
+        dia=DIA, empresa="ANCORA APOGEU,LDA", descricao="Z", valor=-1.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.commit()
+
+    resultado = listar_empresas(db_session)
+
+    assert resultado == ["ANCORA APOGEU,LDA", "PALAVRADICIONAL,LDA"]
+
+
+def test_listar_movimentos_da_empresa_atravessa_dias_e_ignora_forma_legal(db_session):
+    db_session.add(MovimentoBancario(
+        dia=DIA, empresa="ANCORA APOGEU,LDA", descricao="DIA 21", valor=-50.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.add(MovimentoBancario(
+        dia=date(2026, 7, 20), empresa="Ancora Apogeu", descricao="DIA 20", valor=30.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.add(MovimentoBancario(
+        dia=DIA, empresa="OUTRA EMPRESA,LDA", descricao="IGNORAR", valor=-999.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.commit()
+
+    resultado = listar_movimentos_da_empresa(db_session, "ANCORA APOGEU,LDA")
+
+    assert len(resultado) == 2
+    assert resultado[0]["dia"] == "2026-07-20"
+    assert resultado[1]["dia"] == "2026-07-21"

@@ -5,8 +5,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models import AuditoriaResponse, MovimentoStatusOut, ReconciliarResponse
-from app.services.reconciliador import auditoria_dia, listar_movimentos_do_dia, reconciliar_dia
+from app.models import AuditoriaResponse, MovimentoHistoricoOut, MovimentoStatusOut, ReconciliarResponse
+from app.services.reconciliador import (
+    auditoria_dia,
+    listar_empresas,
+    listar_movimentos_da_empresa,
+    listar_movimentos_do_dia,
+    reconciliar_dia,
+)
 
 router = APIRouter()
 
@@ -29,3 +35,18 @@ def movimentos_do_dia(dia: date, db: Session = Depends(get_db)):
     chamar isto quantas vezes quiseres, mesmo depois de já teres corrido
     /reconciliar, sem duplicar nem reprocessar nada."""
     return listar_movimentos_do_dia(db, dia)
+
+
+@router.get("/empresas", response_model=List[str])
+def empresas(db: Session = Depends(get_db)):
+    """Lista as empresas com movimentos importados - para preencher
+    seletores (ex. no dashboard) sem adivinhar o nome exato."""
+    return listar_empresas(db)
+
+
+@router.get("/movimentos/empresa/{empresa}", response_model=List[MovimentoHistoricoOut])
+def movimentos_da_empresa(empresa: str, db: Session = Depends(get_db)):
+    """Histórico de movimentos de uma empresa (todos os dias importados),
+    ordenado por dia - para analisar o fluxo de uma conta ao longo do
+    tempo."""
+    return listar_movimentos_da_empresa(db, empresa)

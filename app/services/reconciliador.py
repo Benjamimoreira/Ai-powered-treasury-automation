@@ -190,6 +190,27 @@ def listar_movimentos_do_dia(db: Session, dia):
     return resultado
 
 
+def listar_empresas(db: Session):
+    """Lista as empresas distintas com movimentos importados - usada para
+    preencher um seletor no dashboard, em vez de o utilizador ter de
+    adivinhar/escrever o nome exato."""
+    linhas = db.query(MovimentoBancario.empresa).distinct().order_by(MovimentoBancario.empresa).all()
+    return [empresa for (empresa,) in linhas]
+
+
+def listar_movimentos_da_empresa(db: Session, empresa: str):
+    """Consulta read-only: todos os movimentos de uma empresa (qualquer
+    dia), ordenados por dia - para analisar o histórico/fluxo de uma conta
+    ao longo do tempo."""
+    alvo = chave_empresa(empresa)
+    movimentos = db.query(MovimentoBancario).order_by(MovimentoBancario.dia).all()
+    return [
+        {"id": m.id, "dia": m.dia.isoformat(), "descricao": m.descricao, "valor": m.valor}
+        for m in movimentos
+        if chave_empresa(m.empresa) == alvo
+    ]
+
+
 def auditoria_dia(db: Session, dia) -> dict:
     """Verificação read-only (não grava nada): conta movimentos sem
     correspondência numa linha do mapa (sem_match_fwd) e linhas do mapa
