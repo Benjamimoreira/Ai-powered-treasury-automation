@@ -14,15 +14,23 @@ from app.main import app
 
 
 @pytest.fixture()
-def db_session():
+def session_factory():
+    """Fábrica de sessões (sessionmaker) ligada a um motor SQLite em
+    memória partilhado (StaticPool) - útil para código como o servidor
+    MCP, que abre/fecha a sua própria sessão a cada chamada em vez de
+    receber uma por injeção de dependências."""
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    testing_session_local = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
-    session = testing_session_local()
+    return sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+@pytest.fixture()
+def db_session(session_factory):
+    session = session_factory()
     try:
         yield session
     finally:

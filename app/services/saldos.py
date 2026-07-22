@@ -3,7 +3,7 @@ import os
 from sqlalchemy.orm import Session
 
 from app.db.models import SaldoDiario
-from app.services.reconciliador import abrir_workbook_com_retry, nome_empresa_do_ficheiro
+from app.services.reconciliador import abrir_workbook_com_retry, chave_empresa, nome_empresa_do_ficheiro
 
 
 def parse_valor_eur(texto):
@@ -41,6 +41,16 @@ def ler_saldos_finais_do_dia(pasta_extratos: str):
                 disponivel = parse_valor_eur(ws[f"B{r}"].value)
         saldos[empresa] = (contabilistico, disponivel)
     return saldos
+
+
+def consultar_saldo(db: Session, empresa: str, dia=None):
+    """Consulta read-only: saldos guardados para uma empresa (por
+    chave_empresa, ignora LDA/SA), opcionalmente filtrados por dia."""
+    query = db.query(SaldoDiario)
+    if dia is not None:
+        query = query.filter(SaldoDiario.dia == dia)
+    alvo = chave_empresa(empresa)
+    return [s for s in query.all() if chave_empresa(s.entidade) == alvo]
 
 
 def registar_saldos_do_dia(db: Session, dia, pasta_extratos: str) -> int:
