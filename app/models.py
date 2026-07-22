@@ -76,3 +76,9 @@ class SaldoOut(BaseModel):
 
 class AtualizarSaldosRequest(BaseModel):
     pasta_extratos: str
+
+
+class SaldoTotalOut(BaseModel):
+    entidades: int
+    saldo_contabilistico_total: float
+    saldo_disponivel_total: float

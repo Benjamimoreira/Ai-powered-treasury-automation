@@ -46,6 +46,20 @@ with aba_visao_geral:
     except Exception:
         ambiguos_globais = []
 
+    try:
+        totais = api.saldo_total()
+    except Exception as e:
+        st.error(f"Erro a consultar saldo total: {e}")
+        totais = None
+
+    if totais:
+        st.markdown("**Saldo contabilístico geral** (última leitura conhecida de cada conta)")
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Saldo contabilístico total", f"{totais['saldo_contabilistico_total']:,.2f} €")
+        col_b.metric("Saldo disponível total", f"{totais['saldo_disponivel_total']:,.2f} €")
+        col_c.metric("Contas incluídas", totais["entidades"])
+        st.divider()
+
     total = len(movimentos_vg)
     casados = sum(1 for m in movimentos_vg if m["tipo_match"] == "exato")
     ambiguos_dia = sum(1 for m in movimentos_vg if m["tipo_match"] == "ambiguo")

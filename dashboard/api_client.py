@@ -34,6 +34,12 @@ def consultar_saldo(empresa: str, dia: Optional[str] = None) -> list:
     return r.json()
 
 
+def saldo_total() -> dict:
+    r = requests.get(f"{API_BASE_URL}/saldo-total")
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_empresas() -> list:
     r = requests.get(f"{API_BASE_URL}/empresas")
     r.raise_for_status()
