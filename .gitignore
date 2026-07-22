@@ -6,3 +6,4 @@ backups_onedrive/
 .env
 *.db
 .pytest_cache/
+*.log
