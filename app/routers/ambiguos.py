@@ -3,7 +3,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.db.models import CasoAmbiguo
+from app.db.models import CasoAmbiguo, LinhaMapa
 from app.db.session import get_db
 from app.models import CasoAmbiguoOut, ResolverAmbiguoRequest
 from app.services.llm_resolver import sugerir_resolucao
@@ -14,11 +14,17 @@ router = APIRouter()
 
 @router.get("/ambiguos", response_model=List[CasoAmbiguoOut])
 def listar_ambiguos(db: Session = Depends(get_db)):
-    return (
-        db.query(CasoAmbiguo)
-        .filter(CasoAmbiguo.resolvido_por.is_(None))
-        .all()
-    )
+    casos = db.query(CasoAmbiguo).filter(CasoAmbiguo.resolvido_por.is_(None)).all()
+    resultado = []
+    for caso in casos:
+        candidatos_detalhe = db.query(LinhaMapa).filter(LinhaMapa.id.in_(caso.candidatos or [])).all()
+        resultado.append(CasoAmbiguoOut(
+            id=caso.id, dia=caso.dia, empresa=caso.empresa, valor=caso.valor,
+            candidatos=caso.candidatos, candidatos_detalhe=candidatos_detalhe,
+            resolvido_por=caso.resolvido_por, resolucao=caso.resolucao,
+            resolucao_sugerida=caso.resolucao_sugerida, justificacao_sugerida=caso.justificacao_sugerida,
+        ))
+    return resultado
 
 
 @router.post("/ambiguos/{caso_id}/resolver", response_model=CasoAmbiguoOut)

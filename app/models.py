@@ -17,12 +17,24 @@ class AuditoriaResponse(BaseModel):
     sem_match_rev: int
 
 
+class CandidatoLinhaOut(BaseModel):
+    id: int
+    linha: int
+    tipo: str
+    empresa: str
+    previsto: Optional[float] = None
+    imputacao: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
 class CasoAmbiguoOut(BaseModel):
     id: int
     dia: date
     empresa: str
     valor: float
     candidatos: Optional[List[int]] = None
+    candidatos_detalhe: Optional[List[CandidatoLinhaOut]] = None
     resolvido_por: Optional[str] = None
     resolucao: Optional[str] = None
     resolucao_sugerida: Optional[str] = None

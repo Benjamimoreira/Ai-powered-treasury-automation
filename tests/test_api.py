@@ -58,6 +58,8 @@ def test_ambiguos_listar_e_resolver(client, db_session):
     assert len(casos) == 1
     caso_id = casos[0]["id"]
     linha_escolhida = casos[0]["candidatos"][0]
+    assert len(casos[0]["candidatos_detalhe"]) == 2
+    assert casos[0]["candidatos_detalhe"][0]["empresa"] == "Ancora Apogeu"
 
     resolvido = client.post(
         f"/ambiguos/{caso_id}/resolver",
