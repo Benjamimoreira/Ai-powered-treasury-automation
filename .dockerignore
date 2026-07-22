@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+*.xlsx
+*.db
+*.log
+backups_onedrive/
+.env
+.git/
+.pytest_cache/
+tests/

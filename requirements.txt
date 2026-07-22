@@ -7,3 +7,5 @@ pytest
 httpx
 sentence-transformers
 mcp[cli]
+psycopg[binary]
+python-dotenv
