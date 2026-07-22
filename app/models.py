@@ -31,6 +31,16 @@ class CasoAmbiguoOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class MovimentoStatusOut(BaseModel):
+    id: int
+    empresa: str
+    descricao: str
+    valor: float
+    tipo_match: Optional[str] = None
+    linha_id: Optional[int] = None
+    linha_imputacao: Optional[str] = None
+
+
 class ResolverAmbiguoRequest(BaseModel):
     linha_id: Optional[int] = None
     resolvido_por: str

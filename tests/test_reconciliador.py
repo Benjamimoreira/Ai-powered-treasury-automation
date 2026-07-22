@@ -1,7 +1,13 @@
 from datetime import date
 
 from app.db.models import CasoAmbiguo, LinhaMapa, MovimentoBancario, Reconciliacao
-from app.services.reconciliador import auditoria_dia, chave_empresa, reconciliar_dia, resolver_ambiguo
+from app.services.reconciliador import (
+    auditoria_dia,
+    chave_empresa,
+    listar_movimentos_do_dia,
+    reconciliar_dia,
+    resolver_ambiguo,
+)
 
 DIA = date(2026, 7, 21)
 
@@ -128,3 +134,37 @@ def test_resolver_ambiguo_associa_linha_escolhida(db_session):
     reconciliacao = db_session.query(Reconciliacao).one()
     assert reconciliacao.tipo_match == "exato"
     assert reconciliacao.linha_id == linha_a.id
+
+
+def test_listar_movimentos_do_dia_mostra_estado_sem_reprocessar(db_session):
+    db_session.add(MovimentoBancario(
+        dia=DIA, empresa="ANCORA APOGEU,LDA", descricao="TRANSF", valor=-100.0,
+        ficheiro_origem="x.xlsx",
+    ))
+    db_session.add(LinhaMapa(
+        dia=DIA, tipo="pagamento", linha=5, empresa="Ancora Apogeu", previsto=-100.0, imputacao="Renda",
+    ))
+    db_session.commit()
+
+    reconciliar_dia(db_session, DIA)
+
+    lista_1 = listar_movimentos_do_dia(db_session, DIA)
+    lista_2 = listar_movimentos_do_dia(db_session, DIA)
+
+    assert lista_1 == lista_2
+    assert lista_1[0]["tipo_match"] == "exato"
+    assert lista_1[0]["linha_imputacao"] == "Renda"
+    # chamar duas vezes não duplica nem reprocessa nada
+    assert db_session.query(Reconciliacao).count() == 1
+
+
+def test_listar_movimentos_do_dia_mostra_por_processar_antes_de_reconciliar(db_session):
+    db_session.add(MovimentoBancario(
+        dia=DIA, empresa="ANCORA APOGEU,LDA", descricao="TRANSF", valor=-100.0,
+        ficheiro_origem="x.xlsx",
+    ))
+    db_session.commit()
+
+    resultado = listar_movimentos_do_dia(db_session, DIA)
+
+    assert resultado[0]["tipo_match"] is None

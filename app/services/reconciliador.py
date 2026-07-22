@@ -165,6 +165,31 @@ def reconciliar_dia(db: Session, dia) -> dict:
     return {"casados": casados, "novos": novos, "ambiguos": ambiguos}
 
 
+def listar_movimentos_do_dia(db: Session, dia):
+    """Consulta read-only: devolve cada movimento do dia com o seu estado
+    atual (casado/novo/ambíguo, ou por processar se reconciliar_dia ainda
+    não correu para ele). Nunca escreve nada - dá para chamar quantas
+    vezes quiseres sem duplicar ou reprocessar nada."""
+    movimentos = db.query(MovimentoBancario).filter(MovimentoBancario.dia == dia).all()
+
+    resultado = []
+    for movimento in movimentos:
+        reconciliacao = (
+            db.query(Reconciliacao).filter(Reconciliacao.movimento_id == movimento.id).first()
+        )
+        linha = db.get(LinhaMapa, reconciliacao.linha_id) if reconciliacao and reconciliacao.linha_id else None
+        resultado.append({
+            "id": movimento.id,
+            "empresa": movimento.empresa,
+            "descricao": movimento.descricao,
+            "valor": movimento.valor,
+            "tipo_match": reconciliacao.tipo_match if reconciliacao else None,
+            "linha_id": linha.id if linha else None,
+            "linha_imputacao": linha.imputacao if linha else None,
+        })
+    return resultado
+
+
 def auditoria_dia(db: Session, dia) -> dict:
     """Verificação read-only (não grava nada): conta movimentos sem
     correspondência numa linha do mapa (sem_match_fwd) e linhas do mapa
