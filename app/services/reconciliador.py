@@ -109,7 +109,7 @@ def importar_extrato_para_bd(db: Session, caminho: str, dia, empresa: str) -> in
 
 
 def _linha_bate_com_movimento(linha: LinhaMapa, movimento: MovimentoBancario) -> bool:
-    if linha.previsto is None:
+    if linha.previsto is None or linha.pago is not None:
         return False
     return (
         chave_empresa(linha.empresa) == chave_empresa(movimento.empresa)
@@ -168,10 +168,15 @@ def reconciliar_dia(db: Session, dia) -> dict:
 def auditoria_dia(db: Session, dia) -> dict:
     """Verificação read-only (não grava nada): conta movimentos sem
     correspondência numa linha do mapa (sem_match_fwd) e linhas do mapa
-    com previsto por bater e que não correspondem a nenhum movimento
-    (sem_match_rev). Independente de reconciliar_dia já ter corrido."""
+    com previsto ainda em aberto (sem pago) que não correspondem a nenhum
+    movimento (sem_match_rev). Linhas com previsto E pago já preenchidos
+    (resolvidas antes de existir esta API) ficam de fora - já não são
+    "previstos por bater", são histórico. Independente de reconciliar_dia
+    já ter corrido."""
     movimentos = db.query(MovimentoBancario).filter(MovimentoBancario.dia == dia).all()
-    linhas = db.query(LinhaMapa).filter(LinhaMapa.dia == dia, LinhaMapa.previsto.isnot(None)).all()
+    linhas = db.query(LinhaMapa).filter(
+        LinhaMapa.dia == dia, LinhaMapa.previsto.isnot(None), LinhaMapa.pago.is_(None),
+    ).all()
 
     sem_match_fwd = sum(
         1 for movimento in movimentos

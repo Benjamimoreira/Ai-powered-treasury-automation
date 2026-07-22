@@ -30,6 +30,26 @@ def test_reconciliar_dia_casa_movimento_exato(db_session):
     assert reconciliacao.linha_id == linha.id
 
 
+def test_reconciliar_dia_ignora_linha_ja_paga(db_session):
+    """Uma linha com previsto e pago já preenchidos (resolvida antes de
+    existir esta API, ex. diretamente no Excel) não deve voltar a ser
+    candidata - senão um movimento novo "rouba" uma linha antiga já
+    fechada em vez de ficar corretamente marcado como novo/ambíguo."""
+    db_session.add(MovimentoBancario(
+        dia=DIA, empresa="ANCORA APOGEU,LDA", descricao="TRANSF", valor=-100.0,
+        ficheiro_origem="x.xlsx",
+    ))
+    db_session.add(LinhaMapa(
+        dia=DIA, tipo="pagamento", linha=5, empresa="Ancora Apogeu",
+        previsto=-100.0, pago=-100.0,
+    ))
+    db_session.commit()
+
+    resultado = reconciliar_dia(db_session, DIA)
+
+    assert resultado == {"casados": 0, "novos": 1, "ambiguos": 0}
+
+
 def test_reconciliar_dia_marca_novo_sem_linha_correspondente(db_session):
     db_session.add(MovimentoBancario(
         dia=DIA, empresa="EMPRESA SEM MAPA,LDA", descricao="TRANSF", valor=-50.0,
