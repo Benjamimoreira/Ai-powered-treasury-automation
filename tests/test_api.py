@@ -1,6 +1,7 @@
 from datetime import date
 
 from app.db.models import LinhaMapa, MovimentoBancario, SaldoDiario
+from app.services import llm_resolver
 
 DIA = "2026-07-21"
 DIA_DATE = date(2026, 7, 21)
@@ -67,6 +68,31 @@ def test_ambiguos_listar_e_resolver(client, db_session):
 
     lista_depois = client.get("/ambiguos")
     assert lista_depois.json() == []
+
+
+def test_ambiguos_sugerir_usa_llm_mockado_e_nao_resolve_sozinho(client, db_session, monkeypatch):
+    db_session.add(MovimentoBancario(
+        dia=DIA_DATE, empresa="ANCORA APOGEU,LDA", descricao="TRANSF", valor=-100.0,
+        ficheiro_origem="x.xlsx",
+    ))
+    db_session.add(LinhaMapa(dia=DIA_DATE, tipo="pagamento", linha=5, empresa="Ancora Apogeu", previsto=-100.0))
+    db_session.add(LinhaMapa(dia=DIA_DATE, tipo="pagamento", linha=9, empresa="Ancora Apogeu", previsto=-100.0))
+    db_session.commit()
+    client.post(f"/reconciliar/{DIA}")
+    caso_id = client.get("/ambiguos").json()[0]["id"]
+
+    monkeypatch.setattr(
+        llm_resolver, "chamar_llm",
+        lambda prompt: '{"linha_id": null, "justificacao": "nenhuma linha bate com o padrão histórico"}',
+    )
+
+    resposta = client.post(f"/ambiguos/{caso_id}/sugerir")
+
+    assert resposta.status_code == 200
+    corpo = resposta.json()
+    assert corpo["resolucao_sugerida"] == "novo"
+    assert corpo["justificacao_sugerida"] == "nenhuma linha bate com o padrão histórico"
+    assert corpo["resolvido_por"] is None
 
 
 def test_saldos_consulta_por_empresa(client, db_session):

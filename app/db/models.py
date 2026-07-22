@@ -58,6 +58,8 @@ class CasoAmbiguo(Base):
     candidatos = Column(JSON, nullable=True)
     resolvido_por = Column(String, nullable=True)
     resolucao = Column(String, nullable=True)
+    resolucao_sugerida = Column(String, nullable=True)
+    justificacao_sugerida = Column(String, nullable=True)
 
 
 class SaldoDiario(Base):

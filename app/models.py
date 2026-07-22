@@ -25,6 +25,8 @@ class CasoAmbiguoOut(BaseModel):
     candidatos: Optional[List[int]] = None
     resolvido_por: Optional[str] = None
     resolucao: Optional[str] = None
+    resolucao_sugerida: Optional[str] = None
+    justificacao_sugerida: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

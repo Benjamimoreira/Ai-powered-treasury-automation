@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.models import CasoAmbiguo
 from app.db.session import get_db
 from app.models import CasoAmbiguoOut, ResolverAmbiguoRequest
+from app.services.llm_resolver import sugerir_resolucao
 from app.services.reconciliador import resolver_ambiguo
 
 router = APIRouter()
@@ -26,3 +27,16 @@ def resolver(caso_id: int, pedido: ResolverAmbiguoRequest, db: Session = Depends
         return resolver_ambiguo(db, caso_id, pedido.linha_id, pedido.resolvido_por)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/ambiguos/{caso_id}/sugerir", response_model=CasoAmbiguoOut)
+def sugerir(caso_id: int, db: Session = Depends(get_db)):
+    """Pede ao LLM (com RAG sobre casos parecidos já resolvidos) uma
+    proposta de resolução. Só grava a sugestão - nunca aplica nada; a
+    decisão final continua a precisar de POST /ambiguos/{id}/resolver."""
+    try:
+        return sugerir_resolucao(db, caso_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
