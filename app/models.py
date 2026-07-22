@@ -82,3 +82,19 @@ class SaldoTotalOut(BaseModel):
     entidades: int
     saldo_contabilistico_total: float
     saldo_disponivel_total: float
+
+
+class AtualizarDadosResponse(BaseModel):
+    dias_verificados: int
+    dias_com_movimentos_novos: List[str]
+    dias_com_saldos_novos: List[str]
+    dias_com_mapa_novo: List[str]
+    erros: List[str]
+
+
+class AnomaliaOut(BaseModel):
+    id: int
+    dia: date
+    empresa: str
+    descricao: str
+    valor: float

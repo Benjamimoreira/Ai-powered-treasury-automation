@@ -1,9 +1,16 @@
 from datetime import date
 
 import openpyxl
+import pytest
 
 from app.db.models import LinhaMapa
-from scripts.importar_mapa import COL_PAGAMENTOS, COL_RECEBIMENTOS, encontrar_linha_totais, importar_linhas
+from app.services.mapa_importer import (
+    COL_PAGAMENTOS,
+    COL_RECEBIMENTOS,
+    encontrar_linha_totais,
+    importar_dia_do_mapa,
+    importar_linhas,
+)
 
 DIA = date(2026, 7, 21)
 
@@ -46,3 +53,21 @@ def test_importar_linhas_aplica_sinal_correto_por_tipo(tmp_path, db_session):
 
     pag_pago = db_session.query(LinhaMapa).filter_by(tipo="pagamento", empresa="Palavra").one()
     assert pag_pago.pago == -359.96
+
+
+def test_importar_dia_do_mapa_localiza_folha_e_importa_tudo(tmp_path, db_session):
+    caminho = _criar_folha_do_dia(tmp_path)
+
+    n_receb, n_pag = importar_dia_do_mapa(db_session, str(caminho), DIA)
+    db_session.commit()
+
+    assert n_receb == 1
+    assert n_pag == 2
+    assert db_session.query(LinhaMapa).count() == 3
+
+
+def test_importar_dia_do_mapa_falha_se_folha_nao_existir(tmp_path, db_session):
+    caminho = _criar_folha_do_dia(tmp_path)
+
+    with pytest.raises(KeyError):
+        importar_dia_do_mapa(db_session, str(caminho), date(2026, 7, 22))

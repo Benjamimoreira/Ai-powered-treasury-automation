@@ -29,6 +29,31 @@ COR_RANKING_SALDO = "#2a78d6"
 st.set_page_config(page_title="Tesouraria - Dashboard", layout="wide")
 st.title("Dashboard de Tesouraria")
 
+col_titulo, col_botao = st.columns([4, 1])
+with col_botao:
+    if st.button("🔄 Atualizar dados do OneDrive", use_container_width=True):
+        with st.spinner("A importar dias novos do OneDrive (só leitura)..."):
+            try:
+                resultado = api.atualizar_dados()
+                novos = (
+                    len(resultado["dias_com_movimentos_novos"])
+                    + len(resultado["dias_com_saldos_novos"])
+                    + len(resultado["dias_com_mapa_novo"])
+                )
+                if novos > 0:
+                    st.success(
+                        f"Atualizado: {resultado['dias_com_movimentos_novos']} movimentos, "
+                        f"{resultado['dias_com_saldos_novos']} saldos, "
+                        f"{resultado['dias_com_mapa_novo']} mapa."
+                    )
+                else:
+                    st.info("Nada de novo - já estava tudo atualizado.")
+                if resultado["erros"]:
+                    st.warning(f"Erros: {resultado['erros']}")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro: {e}")
+
 aba_visao_geral, aba_reconciliacao, aba_saldos, aba_contas, aba_ambiguos = st.tabs(
     ["Visão Geral", "Reconciliação", "Saldos", "Análise de Contas", "Ambíguos"]
 )

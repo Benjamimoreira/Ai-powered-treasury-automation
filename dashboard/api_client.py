@@ -9,6 +9,12 @@ import requests
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000")
 
 
+def atualizar_dados(dias_atras: int = 7) -> dict:
+    r = requests.post(f"{API_BASE_URL}/atualizar-dados", params={"dias_atras": dias_atras}, timeout=120)
+    r.raise_for_status()
+    return r.json()
+
+
 def reconciliar_dia(dia: str) -> dict:
     r = requests.post(f"{API_BASE_URL}/reconciliar/{dia}")
     r.raise_for_status()
