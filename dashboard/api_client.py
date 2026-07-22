@@ -70,6 +70,12 @@ def previsao_saldo(empresa: str, dias: int = 7) -> dict:
     return r.json()
 
 
+def avaliar_previsao(empresa: str, dias_teste: int = 5) -> dict:
+    r = requests.get(f"{API_BASE_URL}/previsao/avaliacao/{empresa}", params={"dias_teste": dias_teste})
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_anomalias(dia: str) -> list:
     r = requests.get(f"{API_BASE_URL}/anomalias/{dia}")
     r.raise_for_status()

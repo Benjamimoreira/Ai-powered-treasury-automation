@@ -108,3 +108,10 @@ class PontoSerieOut(BaseModel):
 class PrevisaoSaldoOut(BaseModel):
     historico: List[PontoSerieOut]
     previsao: Dict[str, List[PontoSerieOut]]
+
+
+class AvaliacaoModelosOut(BaseModel):
+    dias_teste: int
+    rmse_por_modelo: Dict[str, float]
+    melhor_modelo: Optional[str] = None
+    falhas: Dict[str, str]

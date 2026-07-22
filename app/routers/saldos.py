@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models import AtualizarSaldosRequest, PrevisaoSaldoOut, SaldoOut, SaldoTotalOut
-from app.services.previsao import prever_saldo
+from app.models import AtualizarSaldosRequest, AvaliacaoModelosOut, PrevisaoSaldoOut, SaldoOut, SaldoTotalOut
+from app.services.previsao import avaliar_modelos, prever_saldo
 from app.services.saldos import consultar_saldo as consultar_saldo_servico
 from app.services.saldos import listar_saldos_atuais, registar_saldos_do_dia, saldo_total_geral
 
@@ -15,11 +15,24 @@ router = APIRouter()
 
 @router.get("/previsao/saldo/{empresa}", response_model=PrevisaoSaldoOut)
 def previsao_saldo(empresa: str, dias: int = 7, db: Session = Depends(get_db)):
-    """Previsão do saldo contabilístico dos próximos dias, com 3 modelos
-    diferentes (regressão linear, média móvel, suavização exponencial de
-    Holt) para comparação lado a lado. Só leitura, não guarda nada."""
+    """Previsão do saldo contabilístico dos próximos dias, com vários
+    modelos (regressão linear, média móvel, suavização exponencial,
+    ARIMA, Markov-switching) para comparação lado a lado. Só leitura, não
+    guarda nada."""
     try:
         return prever_saldo(db, empresa, dias)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/previsao/avaliacao/{empresa}", response_model=AvaliacaoModelosOut)
+def previsao_avaliacao(empresa: str, dias_teste: int = 5, db: Session = Depends(get_db)):
+    """Avaliação treino/teste: retira os últimos `dias_teste` dias,
+    treina cada modelo só com o resto, e compara com o valor real
+    (RMSE) - responde a "qual modelo acerta mais" com dados retidos, não
+    só com a previsão visual."""
+    try:
+        return avaliar_modelos(db, empresa, dias_teste)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

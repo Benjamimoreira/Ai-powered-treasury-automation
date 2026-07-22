@@ -54,7 +54,7 @@ camadas com responsabilidades claras:
 | **Ambíguos** | Movimentos com mais que uma linha candidata ficam em fila para decisão humana. |
 | **LLM + RAG** | Para cada caso ambíguo, procura casos parecidos já resolvidos (embeddings `sentence-transformers`) e pede a um LLM (HuggingFace) uma sugestão com justificação. Nunca aplica sozinho. |
 | **Anomalias (ML)** | `IsolationForest` por empresa (scikit-learn) - assinala movimentos fora do padrão habitual da própria conta. |
-| **Previsão de saldos (ML)** | 3 modelos por conta (regressão linear, média móvel, suavização exponencial de Holt) lado a lado para comparação. |
+| **Previsão de saldos (ML)** | 5 modelos por conta (regressão linear, média móvel, suavização exponencial, ARIMA, Markov-switching) lado a lado, mais avaliação treino/teste (RMSE) para saber qual acerta mais em cada conta. |
 | **Saldos** | Lê saldos diretamente dos extratos, histórico por conta e total geral. |
 | **Sincronização** | Importa do OneDrive (só leitura) os dias ainda não existentes localmente - sob pedido (botão) ou script. |
 | **MCP** | As mesmas operações expostas como *tools* para um agente LLM chamar diretamente. |
@@ -82,7 +82,7 @@ dashboard/
   api_client.py                # cliente HTTP fino - o dashboard nunca acede à BD diretamente
 mcp_server.py                # servidor MCP (tools)
 scripts/                     # scripts de migração/importação únicos + testes manuais
-tests/                       # suite pytest (45 testes)
+tests/                       # suite pytest (48 testes)
 Dockerfile · docker-compose.yml · .github/workflows/ci.yml
 ```
 
@@ -112,7 +112,7 @@ Abre `http://127.0.0.1:8501`.
 ```powershell
 pytest -v
 ```
-45 testes, todos com mocks/dados sintéticos (sem chamadas de rede nem
+48 testes, todos com mocks/dados sintéticos (sem chamadas de rede nem
 custos). O LLM e o RAG são isolados em funções próprias precisamente
 para poderem ser substituídos nos testes.
 

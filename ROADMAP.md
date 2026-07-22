@@ -43,7 +43,7 @@ eram resolvidos à mão.
 ## Fase 3.5 — Modelos de ML clássico ✅
 
 - [x] **Deteção de anomalias**: `IsolationForest` por empresa sobre o histórico de movimentos. `GET /anomalias/{dia}`.
-- [x] **Previsão de saldos**: 3 modelos por conta para comparação (regressão linear, média móvel, suavização exponencial de Holt). `GET /previsao/saldo/{empresa}`.
+- [x] **Previsão de saldos**: 5 modelos por conta para comparação (regressão linear, média móvel, suavização exponencial de Holt, ARIMA, Markov-switching). `GET /previsao/saldo/{empresa}` + `GET /previsao/avaliacao/{empresa}` (avaliação treino/teste com RMSE, para saber qual modelo acerta mais em cada conta).
 - [ ] Deteção de fraude (regras de IBAN/faturas duplicadas) — ainda não implementado, ficou como extensão futura das anomalias.
 
 ## Fase 4 — MCP ✅

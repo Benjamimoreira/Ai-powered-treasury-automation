@@ -26,13 +26,16 @@ COR_FLUXO_NEGATIVO = "#e34948"
 # Ranking de uma única medida (saldo) por conta - um hue só, não categórico.
 COR_RANKING_SALDO = "#2a78d6"
 
-# Previsão de saldo: histórico + 3 modelos, cada um o seu hue categórico
-# (evita reutilizar verde/vermelho, que aqui têm significado de estado).
+# Previsão de saldo: histórico + modelos, na ordem de slots categóricos
+# validada (references/palette.md) - garante pares adjacentes seguros
+# para daltonismo.
 CORES_PREVISAO = {
     "Histórico": "#2a78d6",
     "Regressão linear": "#eb6834",
-    "Média móvel": "#eda100",
-    "Suavização exponencial": "#4a3aa7",
+    "Média móvel": "#1baf7a",
+    "Suavização exponencial": "#eda100",
+    "ARIMA": "#e87ba4",
+    "Markov-switching": "#008300",
 }
 
 st.set_page_config(page_title="Tesouraria - Dashboard", layout="wide")
@@ -293,6 +296,8 @@ with aba_contas:
                 "regressao_linear": "Regressão linear",
                 "media_movel": "Média móvel",
                 "suavizacao_exponencial": "Suavização exponencial",
+                "arima": "ARIMA",
+                "markov_switching": "Markov-switching",
             }
             for modelo, pontos in previsao["previsao"].items():
                 nome = nomes_modelo[modelo]
@@ -321,9 +326,36 @@ with aba_contas:
             st.altair_chart(grafico_previsao, use_container_width=True)
             st.caption(
                 "Linhas tracejadas = previsão. Regressão linear extrapola a tendência; "
-                "média móvel repete o nível recente; suavização exponencial (Holt) "
-                "reage mais depressa a mudanças recentes."
+                "média móvel repete o nível recente; suavização exponencial (Holt) reage "
+                "depressa a mudanças recentes; ARIMA capta autocorrelação; Markov-switching "
+                "tenta detetar mudanças de regime (útil se a conta teve uma quebra grande)."
             )
+
+            with st.expander("Qual modelo acerta mais nesta conta? (avaliação treino/teste)"):
+                dias_teste = st.slider(
+                    "Dias retidos para teste", min_value=2, max_value=15, value=5, key="dias_teste",
+                )
+                try:
+                    avaliacao = api.avaliar_previsao(empresa_escolhida, dias_teste)
+                except Exception as e:
+                    avaliacao = None
+                    st.info(f"Sem avaliação disponível: {e}")
+
+                if avaliacao:
+                    if avaliacao["rmse_por_modelo"]:
+                        df_rmse = pd.DataFrame([
+                            {"modelo": nomes_modelo.get(m, m), "rmse_eur": erro}
+                            for m, erro in avaliacao["rmse_por_modelo"].items()
+                        ]).sort_values("rmse_eur")
+                        st.dataframe(df_rmse, use_container_width=True, hide_index=True)
+                        st.success(
+                            f"Melhor modelo nesta conta: "
+                            f"**{nomes_modelo.get(avaliacao['melhor_modelo'], avaliacao['melhor_modelo'])}** "
+                            f"(erro médio {avaliacao['rmse_por_modelo'][avaliacao['melhor_modelo']]:,.2f} €, "
+                            f"comparado com os últimos {dias_teste} dias reais retidos para teste)."
+                        )
+                    if avaliacao["falhas"]:
+                        st.caption(f"Modelos que não convergiram: {list(avaliacao['falhas'].keys())}")
 
         st.markdown("**Fluxo diário (movimentos)**")
         try:
