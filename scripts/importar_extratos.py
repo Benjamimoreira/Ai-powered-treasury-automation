@@ -11,7 +11,6 @@ correr mais que uma vez para o mesmo dia duplica os movimentos.
 """
 import glob
 import os
-import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -19,13 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db.session import SessionLocal
-from app.services.reconciliador import importar_extrato_para_bd
-
-
-def nome_empresa_do_ficheiro(caminho):
-    nome = os.path.splitext(os.path.basename(caminho))[0]
-    nome = re.sub(r"^\d{2}-\d{2}-\d{4}_", "", nome)
-    return nome.strip()
+from app.services.reconciliador import importar_extrato_para_bd, nome_empresa_do_ficheiro
 
 
 def main():

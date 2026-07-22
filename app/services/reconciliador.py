@@ -1,12 +1,18 @@
 import os
+import re
 import shutil
 import tempfile
 import time
+import unicodedata
 
 import openpyxl
 from sqlalchemy.orm import Session
 
-from app.db.models import MovimentoBancario
+from app.db.models import CasoAmbiguo, LinhaMapa, MovimentoBancario, Reconciliacao
+
+TOLERANCIA_VALOR = 0.01
+
+PALAVRAS_IGNORAR = {"LDA", "SA", "DE", "DA", "DO", "E"}
 
 
 def abrir_workbook_com_retry(caminho, tentativas=5, espera=1.0):
@@ -59,6 +65,30 @@ def ler_movimentos_do_extrato(caminho):
     return movimentos
 
 
+def remover_acentos(texto):
+    nfkd = unicodedata.normalize("NFKD", texto)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def normalizar(texto):
+    texto = remover_acentos(str(texto)).upper()
+    return re.sub(r"[^A-Z0-9]", "", texto)
+
+
+def nome_empresa_do_ficheiro(caminho):
+    nome = os.path.splitext(os.path.basename(caminho))[0]
+    nome = re.sub(r"^\d{2}-\d{2}-\d{4}_", "", nome)
+    return nome.strip()
+
+
+def chave_empresa(nome_completo):
+    """Chave normalizada do nome da empresa sem palavras tipo LDA/SA, para
+    que 'ANCORA APOGEU,LDA' e 'Ancora Apogeu' (sem sigla) batam certo."""
+    partes = [p for p in re.split(r"[\s,]+", str(nome_completo).strip()) if p]
+    significativas = [p for p in partes if normalizar(p) not in PALAVRAS_IGNORAR]
+    return normalizar(" ".join(significativas))
+
+
 def importar_extrato_para_bd(db: Session, caminho: str, dia, empresa: str) -> int:
     """Lê um ficheiro de extrato (.xlsx) e grava cada movimento como uma
     linha em movimentos_bancarios. Devolve o número de movimentos
@@ -76,3 +106,111 @@ def importar_extrato_para_bd(db: Session, caminho: str, dia, empresa: str) -> in
         ))
     db.commit()
     return len(movimentos)
+
+
+def _linha_bate_com_movimento(linha: LinhaMapa, movimento: MovimentoBancario) -> bool:
+    if linha.previsto is None:
+        return False
+    return (
+        chave_empresa(linha.empresa) == chave_empresa(movimento.empresa)
+        and abs(linha.previsto - movimento.valor) < TOLERANCIA_VALOR
+    )
+
+
+def reconciliar_dia(db: Session, dia) -> dict:
+    """Corre a reconciliação de um dia: tenta casar cada movimento bancário
+    ainda não processado com uma linha do mapa (linhas_mapa) do mesmo dia,
+    pela empresa (chave_empresa) e pelo valor (com tolerância). Grava o
+    resultado em Reconciliacao (e CasoAmbiguo quando há mais que uma linha
+    candidata). Correr duas vezes para o mesmo dia não duplica trabalho -
+    só processa movimentos que ainda não têm nenhuma Reconciliacao."""
+    movimentos = (
+        db.query(MovimentoBancario)
+        .filter(MovimentoBancario.dia == dia)
+        .filter(~MovimentoBancario.reconciliacoes.any())
+        .all()
+    )
+    linhas = db.query(LinhaMapa).filter(LinhaMapa.dia == dia).all()
+
+    casados = novos = ambiguos = 0
+    linhas_ja_usadas = set()
+
+    for movimento in movimentos:
+        candidatos = [
+            linha for linha in linhas
+            if linha.id not in linhas_ja_usadas and _linha_bate_com_movimento(linha, movimento)
+        ]
+
+        if len(candidatos) == 1:
+            linha = candidatos[0]
+            linha.pago = movimento.valor
+            linhas_ja_usadas.add(linha.id)
+            db.add(Reconciliacao(movimento_id=movimento.id, linha_id=linha.id, tipo_match="exato"))
+            casados += 1
+        elif len(candidatos) > 1:
+            db.add(Reconciliacao(movimento_id=movimento.id, linha_id=None, tipo_match="ambiguo"))
+            db.add(CasoAmbiguo(
+                movimento_id=movimento.id,
+                dia=dia,
+                empresa=movimento.empresa,
+                valor=movimento.valor,
+                candidatos=[linha.id for linha in candidatos],
+            ))
+            ambiguos += 1
+        else:
+            db.add(Reconciliacao(movimento_id=movimento.id, linha_id=None, tipo_match="novo"))
+            novos += 1
+
+    db.commit()
+    return {"casados": casados, "novos": novos, "ambiguos": ambiguos}
+
+
+def auditoria_dia(db: Session, dia) -> dict:
+    """Verificação read-only (não grava nada): conta movimentos sem
+    correspondência numa linha do mapa (sem_match_fwd) e linhas do mapa
+    com previsto por bater e que não correspondem a nenhum movimento
+    (sem_match_rev). Independente de reconciliar_dia já ter corrido."""
+    movimentos = db.query(MovimentoBancario).filter(MovimentoBancario.dia == dia).all()
+    linhas = db.query(LinhaMapa).filter(LinhaMapa.dia == dia, LinhaMapa.previsto.isnot(None)).all()
+
+    sem_match_fwd = sum(
+        1 for movimento in movimentos
+        if not any(_linha_bate_com_movimento(linha, movimento) for linha in linhas)
+    )
+    sem_match_rev = sum(
+        1 for linha in linhas
+        if not any(_linha_bate_com_movimento(linha, movimento) for movimento in movimentos)
+    )
+    return {"sem_match_fwd": sem_match_fwd, "sem_match_rev": sem_match_rev}
+
+
+def resolver_ambiguo(db: Session, caso_id: int, linha_id, resolvido_por: str) -> CasoAmbiguo:
+    """Regista a decisão humana sobre um caso ambíguo: associa o movimento
+    à linha escolhida (ou marca como 'novo' se linha_id for None)."""
+    caso = db.get(CasoAmbiguo, caso_id)
+    if caso is None:
+        raise ValueError(f"Caso ambíguo {caso_id} não encontrado.")
+
+    reconciliacao = (
+        db.query(Reconciliacao)
+        .filter(Reconciliacao.movimento_id == caso.movimento_id, Reconciliacao.tipo_match == "ambiguo")
+        .first()
+    )
+
+    if linha_id is not None:
+        linha = db.get(LinhaMapa, linha_id)
+        if linha is None:
+            raise ValueError(f"Linha {linha_id} não encontrada.")
+        linha.pago = caso.valor
+        caso.resolucao = f"linha_id={linha_id}"
+        if reconciliacao is not None:
+            reconciliacao.linha_id = linha_id
+            reconciliacao.tipo_match = "exato"
+    else:
+        caso.resolucao = "novo"
+        if reconciliacao is not None:
+            reconciliacao.tipo_match = "novo"
+
+    caso.resolvido_por = resolvido_por
+    db.commit()
+    return caso

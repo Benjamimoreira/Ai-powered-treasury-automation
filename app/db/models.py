@@ -51,9 +51,20 @@ class CasoAmbiguo(Base):
     __tablename__ = "casos_ambiguos"
 
     id = Column(Integer, primary_key=True)
+    movimento_id = Column(Integer, ForeignKey("movimentos_bancarios.id"), nullable=False)
     dia = Column(Date, nullable=False)
     empresa = Column(String, nullable=False)
     valor = Column(Float, nullable=False)
     candidatos = Column(JSON, nullable=True)
     resolvido_por = Column(String, nullable=True)
     resolucao = Column(String, nullable=True)
+
+
+class SaldoDiario(Base):
+    __tablename__ = "saldos_diarios"
+
+    id = Column(Integer, primary_key=True)
+    dia = Column(Date, nullable=False)
+    entidade = Column(String, nullable=False)
+    saldo_contabilistico = Column(Float, nullable=True)
+    saldo_disponivel = Column(Float, nullable=True)

@@ -5,3 +5,4 @@ __pycache__/
 backups_onedrive/
 .env
 *.db
+.pytest_cache/
