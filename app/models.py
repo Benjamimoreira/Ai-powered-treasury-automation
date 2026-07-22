@@ -1,5 +1,5 @@
 from datetime import date
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -98,3 +98,13 @@ class AnomaliaOut(BaseModel):
     empresa: str
     descricao: str
     valor: float
+
+
+class PontoSerieOut(BaseModel):
+    dia: str
+    valor: float
+
+
+class PrevisaoSaldoOut(BaseModel):
+    historico: List[PontoSerieOut]
+    previsao: Dict[str, List[PontoSerieOut]]

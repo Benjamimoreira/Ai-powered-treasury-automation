@@ -1,15 +1,27 @@
 from datetime import date
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models import AtualizarSaldosRequest, SaldoOut, SaldoTotalOut
+from app.models import AtualizarSaldosRequest, PrevisaoSaldoOut, SaldoOut, SaldoTotalOut
+from app.services.previsao import prever_saldo
 from app.services.saldos import consultar_saldo as consultar_saldo_servico
 from app.services.saldos import listar_saldos_atuais, registar_saldos_do_dia, saldo_total_geral
 
 router = APIRouter()
+
+
+@router.get("/previsao/saldo/{empresa}", response_model=PrevisaoSaldoOut)
+def previsao_saldo(empresa: str, dias: int = 7, db: Session = Depends(get_db)):
+    """Previsão do saldo contabilístico dos próximos dias, com 3 modelos
+    diferentes (regressão linear, média móvel, suavização exponencial de
+    Holt) para comparação lado a lado. Só leitura, não guarda nada."""
+    try:
+        return prever_saldo(db, empresa, dias)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 @router.get("/saldo-total", response_model=SaldoTotalOut)

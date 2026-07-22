@@ -40,10 +40,10 @@ eram resolvidos à mão.
 - [x] Nunca aplica sozinho — fica em `resolucao_sugerida`/`justificacao_sugerida`, confirmação via `POST /ambiguos/{id}/resolver`.
 - [x] `POST /ambiguos/{id}/sugerir`.
 
-## Fase 3.5 — Modelos de ML clássico
+## Fase 3.5 — Modelos de ML clássico ✅
 
 - [x] **Deteção de anomalias**: `IsolationForest` por empresa sobre o histórico de movimentos. `GET /anomalias/{dia}`.
-- [ ] **Previsão de saldos**: série temporal por conta (ainda não implementado).
+- [x] **Previsão de saldos**: 3 modelos por conta para comparação (regressão linear, média móvel, suavização exponencial de Holt). `GET /previsao/saldo/{empresa}`.
 - [ ] Deteção de fraude (regras de IBAN/faturas duplicadas) — ainda não implementado, ficou como extensão futura das anomalias.
 
 ## Fase 4 — MCP ✅

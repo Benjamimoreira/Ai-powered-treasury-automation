@@ -64,6 +64,12 @@ def historico_movimentos(empresa: str) -> list:
     return r.json()
 
 
+def previsao_saldo(empresa: str, dias: int = 7) -> dict:
+    r = requests.get(f"{API_BASE_URL}/previsao/saldo/{empresa}", params={"dias": dias})
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_anomalias(dia: str) -> list:
     r = requests.get(f"{API_BASE_URL}/anomalias/{dia}")
     r.raise_for_status()

@@ -54,6 +54,7 @@ camadas com responsabilidades claras:
 | **Ambíguos** | Movimentos com mais que uma linha candidata ficam em fila para decisão humana. |
 | **LLM + RAG** | Para cada caso ambíguo, procura casos parecidos já resolvidos (embeddings `sentence-transformers`) e pede a um LLM (HuggingFace) uma sugestão com justificação. Nunca aplica sozinho. |
 | **Anomalias (ML)** | `IsolationForest` por empresa (scikit-learn) - assinala movimentos fora do padrão habitual da própria conta. |
+| **Previsão de saldos (ML)** | 3 modelos por conta (regressão linear, média móvel, suavização exponencial de Holt) lado a lado para comparação. |
 | **Saldos** | Lê saldos diretamente dos extratos, histórico por conta e total geral. |
 | **Sincronização** | Importa do OneDrive (só leitura) os dias ainda não existentes localmente - sob pedido (botão) ou script. |
 | **MCP** | As mesmas operações expostas como *tools* para um agente LLM chamar diretamente. |
@@ -63,7 +64,7 @@ camadas com responsabilidades claras:
 
 FastAPI · SQLAlchemy (SQLite local / Postgres em Docker) · Pydantic ·
 sentence-transformers · HuggingFace Inference (LLM) · scikit-learn ·
-MCP SDK · Streamlit · pytest · Docker · GitHub Actions
+statsmodels · MCP SDK · Streamlit · pytest · Docker · GitHub Actions
 
 ## Estrutura do projeto
 
@@ -81,7 +82,7 @@ dashboard/
   api_client.py                # cliente HTTP fino - o dashboard nunca acede à BD diretamente
 mcp_server.py                # servidor MCP (tools)
 scripts/                     # scripts de migração/importação únicos + testes manuais
-tests/                       # suite pytest (42 testes)
+tests/                       # suite pytest (45 testes)
 Dockerfile · docker-compose.yml · .github/workflows/ci.yml
 ```
 
@@ -111,7 +112,7 @@ Abre `http://127.0.0.1:8501`.
 ```powershell
 pytest -v
 ```
-42 testes, todos com mocks/dados sintéticos (sem chamadas de rede nem
+45 testes, todos com mocks/dados sintéticos (sem chamadas de rede nem
 custos). O LLM e o RAG são isolados em funções próprias precisamente
 para poderem ser substituídos nos testes.
 
@@ -134,8 +135,12 @@ foi escrita e revista com cuidado, mas fica por confirmar o build real.
   em bruto) se o LLM não devolver JSON válido.
 - Deteção de anomalias exige pelo menos 10 movimentos históricos por
   empresa para ativar - contas novas não são avaliadas.
+- Previsão de saldos exige pelo menos 5 pontos de histórico; é
+  comparação entre modelos simples (regressão linear, média móvel,
+  suavização exponencial), não uma previsão de produção "garantida" -
+  contas com quebras/eventos pontuais grandes podem dar previsões pouco
+  úteis num dos modelos (ver os 3 lado a lado, não confiar só num).
 - Build Docker não confirmado nesta máquina (ver acima).
-- Previsão de saldos (forecasting) ainda não implementada.
 
 ## Roadmap
 

@@ -26,6 +26,15 @@ COR_FLUXO_NEGATIVO = "#e34948"
 # Ranking de uma única medida (saldo) por conta - um hue só, não categórico.
 COR_RANKING_SALDO = "#2a78d6"
 
+# Previsão de saldo: histórico + 3 modelos, cada um o seu hue categórico
+# (evita reutilizar verde/vermelho, que aqui têm significado de estado).
+CORES_PREVISAO = {
+    "Histórico": "#2a78d6",
+    "Regressão linear": "#eb6834",
+    "Média móvel": "#eda100",
+    "Suavização exponencial": "#4a3aa7",
+}
+
 st.set_page_config(page_title="Tesouraria - Dashboard", layout="wide")
 st.title("Dashboard de Tesouraria")
 
@@ -266,6 +275,55 @@ with aba_contas:
             st.altair_chart(grafico_saldo, use_container_width=True)
         else:
             st.info("Sem saldos guardados para esta empresa (precisas de correr /saldos/atualizar primeiro).")
+
+        st.markdown("**Previsão de saldo (3 modelos de ML)**")
+        dias_previsao = st.slider("Dias a prever", min_value=3, max_value=30, value=7, key="dias_previsao")
+        try:
+            previsao = api.previsao_saldo(empresa_escolhida, dias_previsao)
+        except Exception as e:
+            previsao = None
+            st.info(f"Sem previsão disponível: {e}")
+
+        if previsao:
+            linhas = [
+                {"dia": p["dia"], "valor": p["valor"], "serie": "Histórico"}
+                for p in previsao["historico"]
+            ]
+            nomes_modelo = {
+                "regressao_linear": "Regressão linear",
+                "media_movel": "Média móvel",
+                "suavizacao_exponencial": "Suavização exponencial",
+            }
+            for modelo, pontos in previsao["previsao"].items():
+                nome = nomes_modelo[modelo]
+                linhas.extend({"dia": p["dia"], "valor": p["valor"], "serie": nome} for p in pontos)
+
+            df_previsao = pd.DataFrame(linhas)
+            df_previsao["tipo_linha"] = df_previsao["serie"].apply(
+                lambda s: "Histórico" if s == "Histórico" else "Previsão"
+            )
+
+            grafico_previsao = alt.Chart(df_previsao).mark_line(point=True, strokeWidth=2).encode(
+                x=alt.X("dia:T", title=None),
+                y=alt.Y("valor:Q", title="Saldo contabilístico (EUR)"),
+                color=alt.Color(
+                    "serie:N",
+                    scale=alt.Scale(domain=list(CORES_PREVISAO.keys()), range=list(CORES_PREVISAO.values())),
+                    legend=alt.Legend(title=None),
+                ),
+                strokeDash=alt.StrokeDash(
+                    "tipo_linha:N",
+                    scale=alt.Scale(domain=["Histórico", "Previsão"], range=[[1, 0], [6, 3]]),
+                    legend=None,
+                ),
+                tooltip=["dia:T", "serie:N", "valor:Q"],
+            ).properties(height=320)
+            st.altair_chart(grafico_previsao, use_container_width=True)
+            st.caption(
+                "Linhas tracejadas = previsão. Regressão linear extrapola a tendência; "
+                "média móvel repete o nível recente; suavização exponencial (Holt) "
+                "reage mais depressa a mudanças recentes."
+            )
 
         st.markdown("**Fluxo diário (movimentos)**")
         try:
