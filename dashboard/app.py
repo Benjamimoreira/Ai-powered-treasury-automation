@@ -148,6 +148,19 @@ with aba_visao_geral:
     else:
         st.info("Sem movimentos importados para este dia.")
 
+    st.markdown("**⚠️ Anomalias detetadas (ML - Isolation Forest)**")
+    try:
+        anomalias = api.listar_anomalias(dia_vg_str)
+    except Exception as e:
+        st.error(f"Erro a consultar anomalias: {e}")
+        anomalias = []
+
+    if anomalias:
+        st.warning(f"{len(anomalias)} movimento(s) fora do padrão habitual da respetiva empresa.")
+        st.dataframe(pd.DataFrame(anomalias), use_container_width=True)
+    else:
+        st.info("Sem anomalias detetadas para este dia (ou histórico insuficiente por empresa).")
+
 with aba_reconciliacao:
     st.subheader("Reconciliação do dia")
     dia = st.date_input("Dia", value=date.today())

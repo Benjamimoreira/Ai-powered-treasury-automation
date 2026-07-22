@@ -64,6 +64,12 @@ def historico_movimentos(empresa: str) -> list:
     return r.json()
 
 
+def listar_anomalias(dia: str) -> list:
+    r = requests.get(f"{API_BASE_URL}/anomalias/{dia}")
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_ambiguos() -> list:
     r = requests.get(f"{API_BASE_URL}/ambiguos")
     r.raise_for_status()

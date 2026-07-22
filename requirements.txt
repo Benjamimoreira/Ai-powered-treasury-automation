@@ -10,3 +10,4 @@ mcp[cli]
 psycopg[binary]
 python-dotenv
 streamlit
+scikit-learn
