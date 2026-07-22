@@ -40,6 +40,12 @@ def saldo_total() -> dict:
     return r.json()
 
 
+def listar_saldos_atuais() -> list:
+    r = requests.get(f"{API_BASE_URL}/saldos")
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_empresas() -> list:
     r = requests.get(f"{API_BASE_URL}/empresas")
     r.raise_for_status()

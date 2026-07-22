@@ -23,6 +23,9 @@ COR_SALDO_DISPONIVEL = "#1baf7a"
 COR_FLUXO_POSITIVO = "#2a78d6"
 COR_FLUXO_NEGATIVO = "#e34948"
 
+# Ranking de uma única medida (saldo) por conta - um hue só, não categórico.
+COR_RANKING_SALDO = "#2a78d6"
+
 st.set_page_config(page_title="Tesouraria - Dashboard", layout="wide")
 st.title("Dashboard de Tesouraria")
 
@@ -58,6 +61,26 @@ with aba_visao_geral:
         col_a.metric("Saldo contabilístico total", f"{totais['saldo_contabilistico_total']:,.2f} €")
         col_b.metric("Saldo disponível total", f"{totais['saldo_disponivel_total']:,.2f} €")
         col_c.metric("Contas incluídas", totais["entidades"])
+
+        try:
+            saldos_atuais = api.listar_saldos_atuais()
+        except Exception:
+            saldos_atuais = []
+
+        if saldos_atuais:
+            st.markdown("**Contas com mais saldo contabilístico**")
+            df_ranking = pd.DataFrame(saldos_atuais)
+            df_ranking = df_ranking.sort_values("saldo_contabilistico", ascending=False).head(10)
+            grafico_ranking = alt.Chart(df_ranking).mark_bar(
+                cornerRadiusTopRight=4, cornerRadiusBottomRight=4,
+            ).encode(
+                y=alt.Y("entidade:N", title=None, sort="-x"),
+                x=alt.X("saldo_contabilistico:Q", title="Saldo contabilístico (EUR)"),
+                color=alt.value(COR_RANKING_SALDO),
+                tooltip=["entidade:N", "saldo_contabilistico:Q"],
+            ).properties(height=320)
+            st.altair_chart(grafico_ranking, use_container_width=True)
+
         st.divider()
 
     total = len(movimentos_vg)

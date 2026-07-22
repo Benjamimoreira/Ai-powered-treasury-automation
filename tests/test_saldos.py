@@ -3,7 +3,7 @@ from datetime import date
 import openpyxl
 
 from app.db.models import SaldoDiario
-from app.services.saldos import registar_saldos_do_dia, saldo_total_geral
+from app.services.saldos import listar_saldos_atuais, registar_saldos_do_dia, saldo_total_geral
 
 DIA = date(2026, 7, 21)
 
@@ -52,3 +52,18 @@ def test_saldo_total_geral_soma_o_ultimo_saldo_de_cada_entidade(db_session):
         "saldo_contabilistico_total": 200.0,
         "saldo_disponivel_total": 190.0,
     }
+
+
+def test_listar_saldos_atuais_devolve_so_a_leitura_mais_recente(db_session):
+    db_session.add(SaldoDiario(
+        dia=date(2026, 7, 20), entidade="Empresa A", saldo_contabilistico=100.0, saldo_disponivel=90.0,
+    ))
+    db_session.add(SaldoDiario(
+        dia=date(2026, 7, 21), entidade="Empresa A", saldo_contabilistico=150.0, saldo_disponivel=140.0,
+    ))
+    db_session.commit()
+
+    resultado = listar_saldos_atuais(db_session)
+
+    assert len(resultado) == 1
+    assert resultado[0].saldo_contabilistico == 150.0

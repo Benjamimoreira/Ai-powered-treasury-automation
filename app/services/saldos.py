@@ -53,14 +53,19 @@ def consultar_saldo(db: Session, empresa: str, dia=None):
     return [s for s in query.all() if chave_empresa(s.entidade) == alvo]
 
 
+def _ultimo_saldo_por_entidade(db: Session) -> dict:
+    todos = db.query(SaldoDiario).order_by(SaldoDiario.dia).all()
+    ultimo = {}
+    for s in todos:
+        ultimo[s.entidade] = s
+    return ultimo
+
+
 def saldo_total_geral(db: Session) -> dict:
     """Soma o último saldo conhecido de cada entidade - não é a soma de um
     dia específico, porque nem todos os dias têm leitura de todas as
     entidades (ex. contas sem movimento nesse dia)."""
-    todos = db.query(SaldoDiario).order_by(SaldoDiario.dia).all()
-    ultimo_por_entidade = {}
-    for s in todos:
-        ultimo_por_entidade[s.entidade] = s
+    ultimo_por_entidade = _ultimo_saldo_por_entidade(db)
 
     total_contabilistico = sum(s.saldo_contabilistico or 0 for s in ultimo_por_entidade.values())
     total_disponivel = sum(s.saldo_disponivel or 0 for s in ultimo_por_entidade.values())
@@ -69,6 +74,12 @@ def saldo_total_geral(db: Session) -> dict:
         "saldo_contabilistico_total": total_contabilistico,
         "saldo_disponivel_total": total_disponivel,
     }
+
+
+def listar_saldos_atuais(db: Session):
+    """Último saldo conhecido de cada entidade - para rankings/gráficos
+    (ex. "quais as contas com mais saldo")."""
+    return list(_ultimo_saldo_por_entidade(db).values())
 
 
 def registar_saldos_do_dia(db: Session, dia, pasta_extratos: str) -> int:
