@@ -123,8 +123,13 @@ def chamar_llm(prompt: str) -> str:
     if groq_key:
         from huggingface_hub import InferenceClient
 
-        modelo = os.environ.get("GROQ_MODEL_ID", "meta-llama/Llama-3.3-70B-Instruct")
-        cliente = InferenceClient(provider="groq", api_key=groq_key)
+        # base_url aponta directamente para a Groq (em vez de provider="groq",
+        # que só encaminha modelos que a HuggingFace tenha no seu catálogo
+        # próprio - a maioria dos modelos leves da Groq não está lá listada).
+        # Assim usamos o nome nativo da Groq e o limite de tokens/minuto mais
+        # alto dos modelos pequenos.
+        modelo = os.environ.get("GROQ_MODEL_ID", "llama-3.1-8b-instant")
+        cliente = InferenceClient(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
         resposta = cliente.chat_completion(
             messages=[{"role": "user", "content": prompt}], model=modelo,
         )

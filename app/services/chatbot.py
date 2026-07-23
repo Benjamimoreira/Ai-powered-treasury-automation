@@ -12,6 +12,30 @@ import os
 import sys
 
 from huggingface_hub import Agent
+from huggingface_hub.inference._generated.types.chat_completion import ChatCompletionInputMessage
+
+# ChatCompletionInputMessage declara tool_calls para qualquer role (default
+# None), e o mcp_client da huggingface_hub usa-a também para as mensagens
+# role="tool" - ficam sempre com "tool_calls": null no JSON enviado. O
+# router da HuggingFace tolera isso, mas a Groq (chamada diretamente via
+# base_url em vez de provider="groq") valida o schema de forma estrita e
+# rejeita esse campo em mensagens role="tool" com erro 400. Removemos a
+# chave quando vem a None - inofensivo para qualquer backend, já que
+# omitir o campo e tê-lo a null significam o mesmo (mensagem sem chamadas
+# de ferramenta associadas).
+_parse_obj_as_instance_original = ChatCompletionInputMessage.parse_obj_as_instance
+
+
+def _parse_obj_as_instance_sem_tool_calls_nulo(data):
+    instancia = _parse_obj_as_instance_original(data)
+    if instancia.get("tool_calls") is None:
+        instancia.pop("tool_calls", None)
+    return instancia
+
+
+ChatCompletionInputMessage.parse_obj_as_instance = classmethod(
+    lambda cls, data: _parse_obj_as_instance_sem_tool_calls_nulo(data)
+)
 
 FERRAMENTAS_PERMITIDAS = [
     "consultar_saldo_tool",
@@ -66,9 +90,11 @@ def criar_agent() -> Agent:
 
     groq_key = os.environ.get("GROQ_API_KEY")
     if groq_key:
-        modelo = os.environ.get("GROQ_MODEL_ID", "meta-llama/Llama-3.3-70B-Instruct")
+        # base_url directo à Groq - ver nota em llm_resolver.chamar_llm sobre
+        # porque não usamos provider="groq" (catálogo da HF é mais limitado).
+        modelo = os.environ.get("GROQ_MODEL_ID", "llama-3.1-8b-instant")
         return Agent(
-            model=modelo, provider="groq", api_key=groq_key,
+            model=modelo, base_url="https://api.groq.com/openai/v1", api_key=groq_key,
             servers=servers, prompt=PROMPT_SISTEMA,
         )
 
