@@ -6,6 +6,7 @@ pydantic
 pytest
 httpx
 sentence-transformers
+huggingface_hub
 mcp[cli]
 psycopg[binary]
 python-dotenv

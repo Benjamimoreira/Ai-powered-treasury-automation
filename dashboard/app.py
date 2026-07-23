@@ -38,7 +38,7 @@ CORES_PREVISAO = {
     "Markov-switching": "#008300",
 }
 
-st.set_page_config(page_title="Tesouraria - Dashboard", layout="wide")
+st.set_page_config(page_title="Tesouraria - Dashboard", page_icon="💶", layout="wide")
 st.title("Dashboard de Tesouraria")
 
 col_titulo, col_botao = st.columns([4, 1])
@@ -66,8 +66,8 @@ with col_botao:
             except Exception as e:
                 st.error(f"Erro: {e}")
 
-aba_visao_geral, aba_reconciliacao, aba_saldos, aba_contas, aba_ambiguos = st.tabs(
-    ["Visão Geral", "Reconciliação", "Saldos", "Análise de Contas", "Ambíguos"]
+aba_visao_geral, aba_reconciliacao, aba_saldos, aba_contas, aba_ambiguos, aba_assistente = st.tabs(
+    ["Visão Geral", "Reconciliação", "Saldos", "Análise de Contas", "Ambíguos", "Assistente"]
 )
 
 with aba_visao_geral:
@@ -436,3 +436,50 @@ with aba_ambiguos:
                         st.rerun()
                     except Exception as e:
                         st.error(f"Erro: {e}")
+
+with aba_assistente:
+    st.subheader("Assistente")
+    st.caption(
+        "Explica os dados apresentados e vai buscar informação real através "
+        "de ferramentas de leitura - nunca reconcilia nem resolve nada sozinho."
+    )
+
+    if "chat_mensagens" not in st.session_state:
+        st.session_state["chat_mensagens"] = []
+
+    if st.button("Reiniciar conversa"):
+        try:
+            api.reiniciar_chat()
+        except Exception as e:
+            st.error(f"Erro: {e}")
+        st.session_state["chat_mensagens"] = []
+        st.rerun()
+
+    for mensagem in st.session_state["chat_mensagens"]:
+        with st.chat_message(mensagem["role"]):
+            st.write(mensagem["content"])
+            if mensagem.get("ferramentas_usadas"):
+                st.caption("🔧 consultou: " + ", ".join(mensagem["ferramentas_usadas"]))
+
+    pergunta = st.chat_input("Pergunta sobre os dados da tesouraria...")
+    if pergunta:
+        st.session_state["chat_mensagens"].append({"role": "user", "content": pergunta})
+        with st.chat_message("user"):
+            st.write(pergunta)
+
+        with st.chat_message("assistant"):
+            with st.spinner("A pensar..."):
+                try:
+                    resultado = api.perguntar_chat(pergunta)
+                    resposta = resultado["resposta"]
+                    ferramentas = resultado.get("ferramentas_usadas", [])
+                except Exception as e:
+                    resposta = f"Erro a contactar o assistente: {e}"
+                    ferramentas = []
+            st.write(resposta)
+            if ferramentas:
+                st.caption("🔧 consultou: " + ", ".join(ferramentas))
+
+        st.session_state["chat_mensagens"].append({
+            "role": "assistant", "content": resposta, "ferramentas_usadas": ferramentas,
+        })

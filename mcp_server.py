@@ -13,13 +13,17 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from app.db.session import SessionLocal
+from app.services.anomalias import detetar_anomalias_do_dia
+from app.services.previsao import avaliar_modelos, prever_saldo
 from app.services.reconciliador import (
     auditoria_dia,
+    listar_empresas,
     listar_movimentos_do_dia,
     reconciliar_dia,
     resolver_ambiguo,
 )
 from app.services.saldos import consultar_saldo as consultar_saldo_servico
+from app.services.saldos import listar_saldos_atuais, saldo_total_geral
 from app.db.models import CasoAmbiguo
 
 mcp = FastMCP("tesouraria")
@@ -120,6 +124,93 @@ def resolver_ambiguo_tool(caso_id: int, linha_id: Optional[int], resolvido_por: 
             "resolvido_por": caso.resolvido_por,
             "resolucao": caso.resolucao,
         }
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def listar_empresas_tool() -> list:
+    """Lista os nomes exatos (tal como guardados na base de dados) de
+    todas as empresas com movimentos importados. A comparação de nomes
+    usada por outras tools (ex. consultar_saldo_tool) ignora LDA/SA mas
+    exige o resto do nome exato - usa esta tool primeiro sempre que não
+    tiveres a certeza do nome completo de uma empresa."""
+    db = SessionLocal()
+    try:
+        return listar_empresas(db)
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def saldo_total_tool() -> dict:
+    """Soma o último saldo conhecido de cada entidade - visão geral,
+    não de um único dia (nem todos os dias têm leitura de todas as
+    contas)."""
+    db = SessionLocal()
+    try:
+        return saldo_total_geral(db)
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def listar_saldos_tool() -> list:
+    """Último saldo conhecido de cada entidade - para rankings/
+    comparações entre contas."""
+    db = SessionLocal()
+    try:
+        return [
+            {
+                "dia": s.dia.isoformat(),
+                "entidade": s.entidade,
+                "saldo_contabilistico": s.saldo_contabilistico,
+                "saldo_disponivel": s.saldo_disponivel,
+            }
+            for s in listar_saldos_atuais(db)
+        ]
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def previsao_saldo_tool(empresa: str, dias: int = 7) -> dict:
+    """Previsão do saldo contabilístico dos próximos dias de uma
+    empresa (nome exato - ver listar_empresas_tool), com vários
+    modelos de séries temporais para comparação lado a lado."""
+    db = SessionLocal()
+    try:
+        return prever_saldo(db, empresa, dias)
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def avaliar_previsao_tool(empresa: str, dias_teste: int = 5) -> dict:
+    """Avaliação treino/teste dos modelos de previsão de saldo de uma
+    empresa (nome exato - ver listar_empresas_tool): retira os últimos
+    `dias_teste` dias, treina cada modelo só com o resto, e compara com
+    o valor real (RMSE) - responde a "qual modelo acerta mais"."""
+    db = SessionLocal()
+    try:
+        return avaliar_modelos(db, empresa, dias_teste)
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def anomalias_do_dia_tool(dia: str) -> list:
+    """Lista os movimentos bancários de um dia (formato AAAA-MM-DD)
+    cujo valor foge do padrão habitual da própria empresa (deteção via
+    Isolation Forest, por empresa). Empresas com histórico insuficiente
+    são ignoradas."""
+    db = SessionLocal()
+    try:
+        resultado = detetar_anomalias_do_dia(db, date.fromisoformat(dia))
+        return [
+            {**item, "dia": item["dia"].isoformat()}
+            for item in resultado
+        ]
     finally:
         db.close()
 

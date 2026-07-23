@@ -82,6 +82,18 @@ def listar_anomalias(dia: str) -> list:
     return r.json()
 
 
+def perguntar_chat(pergunta: str) -> dict:
+    r = requests.post(f"{API_BASE_URL}/chat", json={"pergunta": pergunta}, timeout=120)
+    r.raise_for_status()
+    return r.json()
+
+
+def reiniciar_chat() -> dict:
+    r = requests.post(f"{API_BASE_URL}/chat/reset")
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_ambiguos() -> list:
     r = requests.get(f"{API_BASE_URL}/ambiguos")
     r.raise_for_status()

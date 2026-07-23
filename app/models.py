@@ -115,3 +115,12 @@ class AvaliacaoModelosOut(BaseModel):
     rmse_por_modelo: Dict[str, float]
     melhor_modelo: Optional[str] = None
     falhas: Dict[str, str]
+
+
+class ChatRequest(BaseModel):
+    pergunta: str
+
+
+class ChatResponse(BaseModel):
+    resposta: str
+    ferramentas_usadas: List[str]

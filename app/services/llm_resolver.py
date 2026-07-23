@@ -114,15 +114,27 @@ Responde APENAS com um JSON, sem mais texto nenhum, no formato:
 
 
 def chamar_llm(prompt: str) -> str:
-    """Chamada isolada ao LLM (via HuggingFace Inference Providers, API
-    compatível com o formato de chat completions da OpenAI). Isolada numa
-    função própria para os testes poderem substituir isto por uma resposta
-    falsa, sem fazer chamadas de rede nem gastar créditos."""
+    """Chamada isolada ao LLM. Usa o Groq (gratuito) se GROQ_API_KEY
+    estiver definido; caso contrário cai para a HuggingFace Inference
+    Providers (HF_TOKEN). Isolada numa função própria para os testes
+    poderem substituir isto por uma resposta falsa, sem fazer chamadas de
+    rede nem gastar créditos."""
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        from huggingface_hub import InferenceClient
+
+        modelo = os.environ.get("GROQ_MODEL_ID", "meta-llama/Llama-3.3-70B-Instruct")
+        cliente = InferenceClient(provider="groq", api_key=groq_key)
+        resposta = cliente.chat_completion(
+            messages=[{"role": "user", "content": prompt}], model=modelo,
+        )
+        return resposta.choices[0].message.content
+
     token = os.environ.get("HF_TOKEN")
     if not token:
         raise RuntimeError(
-            "HF_TOKEN não definido - cria um ficheiro .env "
-            "(a partir de .env.example) com o teu token da HuggingFace."
+            "Nem GROQ_API_KEY nem HF_TOKEN estão definidos - cria/edita o "
+            "ficheiro .env (a partir de .env.example) com um dos dois."
         )
     modelo = os.environ.get("HF_MODEL_ID", "Qwen/Qwen2.5-72B-Instruct")
 

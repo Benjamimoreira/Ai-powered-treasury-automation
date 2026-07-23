@@ -106,5 +106,6 @@ def test_sugerir_resolucao_lida_com_resposta_sem_json(db_session, monkeypatch):
 
 def test_chamar_llm_falha_sem_token(monkeypatch):
     monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     with pytest.raises(RuntimeError):
         llm_resolver.chamar_llm("qualquer prompt")
