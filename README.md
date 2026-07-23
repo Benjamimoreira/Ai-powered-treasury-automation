@@ -52,18 +52,19 @@ camadas com responsabilidades claras:
 |---|---|
 | **Reconciliação** | Casa movimentos bancários com linhas "Valor Previsto" do Mapa, por empresa (ignora LDA/SA) + valor. Idempotente - nunca reprocessa nem duplica. |
 | **Ambíguos** | Movimentos com mais que uma linha candidata ficam em fila para decisão humana. |
-| **LLM + RAG** | Para cada caso ambíguo, procura casos parecidos já resolvidos (embeddings `sentence-transformers`) e pede a um LLM (HuggingFace) uma sugestão com justificação. Nunca aplica sozinho. |
+| **LLM + RAG** | Para cada caso ambíguo, procura casos parecidos já resolvidos (embeddings `sentence-transformers`) e pede a um LLM uma sugestão com justificação. Nunca aplica sozinho. |
 | **Anomalias (ML)** | `IsolationForest` por empresa (scikit-learn) - assinala movimentos fora do padrão habitual da própria conta. |
 | **Previsão de saldos (ML)** | 5 modelos por conta (regressão linear, média móvel, suavização exponencial, ARIMA, Markov-switching) lado a lado, mais avaliação treino/teste (RMSE) para saber qual acerta mais em cada conta. |
 | **Saldos** | Lê saldos diretamente dos extratos, histórico por conta e total geral. |
 | **Sincronização** | Importa do OneDrive (só leitura) os dias ainda não existentes localmente - sob pedido (botão) ou script. |
 | **MCP** | As mesmas operações expostas como *tools* para um agente LLM chamar diretamente. |
-| **Dashboard** | Streamlit: visão geral com KPIs e gráficos, análise por conta, saldos, ambíguos. |
+| **Assistente (chat)** | Separador no dashboard que conversa sobre os dados reais via MCP (só ferramentas de leitura) - nunca reconcilia nem resolve nada sozinho. |
+| **Dashboard** | Streamlit: visão geral com KPIs e gráficos, análise por conta, saldos, ambíguos, assistente. |
 
 ## Stack
 
 FastAPI · SQLAlchemy (SQLite local / Postgres em Docker) · Pydantic ·
-sentence-transformers · HuggingFace Inference (LLM) · scikit-learn ·
+sentence-transformers · Groq / HuggingFace Inference (LLM) · scikit-learn ·
 statsmodels · MCP SDK · Streamlit · pytest · Docker · GitHub Actions
 
 ## Estrutura do projeto
@@ -94,7 +95,8 @@ python -m venv venv
 pip install -r requirements.txt
 
 copy .env.example .env
-# edita o .env: HF_TOKEN (huggingface.co/settings/tokens), ONEDRIVE_RAIZ
+# edita o .env: GROQ_API_KEY (console.groq.com/keys, gratuito - ou
+# HF_TOKEN como alternativa), ONEDRIVE_RAIZ
 
 python scripts\criar_tabelas.py
 uvicorn app.main:app --reload
@@ -130,9 +132,10 @@ foi escrita e revista com cuidado, mas fica por confirmar o build real.
 - A reconciliação não deteta movimentos já lançados diretamente no Mapa
   sem terem passado por "Valor Previsto" (equivalente ao
   `filtrar_ja_registados` do script original) - aparecem como "novo".
-- A camada LLM depende de disponibilidade/custos de um provedor externo
-  (HuggingFace Inference); falha de forma controlada (guarda a resposta
-  em bruto) se o LLM não devolver JSON válido.
+- A camada LLM depende de disponibilidade de um provedor externo (Groq
+  por omissão, gratuito; HuggingFace Inference como alternativa se
+  `GROQ_API_KEY` não estiver definido); falha de forma controlada
+  (guarda a resposta em bruto) se o LLM não devolver JSON válido.
 - Deteção de anomalias exige pelo menos 10 movimentos históricos por
   empresa para ativar - contas novas não são avaliadas.
 - Previsão de saldos exige pelo menos 5 pontos de histórico; é
