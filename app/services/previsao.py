@@ -65,10 +65,17 @@ def _prever_suavizacao_exponencial(valores: list, n_futuro: int) -> list:
 
 
 def _prever_arima(valores: list, n_futuro: int) -> list:
-    """ARIMA(1,1,1) - modela autocorrelação e tendência (diferenciação),
-    geralmente mais robusto que regressão linear pura para séries
-    financeiras com ruído dia-a-dia."""
-    modelo = ARIMA(valores, order=(1, 1, 1)).fit()
+    """ARIMA(1,1,1) com drift - modela autocorrelação e tendência
+    (diferenciação), geralmente mais robusto que regressão linear pura
+    para séries financeiras com ruído dia-a-dia.
+
+    trend="t" é essencial aqui: com d=1, uma constante ("c") é eliminada
+    pela própria diferenciação - o statsmodels rejeita-a com erro. Uma
+    tendência linear ("t") tem o efeito equivalente a um termo de "drift"
+    na série diferenciada. Sem isto, a previsão converge quase de
+    imediato para uma linha praticamente constante em vez de continuar
+    a tendência observada."""
+    modelo = ARIMA(valores, order=(1, 1, 1), trend="t").fit()
     return modelo.forecast(n_futuro).tolist()
 
 
