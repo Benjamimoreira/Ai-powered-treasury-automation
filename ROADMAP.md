@@ -63,24 +63,14 @@ eram resolvidos à mão.
 - [x] App Streamlit separado, consome a API via HTTP.
 - [x] Páginas: Visão Geral (KPIs, saldo total, ranking de contas, gráfico de estado, anomalias), Reconciliação, Saldos, Análise de Contas (tendência de saldo + fluxo diário), Ambíguos (com sugestão do LLM e resolução manual).
 
-## Fase 7 — Pipeline AWS de documentos (Textract) ✅
+## Fase 7 — Pipeline AWS de documentos (mudou de repositório) ✅
 
-- [x] `app/services/aws_pipeline.py` — parser determinístico (fornecedor,
-  valor, data, nº documento), testado em `tests/test_aws_pipeline.py`, exposto
-  localmente em `POST /aws/processar-documento`.
-- [x] Infraestrutura SAM (`infra_aws/template.yaml`): S3 (upload) -> Lambda
-  Textract -> Lambda validação (DynamoDB) -> SNS (alerta se
-  `status != processado`) -> API Gateway + Lambda de consulta.
-- [x] Handlers das 3 Lambdas + testes com boto3 mockado
-  (`tests/test_aws_lambda_handlers.py`).
-- [x] Separador "Documentos (AWS)" no dashboard (`dashboard/aws_client.py`) —
-  upload direto para S3 e listagem via API Gateway.
-- [x] **Deploy real confirmado** — stack `tesouraria-documentos` implantada na
-  conta AWS (`eu-west-1`) via `sam build && sam deploy`.
-- **Nota de âmbito**: os extratos bancários reais (fluxo principal do
-  projeto) já chegam estruturados via OneDrive - não passam por este
-  pipeline. Este pipeline fica como peça de portefólio independente,
-  para o caso genérico de digitalizar documentos em papel/imagem por OCR.
+O pipeline serverless de documentos (S3 + Textract + Lambda + DynamoDB +
+SNS + API Gateway) passou a viver como projeto de portefólio
+independente, em repositório próprio: veja
+[treasury-document-processing-aws](https://github.com/Benjamimoreira/treasury-document-processing-aws).
+Não faz parte do fluxo de reconciliação deste projeto (os extratos
+bancários reais já chegam estruturados via OneDrive, sem precisar de OCR).
 
 ## Extra (não estava no roteiro original)
 

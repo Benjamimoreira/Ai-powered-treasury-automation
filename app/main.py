@@ -4,7 +4,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.routers import ambiguos, anomalias, chat, reconciliacao, saldos, sync
-from app.services.aws_pipeline import extrair_dados_do_texto
 
 
 @asynccontextmanager
@@ -36,13 +35,3 @@ app.include_router(chat.router)
 @app.get("/")
 def raiz():
     return {"status": "ok"}
-
-
-@app.post("/aws/processar-documento")
-def processar_documento(texto: str, origem: str = "upload"):
-    """Endpoint de demonstração para o pipeline AWS.
-
-    Recebe texto extraído de um ficheiro e devolve um payload estruturado
-    com fornecedor, valor, data e número de documento.
-    """
-    return extrair_dados_do_texto(texto, origem=origem)
