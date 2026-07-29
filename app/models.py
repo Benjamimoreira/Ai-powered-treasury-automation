@@ -60,6 +60,12 @@ class MovimentoHistoricoOut(BaseModel):
     valor: float
 
 
+class ResumoDiarioOut(BaseModel):
+    dia: date
+    recebimentos: float
+    pagamentos: float
+
+
 class ResolverAmbiguoRequest(BaseModel):
     linha_id: Optional[int] = None
     resolvido_por: str

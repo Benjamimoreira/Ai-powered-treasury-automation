@@ -38,16 +38,18 @@ def previsao_avaliacao(empresa: str, dias_teste: int = 5, db: Session = Depends(
 
 
 @router.get("/saldo-total", response_model=SaldoTotalOut)
-def saldo_total(db: Session = Depends(get_db)):
-    """Soma o último saldo conhecido de cada entidade - visão geral, não
-    de um único dia (nem todos os dias têm leitura de todas as contas)."""
-    return saldo_total_geral(db)
+def saldo_total(dia: Optional[date] = None, db: Session = Depends(get_db)):
+    """Soma o último saldo conhecido de cada entidade até `dia` (ou o mais
+    recente de sempre, sem `dia`) - nem todos os dias têm leitura de todas
+    as contas, por isso não é simplesmente a soma das leituras desse dia."""
+    return saldo_total_geral(db, dia)
 
 
 @router.get("/saldos", response_model=List[SaldoOut])
-def saldos_atuais(db: Session = Depends(get_db)):
-    """Último saldo conhecido de cada entidade - para rankings/gráficos."""
-    return listar_saldos_atuais(db)
+def saldos_atuais(dia: Optional[date] = None, db: Session = Depends(get_db)):
+    """Último saldo conhecido de cada entidade até `dia` (ou o mais recente
+    de sempre, sem `dia`) - para rankings/gráficos."""
+    return listar_saldos_atuais(db, dia)
 
 
 @router.get("/saldos/{empresa}", response_model=List[SaldoOut])

@@ -211,6 +211,24 @@ def listar_movimentos_da_empresa(db: Session, empresa: str):
     ]
 
 
+def resumo_diario(db: Session):
+    """Totais de recebimentos (valor >= 0) e pagamentos (valor < 0, em
+    módulo) por dia, somados por todas as empresas - para o gráfico de
+    fluxo mensal da Visão Geral."""
+    movimentos = db.query(MovimentoBancario).order_by(MovimentoBancario.dia).all()
+    por_dia = {}
+    for m in movimentos:
+        totais = por_dia.setdefault(m.dia, {"recebimentos": 0.0, "pagamentos": 0.0})
+        if m.valor >= 0:
+            totais["recebimentos"] += m.valor
+        else:
+            totais["pagamentos"] += -m.valor
+    return [
+        {"dia": dia, "recebimentos": totais["recebimentos"], "pagamentos": totais["pagamentos"]}
+        for dia, totais in sorted(por_dia.items())
+    ]
+
+
 def auditoria_dia(db: Session, dia) -> dict:
     """Verificação read-only (não grava nada): conta movimentos sem
     correspondência numa linha do mapa (sem_match_fwd) e linhas do mapa

@@ -9,6 +9,7 @@ from app.services.reconciliador import (
     listar_movimentos_do_dia,
     reconciliar_dia,
     resolver_ambiguo,
+    resumo_diario,
 )
 
 DIA = date(2026, 7, 21)
@@ -206,3 +207,23 @@ def test_listar_movimentos_da_empresa_atravessa_dias_e_ignora_forma_legal(db_ses
     assert len(resultado) == 2
     assert resultado[0]["dia"] == "2026-07-20"
     assert resultado[1]["dia"] == "2026-07-21"
+
+
+def test_resumo_diario_soma_recebimentos_e_pagamentos_de_todas_as_empresas(db_session):
+    db_session.add(MovimentoBancario(
+        dia=DIA, empresa="Empresa A", descricao="DEPOSITO", valor=100.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.add(MovimentoBancario(
+        dia=DIA, empresa="Empresa B", descricao="FT 1", valor=-40.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.add(MovimentoBancario(
+        dia=date(2026, 7, 20), empresa="Empresa A", descricao="FT 2", valor=-10.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.commit()
+
+    resultado = resumo_diario(db_session)
+
+    assert resultado == [
+        {"dia": date(2026, 7, 20), "recebimentos": 0.0, "pagamentos": 10.0},
+        {"dia": DIA, "recebimentos": 100.0, "pagamentos": 40.0},
+    ]

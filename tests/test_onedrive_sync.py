@@ -67,6 +67,35 @@ def test_atualizar_dados_recentes_e_idempotente(db_session, monkeypatch, tmp_pat
     assert db_session.query(MovimentoBancario).count() == 1
 
 
+def test_atualizar_dados_recentes_reimporta_saldos_de_ontem(db_session, monkeypatch, tmp_path):
+    """O CGD substitui a pasta do dia anterior pela versão final às 8:30 da
+    manhã seguinte - um saldo já importado (provisório, ex. de uma corrida
+    da tarde anterior) tem de ser substituído pelo valor atual do extrato,
+    não ignorado como "já importado"."""
+    _preparar_pasta_extratos(tmp_path)  # extrato de 21-07, saldo disponível = 90,00
+    monkeypatch.setenv("ONEDRIVE_RAIZ", str(tmp_path))
+
+    class _DataFixaDiaSeguinte(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 7, 22)
+
+    monkeypatch.setattr(onedrive_sync, "date", _DataFixaDiaSeguinte)
+
+    # saldo provisório já importado antes, com um valor diferente do que
+    # está agora no extrato - simula a versão da tarde anterior.
+    db_session.add(SaldoDiario(
+        dia=DIA, entidade="Empresa Teste,LDA", saldo_contabilistico=50.0, saldo_disponivel=10.0,
+    ))
+    db_session.commit()
+
+    resultado = onedrive_sync.atualizar_dados_recentes(db_session, dias_atras=1)
+
+    assert resultado["dias_com_saldos_novos"] == ["2026-07-21"]
+    saldo = db_session.query(SaldoDiario).filter(SaldoDiario.dia == DIA).one()
+    assert saldo.saldo_disponivel == 90.0
+
+
 def test_atualizar_dados_recentes_ignora_dia_sem_pasta(db_session, monkeypatch, tmp_path):
     monkeypatch.setenv("ONEDRIVE_RAIZ", str(tmp_path))
     monkeypatch.setattr(onedrive_sync, "date", _DataFixa)

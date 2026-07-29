@@ -5,13 +5,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models import AuditoriaResponse, MovimentoHistoricoOut, MovimentoStatusOut, ReconciliarResponse
+from app.models import AuditoriaResponse, MovimentoHistoricoOut, MovimentoStatusOut, ReconciliarResponse, ResumoDiarioOut
 from app.services.reconciliador import (
     auditoria_dia,
     listar_empresas,
     listar_movimentos_da_empresa,
     listar_movimentos_do_dia,
     reconciliar_dia,
+    resumo_diario,
 )
 
 router = APIRouter()
@@ -27,6 +28,16 @@ def reconciliar(dia: date, db: Session = Depends(get_db)):
 def auditoria(dia: date, db: Session = Depends(get_db)):
     resultado = auditoria_dia(db, dia)
     return AuditoriaResponse(dia=dia, **resultado)
+
+
+@router.get("/movimentos/resumo-diario", response_model=List[ResumoDiarioOut])
+def movimentos_resumo_diario(db: Session = Depends(get_db)):
+    """Totais de recebimentos/pagamentos por dia, somados por todas as
+    empresas - para o gráfico de fluxo mensal da Visão Geral. Registada
+    antes de /movimentos/{dia} de propósito: sendo os dois de um único
+    segmento, a rota registada primeiro é que ganha (senão "resumo-diario"
+    seria interpretado como uma data e falhava)."""
+    return resumo_diario(db)
 
 
 @router.get("/movimentos/{dia}", response_model=List[MovimentoStatusOut])

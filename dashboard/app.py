@@ -26,6 +26,11 @@ COR_FLUXO_NEGATIVO = "#e34948"
 # Ranking de uma única medida (saldo) por conta - um hue só, não categórico.
 COR_RANKING_SALDO = "#2a78d6"
 
+# Recebimentos/pagamentos do mês - pedido explicitamente verde/vermelho
+# (mesmos tons já usados para positivo/negativo noutro sítio do dashboard).
+COR_RECEBIMENTOS_MES = "#1baf7a"
+COR_PAGAMENTOS_MES = "#e34948"
+
 # Previsão de saldo: histórico + modelos, na ordem de slots categóricos
 # validada (references/palette.md) - garante pares adjacentes seguros
 # para daltonismo.
@@ -86,21 +91,93 @@ with aba_visao_geral:
     except Exception:
         ambiguos_globais = []
 
+    st.markdown("**Extratos do dia**")
+    recebimentos_vg = [m for m in movimentos_vg if m["valor"] > 0]
+    pagamentos_vg = [m for m in movimentos_vg if m["valor"] < 0]
+    total_recebimentos = sum(m["valor"] for m in recebimentos_vg)
+    total_pagamentos = sum(-m["valor"] for m in pagamentos_vg)
+
+    col_receb, col_pag = st.columns(2)
+    col_receb.metric(
+        "Recebimentos do dia", f"{total_recebimentos:,.2f} €",
+        f"{len(recebimentos_vg)} movimento(s)",
+    )
+    col_pag.metric(
+        "Pagamentos do dia", f"{total_pagamentos:,.2f} €",
+        f"{len(pagamentos_vg)} movimento(s)",
+    )
+
+    col_tab_receb, col_tab_pag = st.columns(2)
+    with col_tab_receb:
+        st.caption("Recebimentos")
+        if recebimentos_vg:
+            st.dataframe(
+                pd.DataFrame(recebimentos_vg)[["empresa", "descricao", "valor"]],
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.info("Sem recebimentos neste dia.")
+    with col_tab_pag:
+        st.caption("Pagamentos")
+        if pagamentos_vg:
+            st.dataframe(
+                pd.DataFrame(pagamentos_vg)[["empresa", "descricao", "valor"]],
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.info("Sem pagamentos neste dia.")
+
+    st.markdown("**Recebimentos vs Pagamentos ao longo do mês**")
     try:
-        totais = api.saldo_total()
+        resumo_mensal = api.resumo_diario()
+    except Exception as e:
+        st.error(f"Erro a consultar o resumo diário: {e}")
+        resumo_mensal = []
+
+    if resumo_mensal:
+        df_mensal = pd.DataFrame(resumo_mensal)
+        df_mensal_longo = df_mensal.melt(
+            id_vars=["dia"], value_vars=["recebimentos", "pagamentos"],
+            var_name="tipo", value_name="valor",
+        )
+        df_mensal_longo["tipo"] = df_mensal_longo["tipo"].map({
+            "recebimentos": "Recebimentos", "pagamentos": "Pagamentos",
+        })
+        cores_mensal = {"Recebimentos": COR_RECEBIMENTOS_MES, "Pagamentos": COR_PAGAMENTOS_MES}
+        grafico_mensal = alt.Chart(df_mensal_longo).mark_line(point=True, strokeWidth=2).encode(
+            x=alt.X("dia:T", title=None),
+            y=alt.Y("valor:Q", title="EUR"),
+            color=alt.Color(
+                "tipo:N",
+                scale=alt.Scale(domain=list(cores_mensal.keys()), range=list(cores_mensal.values())),
+                legend=alt.Legend(title=None),
+            ),
+            tooltip=["dia:T", "tipo:N", "valor:Q"],
+        ).properties(height=300)
+        st.altair_chart(grafico_mensal, use_container_width=True)
+    else:
+        st.info("Sem movimentos importados para desenhar o gráfico mensal.")
+
+    st.divider()
+
+    try:
+        totais = api.saldo_total(dia_vg_str)
     except Exception as e:
         st.error(f"Erro a consultar saldo total: {e}")
         totais = None
 
     if totais:
-        st.markdown("**Saldo contabilístico geral** (última leitura conhecida de cada conta)")
+        st.markdown(
+            f"**Saldo contabilístico geral** (última leitura conhecida de "
+            f"cada conta até {dia_vg_str})"
+        )
         col_a, col_b, col_c = st.columns(3)
         col_a.metric("Saldo contabilístico total", f"{totais['saldo_contabilistico_total']:,.2f} €")
         col_b.metric("Saldo disponível total", f"{totais['saldo_disponivel_total']:,.2f} €")
         col_c.metric("Contas incluídas", totais["entidades"])
 
         try:
-            saldos_atuais = api.listar_saldos_atuais()
+            saldos_atuais = api.listar_saldos_atuais(dia_vg_str)
         except Exception:
             saldos_atuais = []
 
@@ -228,6 +305,42 @@ with aba_saldos:
                     st.warning("Nenhum saldo encontrado para essa empresa/dia.")
             except Exception as e:
                 st.error(f"Erro: {e}")
+
+            st.markdown("**Variação do saldo ao longo do mês**")
+            try:
+                saldos_mes = api.consultar_saldo(empresa)
+            except Exception as e:
+                st.error(f"Erro a consultar o histórico do mês: {e}")
+                saldos_mes = []
+
+            if saldos_mes:
+                df_saldos_mes = pd.DataFrame(saldos_mes).sort_values("dia")
+                df_saldos_mes_longo = df_saldos_mes.melt(
+                    id_vars=["dia"],
+                    value_vars=["saldo_contabilistico", "saldo_disponivel"],
+                    var_name="tipo", value_name="valor",
+                )
+                df_saldos_mes_longo["tipo"] = df_saldos_mes_longo["tipo"].map({
+                    "saldo_contabilistico": "Saldo contabilístico",
+                    "saldo_disponivel": "Saldo disponível",
+                })
+                cores_saldo_mes = {
+                    "Saldo contabilístico": COR_SALDO_CONTABILISTICO,
+                    "Saldo disponível": COR_SALDO_DISPONIVEL,
+                }
+                grafico_saldo_mes = alt.Chart(df_saldos_mes_longo).mark_line(point=True, strokeWidth=2).encode(
+                    x=alt.X("dia:T", title=None),
+                    y=alt.Y("valor:Q", title="EUR"),
+                    color=alt.Color(
+                        "tipo:N",
+                        scale=alt.Scale(domain=list(cores_saldo_mes.keys()), range=list(cores_saldo_mes.values())),
+                        legend=alt.Legend(title=None),
+                    ),
+                    tooltip=["dia:T", "tipo:N", "valor:Q"],
+                ).properties(height=300)
+                st.altair_chart(grafico_saldo_mes, use_container_width=True)
+            else:
+                st.info("Sem histórico do mês para esta empresa.")
 
 with aba_contas:
     st.subheader("Análise de uma conta")

@@ -52,10 +52,22 @@ def atualizar_dados_recentes(db: Session, dias_atras: int = 7) -> dict:
     """Percorre os últimos `dias_atras` dias (incluindo hoje) e importa,
     para cada um, os dados que ainda não existem localmente: movimentos
     bancários, linhas do mapa e saldos. Dias já importados são ignorados -
-    seguro chamar repetidamente (ex. a partir de um botão no dashboard)."""
+    seguro chamar repetidamente (ex. a partir de um botão no dashboard).
+
+    Exceção: os SALDOS de ontem são sempre re-sincronizados (apagados e
+    reimportados), mesmo que já existam. Confirmado em 28/07/2026: o CGD
+    publica os extratos em duas fases - às 14:00 uma versão PROVISÓRIA do
+    dia a decorrer, e só na manhã seguinte (8:30) é que a pasta inteira é
+    SUBSTITUÍDA pela versão final/fechada (ex.: saldo disponível da HCN
+    passou de 57.089,68 € para 202.354,33 € nessa troca - um depósito que
+    esteve em cobrança até compensar). Sem isto, um dia importado à tarde
+    (provisório) nunca mais era corrigido, mesmo depois de a versão final
+    chegar. Não se aplica a movimentos/mapa - esses têm reconciliações e
+    resoluções manuais associadas que este refresh automático destruiria."""
     _onedrive_raiz()  # falha cedo e com mensagem clara se não estiver configurado
 
     hoje = date.today()
+    ontem = hoje - timedelta(days=1)
     dias_com_movimentos_novos = []
     dias_com_saldos_novos = []
     dias_com_mapa_novo = []
@@ -76,6 +88,9 @@ def atualizar_dados_recentes(db: Session, dias_atras: int = 7) -> dict:
                 dias_com_movimentos_novos.append(dia.isoformat())
             except Exception as e:
                 erros.append(f"movimentos {dia.isoformat()}: {e}")
+
+        if dia == ontem:
+            db.query(SaldoDiario).filter(SaldoDiario.dia == dia).delete()
 
         se_ja_tem_saldos = db.query(SaldoDiario).filter(SaldoDiario.dia == dia).first()
         if not se_ja_tem_saldos:

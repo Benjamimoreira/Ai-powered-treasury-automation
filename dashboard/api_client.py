@@ -40,14 +40,16 @@ def consultar_saldo(empresa: str, dia: Optional[str] = None) -> list:
     return r.json()
 
 
-def saldo_total() -> dict:
-    r = requests.get(f"{API_BASE_URL}/saldo-total")
+def saldo_total(dia: Optional[str] = None) -> dict:
+    params = {"dia": dia} if dia else {}
+    r = requests.get(f"{API_BASE_URL}/saldo-total", params=params)
     r.raise_for_status()
     return r.json()
 
 
-def listar_saldos_atuais() -> list:
-    r = requests.get(f"{API_BASE_URL}/saldos")
+def listar_saldos_atuais(dia: Optional[str] = None) -> list:
+    params = {"dia": dia} if dia else {}
+    r = requests.get(f"{API_BASE_URL}/saldos", params=params)
     r.raise_for_status()
     return r.json()
 
@@ -60,6 +62,12 @@ def listar_empresas() -> list:
 
 def historico_movimentos(empresa: str) -> list:
     r = requests.get(f"{API_BASE_URL}/movimentos/empresa/{empresa}")
+    r.raise_for_status()
+    return r.json()
+
+
+def resumo_diario() -> list:
+    r = requests.get(f"{API_BASE_URL}/movimentos/resumo-diario")
     r.raise_for_status()
     return r.json()
 

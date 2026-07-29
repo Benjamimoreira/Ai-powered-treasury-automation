@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request
+from huggingface_hub.errors import HfHubHTTPError
 
 from app.models import ChatRequest, ChatResponse
 from app.services.chatbot import criar_agent, perguntar
@@ -35,7 +36,20 @@ async def chat(pedido: ChatRequest, request: Request):
         agent = await obter_agent(request)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    return await perguntar(agent, pedido.pergunta)
+
+    try:
+        return await perguntar(agent, pedido.pergunta)
+    except HfHubHTTPError as e:
+        status = e.response.status_code if e.response is not None else None
+        if status == 429:
+            raise HTTPException(
+                status_code=503,
+                detail="O assistente atingiu o limite de pedidos do provedor de LLM "
+                       "gratuito (Groq) - espera um pouco e tenta outra vez.",
+            ) from e
+        raise HTTPException(
+            status_code=503, detail=f"O provedor de LLM falhou ao responder: {e}",
+        ) from e
 
 
 @router.post("/chat/reset")
