@@ -1,4 +1,4 @@
-# API de Reconciliação de Tesouraria
+# Plataforma de Análise de Tesouraria
 
 Serviço de reconciliação bancária — casa movimentos de extratos CGD com
 linhas de um Mapa de Pagamentos e Recebimentos, com uma camada de
@@ -59,13 +59,15 @@ camadas com responsabilidades claras:
 | **Sincronização** | Importa do OneDrive (só leitura) os dias ainda não existentes localmente - sob pedido (botão) ou script. |
 | **MCP** | As mesmas operações expostas como *tools* para um agente LLM chamar diretamente. |
 | **Assistente (chat)** | Separador no dashboard que conversa sobre os dados reais via MCP (só ferramentas de leitura) - nunca reconcilia nem resolve nada sozinho. |
-| **Dashboard** | Streamlit: visão geral com KPIs e gráficos, análise por conta, saldos, ambíguos, assistente. |
+| **Dashboard** | Streamlit: visão geral com KPIs e gráficos, análise por conta, saldos, ambíguos, assistente, documentos (AWS). |
+| **Pipeline AWS de documentos** | Serverless (S3 + Textract + Lambda + DynamoDB + SNS + API Gateway) para digitalizar/estruturar documentos por OCR. Peça de portefólio à parte - ver nota abaixo. |
 
 ## Stack
 
 FastAPI · SQLAlchemy (SQLite local / Postgres em Docker) · Pydantic ·
 sentence-transformers · Groq / HuggingFace Inference (LLM) · scikit-learn ·
-statsmodels · MCP SDK · Streamlit · pytest · Docker · GitHub Actions
+statsmodels · MCP SDK · Streamlit · pytest · Docker · GitHub Actions · AWS SAM
+(S3, Lambda, Textract, DynamoDB, SNS, API Gateway) · boto3
 
 ## Estrutura do projeto
 
@@ -83,7 +85,8 @@ dashboard/
   api_client.py                # cliente HTTP fino - o dashboard nunca acede à BD diretamente
 mcp_server.py                # servidor MCP (tools)
 scripts/                     # scripts de migração/importação únicos + testes manuais
-tests/                       # suite pytest (48 testes)
+tests/                       # suite pytest (75 testes)
+infra_aws/                   # infraestrutura AWS SAM do pipeline de documentos (ver secção própria)
 Dockerfile · docker-compose.yml · .github/workflows/ci.yml
 ```
 
@@ -126,6 +129,37 @@ docker compose up --build
 Sobe a API + Postgres. **Nota**: não testado de facto nesta máquina de
 desenvolvimento (Docker Desktop sem WSL2 disponível) - a configuração
 foi escrita e revista com cuidado, mas fica por confirmar o build real.
+
+## Pipeline AWS de documentos (Textract)
+
+Além do fluxo principal (extratos CGD já estruturados, sincronizados do
+OneDrive), o projeto inclui uma segunda peça de portefólio, separada:
+um pipeline serverless na AWS para digitalizar documentos por OCR.
+
+```
+Upload (dashboard ou pasta)
+  → S3 (bucket "raw")
+  → Lambda #1 (Textract - OCR)
+  → Lambda #2 (valida/estrutura, reaproveita app/services/aws_pipeline.py)
+  → DynamoDB
+       → SNS (alerta por email se o documento não ficar bem extraído)
+  → API Gateway + Lambda #3 (consulta)
+  → Dashboard (separador "Documentos (AWS)")
+```
+
+**Nota importante sobre o âmbito:** os extratos bancários usados na
+reconciliação (o fluxo principal deste projeto) já chegam estruturados
+(via OneDrive) - não precisam de OCR. Este pipeline Textract não faz
+parte desse fluxo de reconciliação; existe como demonstração autónoma de
+arquitetura serverless AWS (S3, Lambda, Textract, DynamoDB, SNS, API
+Gateway, IAM, SAM) para o caso genérico de digitalizar documentos em
+papel/imagem (ex: faturas de fornecedores recebidas por email/scan) que
+ainda não estejam em formato estruturado.
+
+Infraestrutura, código das 3 Lambdas e instruções de deploy em
+[`infra_aws/`](infra_aws/README.md) (AWS SAM - `sam build && sam deploy
+--guided`). Testado com 8 testes unitários (`tests/test_aws_lambda_handlers.py`)
+com boto3 completamente mockado, sem custos nem chamadas reais à AWS.
 
 ## Limitações conhecidas
 

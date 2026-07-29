@@ -7,3 +7,7 @@ backups_onedrive/
 *.db
 .pytest_cache/
 *.log
+
+# AWS SAM - artefactos de build e config local (contém o email de alerta)
+infra_aws/.aws-sam/
+infra_aws/samconfig.toml

@@ -13,3 +13,4 @@ python-dotenv
 streamlit
 scikit-learn
 statsmodels
+boto3

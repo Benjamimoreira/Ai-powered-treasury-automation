@@ -1,0 +1,168 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Pipeline de ingestão de faturas/extratos: upload para S3 -> Textract (OCR)
+  -> validação/estruturação -> DynamoDB -> alerta SNS em caso de anomalia ->
+  consulta via API Gateway. Ver README.md nesta pasta para instruções de deploy.
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: >
+      Email para receber alertas SNS quando um documento não é extraído/validado
+      corretamente. Deixar em branco para não criar subscrição (podes assinar o
+      tópico manualmente mais tarde).
+
+Conditions:
+  TemEmailDeAlerta: !Not [!Equals [!Ref AlertEmail, ""]]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    MemorySize: 256
+    Tracing: Active
+
+Resources:
+  RawBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "tesouraria-documentos-raw-${AWS::AccountId}-${AWS::Region}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  DocumentosTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: TesourariaDocumentos
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: tesouraria-documentos-alertas
+
+  AlertsSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: TemEmailDeAlerta
+    Properties:
+      TopicArn: !Ref AlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  ValidarFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: tesouraria-validar-documento
+      Description: >
+        Lambda #2 - valida/estrutura o texto extraído pelo Textract e grava em
+        DynamoDB. Reaproveita app/services/aws_pipeline.extrair_dados_do_texto
+        (mesma função usada pela API FastAPI local) - CodeUri aponta para
+        app/services/ para não duplicar essa lógica.
+      CodeUri: ../app/services/
+      Handler: aws_pipeline_lambda.handler
+      Timeout: 15
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref DocumentosTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt AlertsTopic.TopicName
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DocumentosTable
+          SNS_TOPIC_ARN: !Ref AlertsTopic
+
+  TextractFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: tesouraria-textract-documento
+      Description: >
+        Lambda #1 - disparada por upload em s3://.../uploads/, chama o Textract
+        e invoca a ValidarFunction com o texto extraído.
+      CodeUri: lambdas/textract_handler/
+      Handler: app.handler
+      Timeout: 60
+      Policies:
+        # Referenciamos o nome do bucket por string fixa (não !Ref RawBucket)
+        # de propósito: como o bucket também depende desta função (evento S3),
+        # uma referência direta aqui fecharia um ciclo Role -> Bucket -> Permission
+        # -> Function -> Role, que o CloudFormation rejeita.
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "arn:aws:s3:::tesouraria-documentos-raw-${AWS::AccountId}-${AWS::Region}/*"
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ValidarFunction
+        - Statement:
+            - Effect: Allow
+              Action:
+                - textract:DetectDocumentText
+                - textract:AnalyzeDocument
+              Resource: "*"
+      Environment:
+        Variables:
+          VALIDAR_FUNCTION_NAME: !Ref ValidarFunction
+      Events:
+        UploadEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref RawBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: uploads/
+
+  ConsultaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: tesouraria-consultar-documentos
+      Description: >
+        Lambda #3 - endpoint HTTP (API Gateway) para consultar os documentos
+        estruturados guardados no DynamoDB.
+      CodeUri: lambdas/consulta_handler/
+      Handler: app.handler
+      Timeout: 10
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref DocumentosTable
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DocumentosTable
+      Events:
+        ListarDocumentos:
+          Type: Api
+          Properties:
+            Path: /documentos
+            Method: GET
+        ConsultarDocumento:
+          Type: Api
+          Properties:
+            Path: /documentos/{id}
+            Method: GET
+
+Outputs:
+  ApiUrl:
+    Description: URL base da API (usar em AWS_API_URL no dashboard)
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+  RawBucketName:
+    Description: Bucket S3 onde fazer upload das faturas/extratos (prefixo uploads/)
+    Value: !Ref RawBucket
+  DocumentosTableName:
+    Value: !Ref DocumentosTable
+  AlertsTopicArn:
+    Value: !Ref AlertsTopic

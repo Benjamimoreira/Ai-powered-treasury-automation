@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 
 import api_client as api
+import aws_client
 
 # Paleta de estado validada (skill de dataviz - references/palette.md):
 # bom/fechado = verde, precisa de decisão humana = amarelo, informativo = azul,
@@ -43,8 +44,8 @@ CORES_PREVISAO = {
     "Markov-switching": "#008300",
 }
 
-st.set_page_config(page_title="Tesouraria - Dashboard", page_icon="💶", layout="wide")
-st.title("Dashboard de Tesouraria")
+st.set_page_config(page_title="Plataforma de Análise de Tesouraria", page_icon="💶", layout="wide")
+st.title("Plataforma de Análise de Tesouraria")
 
 col_titulo, col_botao = st.columns([4, 1])
 with col_botao:
@@ -71,9 +72,13 @@ with col_botao:
             except Exception as e:
                 st.error(f"Erro: {e}")
 
-aba_visao_geral, aba_reconciliacao, aba_saldos, aba_contas, aba_ambiguos, aba_assistente = st.tabs(
-    ["Visão Geral", "Reconciliação", "Saldos", "Análise de Contas", "Ambíguos", "Assistente"]
-)
+(
+    aba_visao_geral, aba_reconciliacao, aba_saldos, aba_contas, aba_ambiguos,
+    aba_documentos, aba_assistente,
+) = st.tabs([
+    "Visão Geral", "Reconciliação", "Saldos", "Análise de Contas", "Ambíguos",
+    "Documentos (AWS)", "Assistente",
+])
 
 with aba_visao_geral:
     st.subheader("Visão geral do dia")
@@ -97,7 +102,17 @@ with aba_visao_geral:
     total_recebimentos = sum(m["valor"] for m in recebimentos_vg)
     total_pagamentos = sum(-m["valor"] for m in pagamentos_vg)
 
-    col_receb, col_pag = st.columns(2)
+    try:
+        resumo_mensal = api.resumo_diario()
+    except Exception as e:
+        st.error(f"Erro a consultar o resumo diário: {e}")
+        resumo_mensal = []
+
+    balanco_ate_ao_dia = sum(
+        r["recebimentos"] - r["pagamentos"] for r in resumo_mensal if r["dia"] <= dia_vg_str
+    )
+
+    col_receb, col_pag, col_balanco = st.columns(3)
     col_receb.metric(
         "Recebimentos do dia", f"{total_recebimentos:,.2f} €",
         f"{len(recebimentos_vg)} movimento(s)",
@@ -106,6 +121,7 @@ with aba_visao_geral:
         "Pagamentos do dia", f"{total_pagamentos:,.2f} €",
         f"{len(pagamentos_vg)} movimento(s)",
     )
+    col_balanco.metric("Balanço até ao dia", f"{balanco_ate_ao_dia:,.2f} €")
 
     col_tab_receb, col_tab_pag = st.columns(2)
     with col_tab_receb:
@@ -128,12 +144,6 @@ with aba_visao_geral:
             st.info("Sem pagamentos neste dia.")
 
     st.markdown("**Recebimentos vs Pagamentos ao longo do mês**")
-    try:
-        resumo_mensal = api.resumo_diario()
-    except Exception as e:
-        st.error(f"Erro a consultar o resumo diário: {e}")
-        resumo_mensal = []
-
     if resumo_mensal:
         df_mensal = pd.DataFrame(resumo_mensal)
         df_mensal_longo = df_mensal.melt(
@@ -549,6 +559,49 @@ with aba_ambiguos:
                         st.rerun()
                     except Exception as e:
                         st.error(f"Erro: {e}")
+
+with aba_documentos:
+    st.subheader("Documentos processados (pipeline AWS)")
+    st.caption(
+        "Upload -> S3 -> Textract (OCR) -> validação -> DynamoDB, com alerta por "
+        "email quando um documento não fica corretamente extraído. Ver infra_aws/README.md."
+    )
+
+    if not aws_client.pipeline_configurado():
+        st.info(
+            "Pipeline AWS não configurado neste ambiente. Define AWS_API_URL e "
+            "AWS_RAW_BUCKET (outputs do `sam deploy`, ver infra_aws/README.md) "
+            "para ativar este separador."
+        )
+    else:
+        ficheiro = st.file_uploader("Carregar fatura/extrato", type=["pdf", "png", "jpg", "jpeg"])
+        if ficheiro is not None and st.button("Enviar para o pipeline AWS"):
+            try:
+                chave = aws_client.enviar_documento(ficheiro.name, ficheiro.getvalue())
+                st.success(f"Enviado ({chave}). O processamento demora alguns segundos - atualiza a lista abaixo.")
+            except Exception as e:
+                st.error(f"Erro a enviar para o S3: {e}")
+
+        filtro_estado = st.selectbox(
+            "Filtrar por estado", ["Todos", "processado", "invalido", "erro_extracao"],
+        )
+        st.button("Atualizar lista")
+
+        try:
+            documentos = aws_client.listar_documentos(
+                None if filtro_estado == "Todos" else filtro_estado
+            )
+        except Exception as e:
+            st.error(f"Erro a consultar a API AWS: {e}")
+            documentos = []
+
+        if documentos:
+            colunas = ["s3_key", "fornecedor", "numero_documento", "data", "valor", "status", "criado_em"]
+            df_documentos = pd.DataFrame(documentos)
+            colunas_existentes = [c for c in colunas if c in df_documentos.columns]
+            st.dataframe(df_documentos[colunas_existentes], use_container_width=True, hide_index=True)
+        else:
+            st.info("Sem documentos processados ainda.")
 
 with aba_assistente:
     st.subheader("Assistente")

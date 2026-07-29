@@ -1,4 +1,4 @@
-# Roteiro — API de Reconciliação de Tesouraria
+# Roteiro — Plataforma de Análise de Tesouraria
 
 Projeto para transformar os scripts `preencher_mapa.py` /
 `atualizar_mapa_saldos.py` (protótipo original, pasta `tesouraria
@@ -62,6 +62,25 @@ eram resolvidos à mão.
 
 - [x] App Streamlit separado, consome a API via HTTP.
 - [x] Páginas: Visão Geral (KPIs, saldo total, ranking de contas, gráfico de estado, anomalias), Reconciliação, Saldos, Análise de Contas (tendência de saldo + fluxo diário), Ambíguos (com sugestão do LLM e resolução manual).
+
+## Fase 7 — Pipeline AWS de documentos (Textract) ✅
+
+- [x] `app/services/aws_pipeline.py` — parser determinístico (fornecedor,
+  valor, data, nº documento), testado em `tests/test_aws_pipeline.py`, exposto
+  localmente em `POST /aws/processar-documento`.
+- [x] Infraestrutura SAM (`infra_aws/template.yaml`): S3 (upload) -> Lambda
+  Textract -> Lambda validação (DynamoDB) -> SNS (alerta se
+  `status != processado`) -> API Gateway + Lambda de consulta.
+- [x] Handlers das 3 Lambdas + testes com boto3 mockado
+  (`tests/test_aws_lambda_handlers.py`).
+- [x] Separador "Documentos (AWS)" no dashboard (`dashboard/aws_client.py`) —
+  upload direto para S3 e listagem via API Gateway.
+- [x] **Deploy real confirmado** — stack `tesouraria-documentos` implantada na
+  conta AWS (`eu-west-1`) via `sam build && sam deploy`.
+- **Nota de âmbito**: os extratos bancários reais (fluxo principal do
+  projeto) já chegam estruturados via OneDrive - não passam por este
+  pipeline. Este pipeline fica como peça de portefólio independente,
+  para o caso genérico de digitalizar documentos em papel/imagem por OCR.
 
 ## Extra (não estava no roteiro original)
 
