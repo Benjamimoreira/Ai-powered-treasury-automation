@@ -1,11 +1,11 @@
 # Este repositório reúne dois projetos de portefólio
 
-1. **[Plataforma de Análise de Tesouraria](#plataforma-de-análise-de-tesouraria)** — API FastAPI de reconciliação bancária, LLM+RAG, ML e dashboard Streamlit.
-2. **[Pipeline AWS de Documentos (Serverless OCR)](#pipeline-aws-de-documentos-serverless-ocr)** — S3 + Textract + Lambda + DynamoDB + SNS + API Gateway, projeto independente do primeiro.
+1. **[AI-Powered Treasury Automation (FastAPI, RAG, MCP)](#ai-powered-treasury-automation-fastapi-rag-mcp)** — API FastAPI de reconciliação bancária, LLM+RAG, ML e dashboard Streamlit.
+2. **[Treasury Document Processing on AWS (Textract + Lambda + DynamoDB)](#treasury-document-processing-on-aws-textract--lambda--dynamodb)** — S3 + Textract + Lambda + DynamoDB + SNS + API Gateway, projeto independente do primeiro.
 
 ---
 
-# Plataforma de Análise de Tesouraria
+# AI-Powered Treasury Automation (FastAPI, RAG, MCP)
 
 Serviço de reconciliação bancária — casa movimentos de extratos CGD com
 linhas de um Mapa de Pagamentos e Recebimentos, com uma camada de
@@ -159,7 +159,7 @@ que já está feito e o que falta.
 
 ---
 
-# Pipeline AWS de Documentos (Serverless OCR)
+# Treasury Document Processing on AWS (Textract + Lambda + DynamoDB)
 
 Arquitetura serverless na AWS para digitalizar e estruturar documentos
 por OCR: upload → extração de texto (Textract) → validação/estruturação
