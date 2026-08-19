@@ -10,4 +10,4 @@ from app.db.session import Base, engine
 
 if __name__ == "__main__":
     Base.metadata.create_all(bind=engine)
-    print("Tabelas criadas em api_tesouraria.db.")
+    print(f"Tabelas criadas em {engine.url.render_as_string(hide_password=True)}.")
