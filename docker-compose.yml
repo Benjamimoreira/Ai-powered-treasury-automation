@@ -69,6 +69,8 @@ services:
   # (volume "logs_archive"), pronto a ser copiado/enviado para outra máquina.
   log-archiver:
     build: ./docker/log-archiver
+    environment:
+      TZ: Europe/Lisbon
     volumes:
       - logs:/logs-app:ro
       - "${SCRIPTS_LOG_DIR}:/logs-scripts:ro"
