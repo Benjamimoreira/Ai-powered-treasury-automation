@@ -6,6 +6,7 @@ __pycache__/
 backups_onedrive/
 .env
 *.db
+*.db-journal
 .pytest_cache/
 *.log
 desktop.ini

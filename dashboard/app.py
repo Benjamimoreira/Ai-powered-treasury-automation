@@ -461,6 +461,16 @@ with aba_monitorizacao:
         if scripts:
             df_scripts = pd.DataFrame(scripts)
             df_scripts["status_badge"] = df_scripts["status"].map({"ok": "✅ OK", "erro": "❌ Erro", "warning": "⚠️ Aviso"})
+            if "atrasado" in df_scripts.columns:
+                atrasados_mask = df_scripts["atrasado"].fillna(False)
+                df_scripts.loc[atrasados_mask, "status_badge"] = (
+                    "⏰ Atrasado (esperado " + df_scripts.loc[atrasados_mask, "hora_em_falta"] + ")"
+                )
+                nomes_atrasados = df_scripts.loc[atrasados_mask, "nome"].tolist()
+                if nomes_atrasados:
+                    st.warning(
+                        f"⏰ Script(s) sem execução reportada dentro da hora esperada: {', '.join(nomes_atrasados)}."
+                    )
             st.dataframe(
                 df_scripts[["nome", "descricao", "hora_execucao", "status_badge", "ultima_execucao", "ultima_erro"]],
                 use_container_width=True,

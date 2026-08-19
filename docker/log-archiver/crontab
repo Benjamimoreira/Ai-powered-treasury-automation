@@ -1,0 +1,3 @@
+# Corre todas as horas (agrupa incrementalmente o dia atual) e fecha/compacta
+# o dia anterior; o resultado final do dia fica pronto pouco depois da meia-noite.
+0 * * * * /usr/local/bin/archive-logs.sh >> /archive/cron.log 2>&1

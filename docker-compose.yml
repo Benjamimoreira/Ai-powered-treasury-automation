@@ -54,6 +54,28 @@ services:
     environment:
       DOZZLE_LEVEL: info
 
+  # Lê os .log dos scripts agendados que correm fora do Docker (pasta
+  # SCRIPTS_LOG_DIR no .env) e escreve-os no stdout deste container, para
+  # aparecerem no Dozzle (log-viewer) junto dos logs da api/dashboard.
+  scripts-log:
+    image: busybox
+    volumes:
+      - "${SCRIPTS_LOG_DIR}:/logs:ro"
+    command: sh -c "tail -F /logs/*.log"
+    restart: unless-stopped
+
+  # Junta diariamente os logs da api/dashboard e dos scripts agendados,
+  # separa as linhas de erro e guarda tudo compactado por dia em /archive
+  # (volume "logs_archive"), pronto a ser copiado/enviado para outra máquina.
+  log-archiver:
+    build: ./docker/log-archiver
+    volumes:
+      - logs:/logs-app:ro
+      - "${SCRIPTS_LOG_DIR}:/logs-scripts:ro"
+      - logs_archive:/archive
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   logs:
+  logs_archive:

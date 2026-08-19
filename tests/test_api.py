@@ -147,3 +147,30 @@ def test_monitorizacao_regista_execucao_e_log_erro(client):
         item["script"] == "preencher_mapa" and item["nivel"] == "erro"
         for item in logs.json()["logs"]
     )
+
+
+def test_monitorizacao_sinaliza_script_atrasado():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from app.services.monitorizacao import _verificar_atraso
+
+    # 15 min depois das 12:50 - dentro da tolerância (20 min), ainda não conta como atrasado
+    agora_dentro_tolerancia = datetime(2026, 8, 19, 13, 5, tzinfo=ZoneInfo("Europe/Lisbon"))
+    atraso = _verificar_atraso("08:50, 12:50, 14:10", "2026-08-19T07:55:00Z", agora=agora_dentro_tolerancia)
+    assert atraso == {"atrasado": False, "hora_em_falta": None}
+
+    agora = datetime(2026, 8, 19, 13, 15, tzinfo=ZoneInfo("Europe/Lisbon"))
+
+    # 12:50 já passou há mais do que a tolerância e não há execução -> atrasado
+    atraso = _verificar_atraso("08:50, 12:50, 14:10", None, agora=agora)
+    assert atraso == {"atrasado": True, "hora_em_falta": "12:50"}
+
+    # execução registada depois do último horário devido -> não atrasado
+    atraso = _verificar_atraso("08:50, 12:50, 14:10", "2026-08-19T11:55:00Z", agora=agora)
+    assert atraso == {"atrasado": False, "hora_em_falta": None}
+
+    # nenhum horário de hoje ainda passou (tolerância incluída) -> não atrasado
+    cedo = datetime(2026, 8, 19, 8, 0, tzinfo=ZoneInfo("Europe/Lisbon"))
+    atraso = _verificar_atraso("08:50, 12:50, 14:10", None, agora=cedo)
+    assert atraso == {"atrasado": False, "hora_em_falta": None}
