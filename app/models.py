@@ -116,6 +116,19 @@ class PrevisaoSaldoOut(BaseModel):
     previsao: Dict[str, List[PontoSerieOut]]
 
 
+class PontoCashflowOut(BaseModel):
+    dia: str
+    recebimentos: float
+    pagamentos: float
+    liquido: float
+
+
+class PrevisaoCashflowOut(BaseModel):
+    historico: List[PontoCashflowOut]
+    previsao: Dict[str, List[PontoSerieOut]]
+    importancia_features: Optional[Dict[str, float]] = None
+
+
 class AvaliacaoModelosOut(BaseModel):
     dias_teste: int
     rmse_por_modelo: Dict[str, float]

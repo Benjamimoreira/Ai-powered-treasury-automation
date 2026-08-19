@@ -110,3 +110,40 @@ def test_saldos_consulta_por_empresa(client, db_session):
     corpo = resposta.json()
     assert len(corpo) == 1
     assert corpo[0]["saldo_contabilistico"] == 1234.56
+
+
+def test_monitorizacao_lista_scripts_e_horas(client):
+    resposta = client.get("/monitorizacao/scripts")
+
+    assert resposta.status_code == 200
+    corpo = resposta.json()
+    nomes = {item["nome"] for item in corpo["scripts"]}
+    assert {
+        "preencher_mapa",
+        "atualizar_mapa_saldos",
+        "enviar_mapa_smtp",
+    }.issubset(nomes)
+    assert all("hora_execucao" in item for item in corpo["scripts"])
+
+
+def test_monitorizacao_regista_execucao_e_log_erro(client):
+    resposta = client.post(
+        "/monitorizacao/scripts/preencher_mapa/executar",
+        json={
+            "status": "erro",
+            "erro": "Falha ao preencher mapa",
+            "log": ["iniciou", "erro ao abrir XLSX"],
+            "duracao_segundos": 12.5,
+        },
+    )
+
+    assert resposta.status_code == 200
+    assert resposta.json()["status"] == "erro"
+    assert resposta.json()["ultima_erro"] == "Falha ao preencher mapa"
+
+    logs = client.get("/monitorizacao/logs")
+    assert logs.status_code == 200
+    assert any(
+        item["script"] == "preencher_mapa" and item["nivel"] == "erro"
+        for item in logs.json()["logs"]
+    )

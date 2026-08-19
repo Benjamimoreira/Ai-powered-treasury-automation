@@ -15,6 +15,12 @@ def atualizar_dados(dias_atras: int = 7) -> dict:
     return r.json()
 
 
+def atualizar_dados_do_dia(dia: str) -> dict:
+    r = requests.post(f"{API_BASE_URL}/atualizar-dados/{dia}", timeout=60)
+    r.raise_for_status()
+    return r.json()
+
+
 def reconciliar_dia(dia: str) -> dict:
     r = requests.post(f"{API_BASE_URL}/reconciliar/{dia}")
     r.raise_for_status()
@@ -84,6 +90,22 @@ def avaliar_previsao(empresa: str, dias_teste: int = 5) -> dict:
     return r.json()
 
 
+def previsao_cashflow(empresa: Optional[str] = None, dias: int = 7) -> dict:
+    url = f"{API_BASE_URL}/previsao/cashflow/{empresa}" if empresa else f"{API_BASE_URL}/previsao/cashflow"
+    r = requests.get(url, params={"dias": dias})
+    r.raise_for_status()
+    return r.json()
+
+
+def avaliar_previsao_cashflow(empresa: Optional[str] = None, dias_teste: int = 5) -> dict:
+    params = {"dias_teste": dias_teste}
+    if empresa:
+        params["empresa"] = empresa
+    r = requests.get(f"{API_BASE_URL}/previsao/cashflow-avaliacao", params=params)
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_anomalias(dia: str) -> list:
     r = requests.get(f"{API_BASE_URL}/anomalias/{dia}")
     r.raise_for_status()
@@ -104,6 +126,33 @@ def reiniciar_chat() -> dict:
 
 def listar_ambiguos() -> list:
     r = requests.get(f"{API_BASE_URL}/ambiguos")
+    r.raise_for_status()
+    return r.json()
+
+
+def listar_monitorizacao_scripts() -> dict:
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/scripts")
+    r.raise_for_status()
+    return r.json()
+
+
+def listar_monitorizacao_logs(limit: int = 50) -> dict:
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/logs", params={"limit": limit})
+    r.raise_for_status()
+    return r.json()
+
+
+def registrar_execucao_script(script: str, status: str, erro: Optional[str] = None, log: Optional[list] = None, duracao_segundos: Optional[float] = None) -> dict:
+    r = requests.post(
+        f"{API_BASE_URL}/monitorizacao/scripts/{script}/executar",
+        json={
+            "status": status,
+            "erro": erro,
+            "log": log or [],
+            "duracao_segundos": duracao_segundos,
+        },
+        timeout=120,
+    )
     r.raise_for_status()
     return r.json()
 

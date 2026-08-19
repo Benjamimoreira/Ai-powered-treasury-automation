@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db.session import SessionLocal
+from app.services.monitorizacao import monitorizar_execucao
 from app.services.reconciliador import importar_extrato_para_bd, nome_empresa_do_ficheiro
 
 
@@ -35,17 +36,20 @@ def main():
         sys.exit(1)
 
     db = SessionLocal()
-    total = 0
     try:
-        for caminho in ficheiros:
-            empresa = nome_empresa_do_ficheiro(caminho)
-            n = importar_extrato_para_bd(db, caminho, dia, empresa)
-            total += n
-            print(f"  {os.path.basename(caminho)} -> {n} movimentos ({empresa})")
+        with monitorizar_execucao(db, "importar_extratos") as log:
+            total = 0
+            for caminho in ficheiros:
+                empresa = nome_empresa_do_ficheiro(caminho)
+                n = importar_extrato_para_bd(db, caminho, dia, empresa)
+                total += n
+                mensagem = f"  {os.path.basename(caminho)} -> {n} movimentos ({empresa})"
+                print(mensagem)
+                log.append(mensagem)
+
+            print(f"Total importado: {total} movimentos para o dia {data_str}.")
     finally:
         db.close()
-
-    print(f"Total importado: {total} movimentos para o dia {data_str}.")
 
 
 if __name__ == "__main__":

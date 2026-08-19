@@ -21,9 +21,39 @@ services:
       DATABASE_URL: postgresql+psycopg://tesouraria:tesouraria@db:5432/tesouraria
     env_file:
       - .env
+    volumes:
+      - logs:/var/log/app
+    command: >
+      sh -c "python scripts/criar_tabelas.py &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 2>&1 | tee /var/log/app/api.log"
     depends_on:
       db:
         condition: service_healthy
 
+  dashboard:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      API_BASE_URL: http://api:8000
+    env_file:
+      - .env
+    volumes:
+      - logs:/var/log/app
+    command: >
+      sh -c "streamlit run dashboard/app.py --server.address 0.0.0.0 --server.port 8501 2>&1 | tee /var/log/app/dashboard.log"
+    depends_on:
+      - api
+
+  log-viewer:
+    image: amir20/dozzle:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      DOZZLE_LEVEL: info
+
 volumes:
   postgres_data:
+  logs:

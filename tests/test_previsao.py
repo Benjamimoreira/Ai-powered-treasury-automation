@@ -2,8 +2,14 @@ from datetime import date, timedelta
 
 import pytest
 
-from app.db.models import SaldoDiario
-from app.services.previsao import avaliar_modelos, prever_saldo
+from app.db.models import MovimentoBancario, SaldoDiario
+from app.services.previsao import (
+    MIN_PONTOS_ML,
+    avaliar_cashflow,
+    avaliar_modelos,
+    prever_cashflow,
+    prever_saldo,
+)
 
 DIA_INICIAL = date(2026, 7, 1)
 
@@ -15,6 +21,13 @@ def _adicionar_serie(db_session, empresa, valores):
             saldo_contabilistico=valor, saldo_disponivel=valor,
         ))
     db_session.commit()
+
+
+def _adicionar_movimento(db_session, empresa, dia, valor):
+    db_session.add(MovimentoBancario(
+        dia=dia, empresa=empresa, descricao="movimento de teste", valor=valor,
+        ficheiro_origem="teste.xlsx",
+    ))
 
 
 def test_prever_saldo_falha_com_historico_insuficiente(db_session):
@@ -104,3 +117,125 @@ def test_avaliar_modelos_falha_com_historico_insuficiente(db_session):
 
     with pytest.raises(ValueError):
         avaliar_modelos(db_session, "EMPRESA NOVA,LDA", dias_teste=5)
+
+
+def test_prever_cashflow_falha_com_historico_insuficiente(db_session):
+    _adicionar_movimento(db_session, "EMPRESA NOVA,LDA", DIA_INICIAL, 100.0)
+    db_session.commit()
+
+    with pytest.raises(ValueError):
+        prever_cashflow(db_session, "EMPRESA NOVA,LDA")
+
+
+def test_prever_cashflow_preenche_dias_sem_movimento_a_zero_e_agrega_entidades(db_session):
+    # duas empresas, movimentos em dias não contíguos - a série de
+    # cash-flow tem de cobrir TODOS os dias entre o primeiro e o último
+    # movimento, com 0 nos dias sem nenhum (ao contrário do saldo, aqui
+    # um dia sem movimento é sinal real, não falta de leitura).
+    _adicionar_movimento(db_session, "EMPRESA A,LDA", DIA_INICIAL, 100.0)
+    _adicionar_movimento(db_session, "EMPRESA B,LDA", DIA_INICIAL + timedelta(days=2), -40.0)
+    _adicionar_movimento(db_session, "EMPRESA A,LDA", DIA_INICIAL + timedelta(days=4), 20.0)
+    _adicionar_movimento(db_session, "EMPRESA A,LDA", DIA_INICIAL + timedelta(days=6), 20.0)
+    db_session.commit()
+
+    resultado = prever_cashflow(db_session, dias_futuro=3)
+
+    assert len(resultado["historico"]) == 7  # dias 0 a 6 inclusive, sem buracos
+
+    dia_sem_movimento = resultado["historico"][1]
+    assert dia_sem_movimento["dia"] == (DIA_INICIAL + timedelta(days=1)).isoformat()
+    assert dia_sem_movimento["recebimentos"] == 0.0
+    assert dia_sem_movimento["pagamentos"] == 0.0
+    assert dia_sem_movimento["liquido"] == 0.0
+
+    dia_com_pagamento = resultado["historico"][2]
+    assert dia_com_pagamento["pagamentos"] == pytest.approx(40.0)
+    assert dia_com_pagamento["liquido"] == pytest.approx(-40.0)
+
+    assert {"regressao_linear", "media_movel", "suavizacao_exponencial", "arima"} <= set(
+        resultado["previsao"].keys()
+    )
+    for pontos in resultado["previsao"].values():
+        assert len(pontos) == 3
+
+
+def test_prever_cashflow_filtra_por_empresa(db_session):
+    for i in range(6):
+        _adicionar_movimento(db_session, "EMPRESA A,LDA", DIA_INICIAL + timedelta(days=i), 10.0)
+        _adicionar_movimento(db_session, "EMPRESA B,LDA", DIA_INICIAL + timedelta(days=i), 999.0)
+    db_session.commit()
+
+    resultado = prever_cashflow(db_session, "EMPRESA A,LDA", dias_futuro=2)
+
+    assert all(p["liquido"] == pytest.approx(10.0) for p in resultado["historico"])
+
+
+def test_avaliar_cashflow_calcula_rmse_e_escolhe_melhor(db_session):
+    for i in range(15):
+        _adicionar_movimento(db_session, "EMPRESA TESTE,LDA", DIA_INICIAL + timedelta(days=i), 100.0 + 10 * i)
+    db_session.commit()
+
+    resultado = avaliar_cashflow(db_session, "EMPRESA TESTE,LDA", dias_teste=3)
+
+    assert resultado["dias_teste"] == 3
+    assert "regressao_linear" in resultado["rmse_por_modelo"]
+    assert resultado["melhor_modelo"] is not None
+    assert resultado["rmse_por_modelo"][resultado["melhor_modelo"]] == pytest.approx(0.0, abs=0.5)
+
+
+def test_avaliar_cashflow_falha_com_historico_insuficiente(db_session):
+    for i in range(3):
+        _adicionar_movimento(db_session, "EMPRESA NOVA,LDA", DIA_INICIAL + timedelta(days=i), 100.0)
+    db_session.commit()
+
+    with pytest.raises(ValueError):
+        avaliar_cashflow(db_session, "EMPRESA NOVA,LDA", dias_teste=5)
+
+
+def test_prever_cashflow_inclui_gradient_boosting_com_historico_suficiente(db_session):
+    # padrão ligado ao dia da semana - dá ao gradient boosting algo real
+    # para aprender (e não só ruído).
+    for i in range(MIN_PONTOS_ML + 5):
+        dia = DIA_INICIAL + timedelta(days=i)
+        valor = 100.0 if dia.weekday() < 5 else -50.0
+        _adicionar_movimento(db_session, "EMPRESA GB,LDA", dia, valor)
+    db_session.commit()
+
+    resultado = prever_cashflow(db_session, "EMPRESA GB,LDA", dias_futuro=4)
+
+    assert "gradient_boosting" in resultado["previsao"]
+    assert len(resultado["previsao"]["gradient_boosting"]) == 4
+    assert resultado["importancia_features"] is not None
+    # as importâncias são um "peso" por feature - devem existir para as 7
+    # features e somar ~1 (é assim que sklearn normaliza feature_importances_)
+    assert set(resultado["importancia_features"].keys()) == {
+        "dia_semana", "dia_mes", "fim_de_semana", "lag_1", "lag_2", "lag_3", "media_movel_5",
+    }
+    assert sum(resultado["importancia_features"].values()) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_prever_cashflow_sem_gradient_boosting_com_historico_curto(db_session):
+    # histórico chega para os modelos de séries temporais (MIN_PONTOS=5)
+    # mas não para o gradient boosting (MIN_PONTOS_ML=15) - deve aparecer
+    # nos restantes modelos e simplesmente não incluir este.
+    for i in range(6):
+        _adicionar_movimento(db_session, "EMPRESA CURTA,LDA", DIA_INICIAL + timedelta(days=i), 50.0)
+    db_session.commit()
+
+    resultado = prever_cashflow(db_session, "EMPRESA CURTA,LDA", dias_futuro=3)
+
+    assert "gradient_boosting" not in resultado["previsao"]
+    assert resultado["importancia_features"] is None
+    assert "regressao_linear" in resultado["previsao"]
+
+
+def test_avaliar_cashflow_inclui_gradient_boosting_no_rmse(db_session):
+    for i in range(MIN_PONTOS_ML + 10):
+        dia = DIA_INICIAL + timedelta(days=i)
+        valor = 100.0 if dia.weekday() < 5 else -50.0
+        _adicionar_movimento(db_session, "EMPRESA GB,LDA", dia, valor)
+    db_session.commit()
+
+    resultado = avaliar_cashflow(db_session, "EMPRESA GB,LDA", dias_teste=5)
+
+    assert "gradient_boosting" in resultado["rmse_por_modelo"]

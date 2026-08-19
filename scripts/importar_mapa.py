@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db.session import SessionLocal
 from app.services.mapa_importer import importar_dia_do_mapa
+from app.services.monitorizacao import monitorizar_execucao
 
 
 def main():
@@ -25,15 +26,18 @@ def main():
 
     db = SessionLocal()
     try:
-        n_receb, n_pag = importar_dia_do_mapa(db, caminho, dia)
-        db.commit()
-    except KeyError as e:
-        print(str(e))
-        sys.exit(1)
+        try:
+            with monitorizar_execucao(db, "importar_mapa") as log:
+                n_receb, n_pag = importar_dia_do_mapa(db, caminho, dia)
+                db.commit()
+                mensagem = f"Importadas {n_receb} linhas de recebimento e {n_pag} linhas de pagamento para o dia {data_str}."
+                print(mensagem)
+                log.append(mensagem)
+        except KeyError as e:
+            print(str(e))
+            sys.exit(1)
     finally:
         db.close()
-
-    print(f"Importadas {n_receb} linhas de recebimento e {n_pag} linhas de pagamento para o dia {data_str}.")
 
 
 if __name__ == "__main__":

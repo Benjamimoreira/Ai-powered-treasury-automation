@@ -5,8 +5,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models import AtualizarSaldosRequest, AvaliacaoModelosOut, PrevisaoSaldoOut, SaldoOut, SaldoTotalOut
-from app.services.previsao import avaliar_modelos, prever_saldo
+from app.models import (
+    AtualizarSaldosRequest,
+    AvaliacaoModelosOut,
+    PrevisaoCashflowOut,
+    PrevisaoSaldoOut,
+    SaldoOut,
+    SaldoTotalOut,
+)
+from app.services.previsao import avaliar_cashflow, avaliar_modelos, prever_cashflow, prever_saldo
 from app.services.saldos import consultar_saldo as consultar_saldo_servico
 from app.services.saldos import listar_saldos_atuais, registar_saldos_do_dia, saldo_total_geral
 
@@ -21,6 +28,41 @@ def previsao_saldo(empresa: str, dias: int = 7, db: Session = Depends(get_db)):
     guarda nada."""
     try:
         return prever_saldo(db, empresa, dias)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/previsao/cashflow", response_model=PrevisaoCashflowOut)
+def previsao_cashflow_agregada(dias: int = 7, db: Session = Depends(get_db)):
+    """Previsão do cash-flow líquido diário (recebimentos - pagamentos)
+    agregado de todas as entidades, com os mesmos modelos da previsão de
+    saldo. Ao contrário do saldo (plano na maioria dos dias), varia todos
+    os dias - previsão mais percetível para a tesouraria como um todo."""
+    try:
+        return prever_cashflow(db, None, dias)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/previsao/cashflow/{empresa}", response_model=PrevisaoCashflowOut)
+def previsao_cashflow_empresa(empresa: str, dias: int = 7, db: Session = Depends(get_db)):
+    """Mesma previsão de cash-flow, restrita a uma entidade."""
+    try:
+        return prever_cashflow(db, empresa, dias)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/previsao/cashflow-avaliacao", response_model=AvaliacaoModelosOut)
+def previsao_cashflow_avaliacao(
+    empresa: Optional[str] = None, dias_teste: int = 5, db: Session = Depends(get_db)
+):
+    """Avaliação treino/teste (RMSE) para o cash-flow, equivalente a
+    `/previsao/avaliacao/{empresa}` para o saldo. `empresa` omitida =
+    carteira agregada. Path próprio (em vez de `/previsao/cashflow/avaliacao`)
+    para não colidir com `/previsao/cashflow/{empresa}`."""
+    try:
+        return avaliar_cashflow(db, empresa, dias_teste)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

@@ -70,3 +70,15 @@ class SaldoDiario(Base):
     entidade = Column(String, nullable=False)
     saldo_contabilistico = Column(Float, nullable=True)
     saldo_disponivel = Column(Float, nullable=True)
+
+
+class ExecucaoScript(Base):
+    __tablename__ = "execucoes_scripts"
+
+    id = Column(Integer, primary_key=True)
+    script = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False)
+    erro = Column(String, nullable=True)
+    log = Column(JSON, nullable=True)
+    duracao_segundos = Column(Float, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)

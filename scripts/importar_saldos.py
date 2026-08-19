@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db.session import SessionLocal
+from app.services.monitorizacao import monitorizar_execucao
 from app.services.saldos import registar_saldos_do_dia
 
 
@@ -25,11 +26,13 @@ def main():
 
     db = SessionLocal()
     try:
-        total = registar_saldos_do_dia(db, dia, pasta)
+        with monitorizar_execucao(db, "importar_saldos") as log:
+            total = registar_saldos_do_dia(db, dia, pasta)
+            mensagem = f"Registadas {total} entidades com saldo para o dia {data_str}."
+            print(mensagem)
+            log.append(mensagem)
     finally:
         db.close()
-
-    print(f"Registadas {total} entidades com saldo para o dia {data_str}.")
 
 
 if __name__ == "__main__":
