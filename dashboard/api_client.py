@@ -7,6 +7,12 @@ from typing import Optional
 import requests
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000")
+# URL que o BROWSER do utilizador consegue alcançar (não o container) -
+# dentro do Docker, API_BASE_URL é "http://api:8000" (rede interna), mas
+# isso não existe fora do Docker. Usada só para montar links clicáveis
+# (ex. abrir PDF de uma fatura), nunca para pedidos feitos pelo próprio
+# dashboard.
+API_PUBLIC_URL = os.environ.get("API_PUBLIC_URL", "http://127.0.0.1:8000")
 
 
 def atualizar_dados(dias_atras: int = 7) -> dict:
@@ -155,6 +161,23 @@ def registrar_execucao_script(script: str, status: str, erro: Optional[str] = No
     )
     r.raise_for_status()
     return r.json()
+
+
+def listar_faturas_recebidas(dia: Optional[str] = None, pesquisa: Optional[str] = None, limit: int = 200) -> list:
+    params = {"limit": limit}
+    if dia:
+        params["dia"] = dia
+    if pesquisa:
+        params["pesquisa"] = pesquisa
+    r = requests.get(f"{API_BASE_URL}/faturas/recebidas", params=params)
+    r.raise_for_status()
+    return r.json()
+
+
+def url_pdf_fatura(fatura_id: int) -> str:
+    """URL pública (não a interna do Docker) do PDF de uma fatura, para
+    usar num link clicável na dashboard."""
+    return f"{API_PUBLIC_URL}/faturas/recebidas/{fatura_id}/pdf"
 
 
 def sugerir_ambiguo(caso_id: int) -> dict:

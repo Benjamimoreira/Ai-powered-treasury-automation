@@ -221,8 +221,11 @@ with col_botao:
             except Exception as e:
                 st.error(f"Erro: {e}")
 
-aba_visao_geral, aba_monitorizacao, aba_reconciliacao, aba_saldos, aba_contas, aba_ambiguos, aba_assistente = st.tabs(
-    ["Visão Geral", "Monitorização", "Reconciliação", "Saldos", "Análise de Contas", "Ambíguos", "Assistente"]
+(
+    aba_visao_geral, aba_monitorizacao, aba_faturas, aba_reconciliacao,
+    aba_saldos, aba_contas, aba_ambiguos, aba_assistente,
+) = st.tabs(
+    ["Visão Geral", "Monitorização", "Faturas", "Reconciliação", "Saldos", "Análise de Contas", "Ambíguos", "Assistente"]
 )
 
 with aba_visao_geral:
@@ -557,6 +560,92 @@ with aba_monitorizacao:
                 st.info(f"O script '{script_escolhido}' ainda não tem execuções registadas.")
     except Exception as e:
         st.warning(f"Não foi possível carregar o detalhe do script: {e}")
+
+with aba_faturas:
+    st.subheader("Faturas recebidas (faturas@vidor.pt)")
+    st.caption(
+        "Alimentado pelo recolher_faturas_recebidas.py (corre de hora a hora, "
+        "Agendador de Tarefas) - mesmos dados que já vão para o Excel mensal em "
+        "Documentos a Tratar/AFaturas."
+    )
+    pesquisa_livre = st.text_input(
+        "🔍 Pesquisar fatura em qualquer dia (empresa, fornecedor, NIF, assunto, remetente ou valor)",
+        key="faturas_pesquisa",
+    )
+
+    filtrar_por_dia = st.checkbox(
+        "Filtrar por dia", value=False, key="faturas_filtrar_dia", disabled=bool(pesquisa_livre)
+    )
+    dia_faturas_str = None
+    if filtrar_por_dia and not pesquisa_livre:
+        dia_faturas = st.date_input("Dia", value=date.today(), key="dia_faturas")
+        dia_faturas_str = dia_faturas.isoformat()
+    if pesquisa_livre:
+        st.caption("A pesquisar em todos os dias - o filtro por dia fica desligado enquanto houver texto na pesquisa.")
+    limite_faturas = st.number_input(
+        "Máximo de linhas", min_value=50, max_value=5000, value=1000, step=50, key="faturas_limit"
+    )
+
+    try:
+        faturas = api.listar_faturas_recebidas(dia_faturas_str, pesquisa=pesquisa_livre or None, limit=int(limite_faturas))
+        if faturas:
+            df_faturas = pd.DataFrame(faturas)
+            # Servido pela própria API (GET /faturas/recebidas/{id}/pdf), não
+            # um link file:// - o Chrome bloqueia navegação file:// a partir
+            # de uma página http:// (bug reportado, confirmado no Chrome).
+            if "pdf_relativo" in df_faturas.columns:
+                df_faturas["pdf"] = df_faturas.apply(
+                    lambda r: api.url_pdf_fatura(r["id"]) if isinstance(r["pdf_relativo"], str) and r["pdf_relativo"] else None,
+                    axis=1,
+                )
+
+            col_f1, col_f2, col_f3 = st.columns(3)
+            with col_f1:
+                empresas_disponiveis = sorted(e for e in df_faturas["empresa"].dropna().unique() if e)
+                empresa_filtro = st.selectbox(
+                    "Empresa", ["Todas"] + empresas_disponiveis, key="faturas_filtro_empresa"
+                )
+            with col_f2:
+                fornecedor_filtro = st.text_input("Fornecedor contém", key="faturas_filtro_fornecedor")
+            with col_f3:
+                valor_filtro = st.text_input("Valor fatura contém", key="faturas_filtro_valor")
+
+            if empresa_filtro != "Todas":
+                df_faturas = df_faturas[df_faturas["empresa"] == empresa_filtro]
+            if fornecedor_filtro:
+                df_faturas = df_faturas[
+                    df_faturas["fornecedor"].fillna("").str.contains(fornecedor_filtro, case=False, na=False)
+                ]
+            if valor_filtro:
+                df_faturas = df_faturas[
+                    df_faturas["valor_fatura"].fillna("").str.contains(valor_filtro, case=False, na=False)
+                ]
+
+            colunas = [
+                "dia", "hora", "empresa", "fornecedor", "nif_fornecedor",
+                "valor_fatura", "debito", "credito", "saldo",
+                "n_anexos_pdf", "pdf", "assunto", "remetente",
+            ]
+            colunas_existentes = [c for c in colunas if c in df_faturas.columns]
+            st.caption(f"{len(df_faturas)} fatura(s) - aumenta o limite acima se faltarem dias.")
+            if df_faturas.empty:
+                st.info("Nenhuma fatura corresponde aos filtros escolhidos.")
+            else:
+                st.dataframe(
+                    df_faturas[colunas_existentes],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "nif_fornecedor": st.column_config.TextColumn("NIF fornecedor"),
+                        "valor_fatura": st.column_config.TextColumn("valor fatura"),
+                        "n_anexos_pdf": st.column_config.NumberColumn("nº anexos PDF"),
+                        "pdf": st.column_config.LinkColumn("PDF", display_text="Abrir PDF"),
+                    },
+                )
+        else:
+            st.info("Ainda não há faturas recebidas registadas para este filtro.")
+    except Exception as e:
+        st.warning(f"Não foi possível carregar as faturas recebidas: {e}")
 
 with aba_reconciliacao:
     st.subheader("Reconciliação do dia")

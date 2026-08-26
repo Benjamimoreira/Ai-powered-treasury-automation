@@ -72,6 +72,27 @@ class SaldoDiario(Base):
     saldo_disponivel = Column(Float, nullable=True)
 
 
+class FaturaRecebida(Base):
+    __tablename__ = "faturas_recebidas"
+
+    id = Column(Integer, primary_key=True)
+    outlook_id = Column(String, unique=True, nullable=False, index=True)
+    dia = Column(Date, nullable=False, index=True)
+    hora = Column(String, nullable=True)
+    remetente = Column(String, nullable=True)
+    assunto = Column(String, nullable=True)
+    motivo = Column(String, nullable=True)
+    empresa = Column(String, nullable=True)
+    fornecedor = Column(String, nullable=True)
+    nif_fornecedor = Column(String, nullable=True)
+    n_anexos_pdf = Column(Integer, nullable=True)
+    debito = Column(String, nullable=True)
+    credito = Column(String, nullable=True)
+    saldo = Column(String, nullable=True)
+    valor_fatura = Column(String, nullable=True)
+    pdf_relativo = Column(String, nullable=True)
+
+
 class ExecucaoScript(Base):
     __tablename__ = "execucoes_scripts"
 

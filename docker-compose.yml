@@ -19,10 +19,14 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql+psycopg://tesouraria:tesouraria@db:5432/tesouraria
+      ONEDRIVE_RAIZ: /onedrive
+      FORNECEDORES_RAIZ: /fornecedores
     env_file:
       - .env
     volumes:
       - logs:/var/log/app
+      - "${ONEDRIVE_RAIZ_DOCKER}:/onedrive:ro"
+      - "${FORNECEDORES_RAIZ_DOCKER}:/fornecedores:ro"
     command: >
       sh -c "python scripts/criar_tabelas.py &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 2>&1 | tee /var/log/app/api.log"
@@ -64,6 +68,15 @@ services:
     command: sh -c "tail -F /logs/*.log"
     restart: unless-stopped
 
+  # Mesma coisa que scripts-log, mas para os scripts de faturas (pasta
+  # Fornecedores, fora do Docker) - pasta diferente, por isso mount à parte.
+  scripts-log-faturas:
+    image: busybox
+    volumes:
+      - "${SCRIPTS_LOG_DIR_FATURAS}:/logs:ro"
+    command: sh -c "tail -F /logs/*.log"
+    restart: unless-stopped
+
   # Junta diariamente os logs da api/dashboard e dos scripts agendados,
   # separa as linhas de erro e guarda tudo compactado por dia em /archive
   # (volume "logs_archive"), pronto a ser copiado/enviado para outra máquina.
@@ -74,10 +87,28 @@ services:
     volumes:
       - logs:/logs-app:ro
       - "${SCRIPTS_LOG_DIR}:/logs-scripts:ro"
+      - "${SCRIPTS_LOG_DIR_FATURAS}:/logs-scripts-faturas:ro"
       - logs_archive:/archive
     restart: unless-stopped
+
+  # OCR de faturas de compras já arquivadas (não agendado - corre sob
+  # pedido: "docker compose run --rm faturas-ocr"). Só este dos 3 scripts
+  # de Fornecedores é containerizável: não depende do Outlook desktop
+  # (COM), só de Tesseract/Poppler, disponíveis via apt em Linux. Reporta
+  # a execução à API pela rede interna do Docker (http://api:8000).
+  faturas-ocr:
+    build: ./docker/faturas-ocr
+    environment:
+      ONEDRIVE_RAIZ: /onedrive
+      API_TESOURARIA_URL: http://api:8000
+    volumes:
+      - "${ONEDRIVE_RAIZ_DOCKER}:/onedrive:ro"
+      - faturas_extraidas:/output
+    depends_on:
+      - api
 
 volumes:
   postgres_data:
   logs:
   logs_archive:
+  faturas_extraidas:

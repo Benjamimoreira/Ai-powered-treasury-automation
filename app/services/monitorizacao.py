@@ -1,15 +1,35 @@
+import logging
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterator, List, Optional
 from zoneinfo import ZoneInfo
 
+import json_log_formatter
 from sqlalchemy.orm import Session
 
 from app.db.models import ExecucaoScript
 
 FUSO_LOCAL = ZoneInfo("Europe/Lisbon")
 TOLERANCIA_ATRASO_MINUTOS = 20
+
+# Logging estruturado em JSON (pedido explícito 25/08/2026), uma linha por
+# execução registada (via POST /monitorizacao/scripts/{script}/executar,
+# enviado pelos scripts agendados que correm noutra máquina - ver
+# monitorizacao_client.py em "tesouraria preenchimento" - ou via
+# monitorizar_execucao() para scripts que correm na mesma máquina/venv da
+# API). Vai para stdout/stderr do processo uvicorn - em Docker isso é
+# `docker logs`, visível no Dozzle/log-archiver, tal como já acontece do
+# lado dos scripts. Mesma "message" ("execucao_terminada") e mesmos campos
+# (script/status/erro/duracao_s) dos dois lados, para ficar fácil casar um
+# log com o outro."""
+_logger_json = logging.getLogger("api_tesouraria.monitorizacao")
+if not _logger_json.handlers:
+    _handler_json = logging.StreamHandler()
+    _handler_json.setFormatter(json_log_formatter.JSONFormatter())
+    _logger_json.addHandler(_handler_json)
+    _logger_json.setLevel(logging.INFO)
+    _logger_json.propagate = False
 
 SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
     "preencher_mapa": {
@@ -139,6 +159,13 @@ def registar_execucao(db: Session, script: str, status: str, erro: Optional[str]
     db.add(execucao)
     db.commit()
     db.refresh(execucao)
+
+    _logger_json.info("execucao_terminada", extra={
+        "script": nome,
+        "status": status,
+        "erro": erro,
+        "duracao_s": round(duracao_segundos, 2) if duracao_segundos is not None else None,
+    })
 
     return {
         "nome": nome,

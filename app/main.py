@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.routers import ambiguos, anomalias, chat, monitorizacao, reconciliacao, saldos, sync
+from app.routers import ambiguos, anomalias, chat, faturas, monitorizacao, reconciliacao, saldos, sync
 
 
 @asynccontextmanager
@@ -29,6 +29,7 @@ app.include_router(ambiguos.router)
 app.include_router(saldos.router)
 app.include_router(sync.router)
 app.include_router(monitorizacao.router)
+app.include_router(faturas.router)
 app.include_router(anomalias.router)
 app.include_router(chat.router)
 

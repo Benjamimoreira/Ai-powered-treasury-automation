@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel
@@ -134,6 +134,53 @@ class AvaliacaoModelosOut(BaseModel):
     rmse_por_modelo: Dict[str, float]
     melhor_modelo: Optional[str] = None
     falhas: Dict[str, str]
+
+
+class FaturaRecebidaIn(BaseModel):
+    outlook_id: str
+    data_recebido: datetime
+    remetente: Optional[str] = None
+    assunto: Optional[str] = None
+    motivo: Optional[str] = None
+    empresa: Optional[str] = None
+    fornecedor: Optional[str] = None
+    nif_fornecedor: Optional[str] = None
+    n_anexos_pdf: Optional[int] = None
+    debito: Optional[str] = None
+    credito: Optional[str] = None
+    saldo: Optional[str] = None
+    valor_fatura: Optional[str] = None
+    pdf_relativo: Optional[str] = None
+
+
+class RegistarFaturasRequest(BaseModel):
+    linhas: List[FaturaRecebidaIn]
+
+
+class RegistarFaturasResponse(BaseModel):
+    novas: int
+    duplicadas: int
+
+
+class FaturaRecebidaOut(BaseModel):
+    id: int
+    outlook_id: str
+    dia: date
+    hora: Optional[str] = None
+    remetente: Optional[str] = None
+    assunto: Optional[str] = None
+    motivo: Optional[str] = None
+    empresa: Optional[str] = None
+    fornecedor: Optional[str] = None
+    nif_fornecedor: Optional[str] = None
+    n_anexos_pdf: Optional[int] = None
+    debito: Optional[str] = None
+    credito: Optional[str] = None
+    saldo: Optional[str] = None
+    valor_fatura: Optional[str] = None
+    pdf_relativo: Optional[str] = None
+
+    model_config = {"from_attributes": True}
 
 
 class ChatRequest(BaseModel):

@@ -9,7 +9,7 @@ mkdir -p "$DEST"
 # como estes ficheiros crescem por append (nunca são recriados), copiar o
 # estado atual em cada corrida horária é suficiente; não há -newermt no
 # find do busybox (Alpine), por isso não filtramos por data de modificação.
-for src in /logs-app /logs-scripts; do
+for src in /logs-app /logs-scripts /logs-scripts-faturas; do
     if [ -d "$src" ]; then
         find "$src" -maxdepth 1 -name '*.log' -exec cp {} "$DEST/" \;
     fi

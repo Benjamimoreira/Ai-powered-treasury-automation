@@ -1,5 +1,6 @@
 fastapi
 uvicorn[standard]
+json-log-formatter
 openpyxl
 sqlalchemy
 pydantic
