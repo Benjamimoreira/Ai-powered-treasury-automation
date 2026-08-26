@@ -127,9 +127,9 @@ para poderem ser substituídos nos testes.
 ```powershell
 docker compose up --build
 ```
-Sobe a API + Postgres. **Nota**: não testado de facto nesta máquina de
-desenvolvimento (Docker Desktop sem WSL2 disponível) - a configuração
-foi escrita e revista com cuidado, mas fica por confirmar o build real.
+Sobe a API + Postgres + dashboard. Build confirmado em produção via CI
+(GitHub Actions, runner self-hosted) - não nesta máquina de
+desenvolvimento (Docker Desktop sem WSL2 disponível).
 
 ## Limitações conhecidas
 
@@ -147,7 +147,6 @@ foi escrita e revista com cuidado, mas fica por confirmar o build real.
   suavização exponencial), não uma previsão de produção "garantida" -
   contas com quebras/eventos pontuais grandes podem dar previsões pouco
   úteis num dos modelos (ver os 3 lado a lado, não confiar só num).
-- Build Docker não confirmado nesta máquina (ver acima).
 
 ## Roadmap
 

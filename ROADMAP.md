@@ -51,11 +51,11 @@ eram resolvidos à mão.
 - [x] `mcp_server.py` com 6 tools (`reconciliar_dia_tool`, `auditoria_dia_tool`, `movimentos_do_dia_tool`, `consultar_saldo_tool`, `listar_ambiguos_tool`, `resolver_ambiguo_tool`).
 - [x] Testado via cliente MCP real (stdio), não só chamadas diretas às funções.
 
-## Fase 5 — Docker + CI/CD ⚠️
+## Fase 5 — Docker + CI/CD ✅
 
-- [x] `Dockerfile` + `docker-compose.yml` (API + Postgres).
-- [x] GitHub Actions (`pytest` em cada push/PR + build da imagem Docker).
-- [ ] **Build Docker não confirmado** nesta máquina de desenvolvimento (Docker Desktop sem WSL2 disponível) — configuração escrita e revista, mas por testar de facto.
+- [x] `Dockerfile` + `docker-compose.yml` (API + Postgres + dashboard + log-archiver + faturas-ocr).
+- [x] GitHub Actions (`pytest` em cada push/PR + build da imagem Docker + deploy no runner self-hosted).
+- [x] Build Docker confirmado em produção (runner self-hosted, `docker compose up -d --build`).
 - [ ] Substituir tarefas do Agendador do Windows por chamadas HTTP — ainda não feito (o botão "Atualizar dados" no dashboard cobre parcialmente isto).
 
 ## Fase 6 — Dashboard (Streamlit) ✅

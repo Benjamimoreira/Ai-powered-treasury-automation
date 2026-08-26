@@ -12,6 +12,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   api:
     build: .
@@ -33,6 +34,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
 
   dashboard:
     build: .
@@ -48,6 +50,7 @@ services:
       sh -c "streamlit run dashboard/app.py --server.address 0.0.0.0 --server.port 8501 2>&1 | tee /var/log/app/dashboard.log"
     depends_on:
       - api
+    restart: unless-stopped
 
   log-viewer:
     image: amir20/dozzle:latest
