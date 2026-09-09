@@ -11,10 +11,30 @@ class ReconciliarResponse(BaseModel):
     ambiguos: int
 
 
+class MovimentoSemMatchOut(BaseModel):
+    empresa: str
+    descricao: str
+    valor: float
+    ficheiro_origem: str
+
+
+class LinhaSemMatchOut(BaseModel):
+    linha: int
+    empresa: str
+    previsto: float
+    imputacao: Optional[str] = None
+
+
 class AuditoriaResponse(BaseModel):
     dia: date
     sem_match_fwd: int
     sem_match_rev: int
+    movimentos_sem_match: List[MovimentoSemMatchOut] = []
+    linhas_sem_match: List[LinhaSemMatchOut] = []
+    movimentos_dia: List[MovimentoSemMatchOut] = []
+    soma_extrato: float = 0.0
+    soma_mapa: float = 0.0
+    diferenca_extrato_mapa: float = 0.0
 
 
 class CandidatoLinhaOut(BaseModel):
@@ -78,6 +98,20 @@ class SaldoOut(BaseModel):
     saldo_disponivel: Optional[float] = None
 
     model_config = {"from_attributes": True}
+
+
+class SaldoMapaOut(BaseModel):
+    entidade: str
+    dia: date
+    saldo_contabilistico: Optional[float] = None
+    saldo_disponivel: Optional[float] = None
+    dia_anterior: Optional[date] = None
+    saldo_contabilistico_anterior: Optional[float] = None
+    saldo_disponivel_anterior: Optional[float] = None
+    variacao_contabilistico: Optional[float] = None
+    variacao_disponivel: Optional[float] = None
+    variacao_pct_contabilistico: Optional[float] = None
+    variacao_pct_disponivel: Optional[float] = None
 
 
 class AtualizarSaldosRequest(BaseModel):

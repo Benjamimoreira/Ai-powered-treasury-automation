@@ -1,13 +1,15 @@
-from datetime import date
+from datetime import date, timedelta
 
-from app.db.models import CasoAmbiguo, LinhaMapa, MovimentoBancario, Reconciliacao
+from app.db.models import AuditoriaDia, CasoAmbiguo, LinhaMapa, MovimentoBancario, Reconciliacao
 from app.services.reconciliador import (
     auditoria_dia,
     chave_empresa,
     listar_empresas,
+    listar_historico_auditorias,
     listar_movimentos_da_empresa,
     listar_movimentos_do_dia,
     reconciliar_dia,
+    registar_auditoria_dia,
     resolver_ambiguo,
     resumo_diario,
 )
@@ -111,7 +113,74 @@ def test_auditoria_dia_conta_sem_correspondencia_nos_dois_sentidos(db_session):
 
     resultado = auditoria_dia(db_session, DIA)
 
-    assert resultado == {"sem_match_fwd": 1, "sem_match_rev": 1}
+    assert resultado["sem_match_fwd"] == 1
+    assert resultado["sem_match_rev"] == 1
+
+
+def test_registar_auditoria_dia_grava_historico_persistente(db_session):
+    db_session.add(MovimentoBancario(
+        dia=DIA, empresa="SEM MAPA,LDA", descricao="TRANSF", valor=-50.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.commit()
+
+    resultado = registar_auditoria_dia(db_session, DIA)
+
+    assert resultado["sem_match_fwd"] == 1
+    registo = db_session.query(AuditoriaDia).one()
+    assert registo.dia == DIA
+    assert registo.sem_match_fwd == 1
+    assert registo.diferenca == resultado["diferenca_extrato_mapa"]
+    assert registo.movimentos_sem_match == resultado["movimentos_sem_match"]
+
+
+def test_registar_auditoria_dia_nao_substitui_registo_anterior(db_session):
+    db_session.add(MovimentoBancario(
+        dia=DIA, empresa="SEM MAPA,LDA", descricao="TRANSF", valor=-50.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.commit()
+
+    registar_auditoria_dia(db_session, DIA)
+    registar_auditoria_dia(db_session, DIA)
+
+    assert db_session.query(AuditoriaDia).filter(AuditoriaDia.dia == DIA).count() == 2
+
+
+def test_listar_historico_auditorias_devolve_mais_recente_primeiro(db_session):
+    db_session.add(MovimentoBancario(
+        dia=DIA, empresa="SEM MAPA,LDA", descricao="TRANSF", valor=-50.0, ficheiro_origem="x.xlsx",
+    ))
+    dia_seguinte = DIA + timedelta(days=1)
+    db_session.add(MovimentoBancario(
+        dia=dia_seguinte, empresa="SEM MAPA,LDA", descricao="TRANSF", valor=-10.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.commit()
+
+    registar_auditoria_dia(db_session, DIA)
+    # força o timestamp do primeiro registo para o passado - evita que o
+    # teste dependa da resolução do relógio para distinguir a ordem entre
+    # duas chamadas consecutivas muito próximas uma da outra
+    primeiro = db_session.query(AuditoriaDia).one()
+    primeiro.timestamp -= timedelta(hours=1)
+    db_session.commit()
+    registar_auditoria_dia(db_session, dia_seguinte)
+
+    historico = listar_historico_auditorias(db_session)
+
+    assert len(historico) == 2
+    assert historico[0]["dia"] == dia_seguinte.isoformat()
+    assert historico[1]["dia"] == DIA.isoformat()
+
+
+def test_listar_historico_auditorias_respeita_limit(db_session):
+    db_session.add(MovimentoBancario(
+        dia=DIA, empresa="SEM MAPA,LDA", descricao="TRANSF", valor=-50.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.commit()
+
+    for _ in range(3):
+        registar_auditoria_dia(db_session, DIA)
+
+    assert len(listar_historico_auditorias(db_session, limit=2)) == 2
 
 
 def test_resolver_ambiguo_associa_linha_escolhida(db_session):

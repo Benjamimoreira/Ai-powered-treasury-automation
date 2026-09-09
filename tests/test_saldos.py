@@ -3,7 +3,7 @@ from datetime import date
 import openpyxl
 
 from app.db.models import SaldoDiario
-from app.services.saldos import listar_saldos_atuais, registar_saldos_do_dia, saldo_total_geral
+from app.services.saldos import listar_saldos_atuais, mapa_saldos, registar_saldos_do_dia, saldo_total_geral
 
 DIA = date(2026, 7, 21)
 
@@ -119,3 +119,78 @@ def test_saldo_total_geral_sem_dia_continua_a_usar_o_mais_recente(db_session):
 
     resultado = saldo_total_geral(db_session)
     assert resultado["saldo_contabilistico_total"] == 250000.0
+
+
+def test_mapa_saldos_calcula_variacao_face_a_leitura_anterior(db_session):
+    db_session.add(SaldoDiario(
+        dia=date(2026, 7, 20), entidade="Empresa A", saldo_contabilistico=100.0, saldo_disponivel=90.0,
+    ))
+    db_session.add(SaldoDiario(
+        dia=date(2026, 7, 21), entidade="Empresa A", saldo_contabilistico=150.0, saldo_disponivel=140.0,
+    ))
+    db_session.commit()
+
+    resultado = mapa_saldos(db_session)
+
+    assert len(resultado) == 1
+    linha = resultado[0]
+    assert linha["entidade"] == "Empresa A"
+    assert linha["dia"] == date(2026, 7, 21)
+    assert linha["dia_anterior"] == date(2026, 7, 20)
+    assert linha["variacao_contabilistico"] == 50.0
+    assert linha["variacao_pct_contabilistico"] == 50.0
+
+
+def test_mapa_saldos_sem_leitura_anterior_devolve_variacao_none(db_session):
+    db_session.add(SaldoDiario(
+        dia=date(2026, 7, 21), entidade="Empresa A", saldo_contabilistico=150.0, saldo_disponivel=140.0,
+    ))
+    db_session.commit()
+
+    resultado = mapa_saldos(db_session)
+
+    assert len(resultado) == 1
+    assert resultado[0]["dia_anterior"] is None
+    assert resultado[0]["variacao_contabilistico"] is None
+    assert resultado[0]["variacao_pct_contabilistico"] is None
+
+
+def test_mapa_saldos_com_dia_usa_a_leitura_e_a_anterior_ate_esse_dia(db_session):
+    db_session.add(SaldoDiario(
+        dia=date(2026, 7, 20), entidade="Empresa A", saldo_contabilistico=100.0, saldo_disponivel=90.0,
+    ))
+    db_session.add(SaldoDiario(
+        dia=date(2026, 7, 21), entidade="Empresa A", saldo_contabilistico=150.0, saldo_disponivel=140.0,
+    ))
+    db_session.add(SaldoDiario(
+        dia=date(2026, 7, 24), entidade="Empresa A", saldo_contabilistico=250000.0, saldo_disponivel=57000.0,
+    ))
+    db_session.commit()
+
+    # ao escolher o dia 21, a leitura do dia 24 (no futuro) não pode
+    # aparecer nem como atual nem como anterior
+    resultado = mapa_saldos(db_session, dia=date(2026, 7, 21))
+
+    assert len(resultado) == 1
+    assert resultado[0]["dia"] == date(2026, 7, 21)
+    assert resultado[0]["dia_anterior"] == date(2026, 7, 20)
+
+
+def test_mapa_saldos_ordena_por_entidade_e_isola_cada_uma(db_session):
+    db_session.add(SaldoDiario(
+        dia=date(2026, 7, 20), entidade="Empresa B", saldo_contabilistico=50.0, saldo_disponivel=50.0,
+    ))
+    db_session.add(SaldoDiario(
+        dia=date(2026, 7, 20), entidade="Empresa A", saldo_contabilistico=100.0, saldo_disponivel=90.0,
+    ))
+    db_session.add(SaldoDiario(
+        dia=date(2026, 7, 21), entidade="Empresa A", saldo_contabilistico=150.0, saldo_disponivel=140.0,
+    ))
+    db_session.commit()
+
+    resultado = mapa_saldos(db_session)
+
+    assert [linha["entidade"] for linha in resultado] == ["Empresa A", "Empresa B"]
+    empresa_b = next(linha for linha in resultado if linha["entidade"] == "Empresa B")
+    assert empresa_b["dia_anterior"] is None
+    assert empresa_b["variacao_contabilistico"] is None

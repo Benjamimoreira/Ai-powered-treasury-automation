@@ -1,6 +1,7 @@
 import os
 
-from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.orm import Session, aliased
 
 from app.db.models import SaldoDiario
 from app.services.reconciliador import abrir_workbook_com_retry, chave_empresa, nome_empresa_do_ficheiro
@@ -53,19 +54,58 @@ def consultar_saldo(db: Session, empresa: str, dia=None):
     return [s for s in query.all() if chave_empresa(s.entidade) == alvo]
 
 
-def _ultimo_saldo_por_entidade(db: Session, ate_dia=None) -> dict:
-    """Última leitura conhecida de cada entidade - até `ate_dia` inclusive,
-    se indicado (para responder "como estava o saldo neste dia", já que
-    nem todas as contas têm leitura em todos os dias). Sem `ate_dia`,
-    devolve mesmo a mais recente de sempre."""
-    query = db.query(SaldoDiario)
+def _ultimas_leituras_por_entidade(db: Session, ate_dia=None, n: int = 1) -> dict:
+    """Últimas `n` leituras conhecidas de cada entidade (mais recente
+    primeiro) - até `ate_dia` inclusive, se indicado (para responder "como
+    estava o saldo neste dia", já que nem todas as contas têm leitura em
+    todos os dias). Sem `ate_dia`, usa mesmo as mais recentes de sempre.
+
+    Usa ROW_NUMBER() em vez de carregar a tabela toda para memória e
+    filtrar em Python - esta tabela só cresce (uma leitura por
+    entidade/dia, todos os dias, para sempre) e antes disto era varrida
+    por inteiro em cada consulta ao mapa de saldos."""
+    linha = (
+        func.row_number()
+        .over(partition_by=SaldoDiario.entidade, order_by=SaldoDiario.dia.desc())
+        .label("linha")
+    )
+    query = db.query(SaldoDiario, linha)
     if ate_dia is not None:
         query = query.filter(SaldoDiario.dia <= ate_dia)
-    todos = query.order_by(SaldoDiario.dia).all()
-    ultimo = {}
-    for s in todos:
-        ultimo[s.entidade] = s
-    return ultimo
+    subquery = query.subquery()
+    SaldoNumerado = aliased(SaldoDiario, subquery)
+
+    leituras = (
+        db.query(SaldoNumerado)
+        .filter(subquery.c.linha <= n)
+        .order_by(SaldoNumerado.entidade, subquery.c.linha)
+        .all()
+    )
+
+    # Reagrupa por chave_empresa() - a mesma normalização usada em
+    # consultar_saldo() - para não separar o histórico de uma entidade cujo
+    # nome varia ligeiramente entre extratos (ex. "LDA" vs sem sigla); o
+    # ROW_NUMBER() acima particiona pelo nome bruto, por isso duas variantes
+    # da mesma empresa chegam aqui como grupos distintos.
+    por_chave = {}
+    for s in leituras:
+        por_chave.setdefault(chave_empresa(s.entidade), []).append(s)
+
+    por_entidade = {}
+    for leituras_chave in por_chave.values():
+        leituras_chave.sort(key=lambda s: s.dia, reverse=True)
+        nome_exibicao = leituras_chave[0].entidade
+        por_entidade[nome_exibicao] = leituras_chave[:n]
+    return por_entidade
+
+
+def _ultimo_saldo_por_entidade(db: Session, ate_dia=None) -> dict:
+    """Última leitura conhecida de cada entidade - até `ate_dia` inclusive,
+    se indicado. Sem `ate_dia`, devolve mesmo a mais recente de sempre."""
+    return {
+        entidade: leituras[0]
+        for entidade, leituras in _ultimas_leituras_por_entidade(db, ate_dia=ate_dia, n=1).items()
+    }
 
 
 def saldo_total_geral(db: Session, dia=None) -> dict:
@@ -89,6 +129,52 @@ def listar_saldos_atuais(db: Session, dia=None):
     de sempre, sem `dia`) - para rankings/gráficos (ex. "quais as contas
     com mais saldo")."""
     return list(_ultimo_saldo_por_entidade(db, ate_dia=dia).values())
+
+
+def mapa_saldos(db: Session, dia=None) -> list:
+    """Saldo de cada entidade até `dia` (ou o mais recente de sempre, sem
+    `dia`), lado a lado com a leitura anterior dessa mesma entidade -
+    para mostrar de relance quem teve entrada/saída de dinheiro (seta +
+    variação %). "Anterior" é a leitura conhecida imediatamente antes,
+    não necessariamente o dia de calendário anterior, porque nem todas as
+    contas têm leitura todos os dias."""
+    por_entidade = _ultimas_leituras_por_entidade(db, ate_dia=dia, n=2)
+
+    def variacao(atual_valor, anterior_valor):
+        if atual_valor is None or anterior_valor is None:
+            return None, None
+        delta = atual_valor - anterior_valor
+        pct = (delta / abs(anterior_valor) * 100) if anterior_valor != 0 else None
+        return delta, pct
+
+    resultado = []
+    for entidade, leituras in por_entidade.items():
+        atual = leituras[0]
+        anterior = leituras[1] if len(leituras) > 1 else None
+
+        var_contabilistico, var_pct_contabilistico = variacao(
+            atual.saldo_contabilistico, anterior.saldo_contabilistico if anterior else None
+        )
+        var_disponivel, var_pct_disponivel = variacao(
+            atual.saldo_disponivel, anterior.saldo_disponivel if anterior else None
+        )
+
+        resultado.append({
+            "entidade": entidade,
+            "dia": atual.dia,
+            "saldo_contabilistico": atual.saldo_contabilistico,
+            "saldo_disponivel": atual.saldo_disponivel,
+            "dia_anterior": anterior.dia if anterior else None,
+            "saldo_contabilistico_anterior": anterior.saldo_contabilistico if anterior else None,
+            "saldo_disponivel_anterior": anterior.saldo_disponivel if anterior else None,
+            "variacao_contabilistico": var_contabilistico,
+            "variacao_disponivel": var_disponivel,
+            "variacao_pct_contabilistico": var_pct_contabilistico,
+            "variacao_pct_disponivel": var_pct_disponivel,
+        })
+
+    resultado.sort(key=lambda r: r["entidade"])
+    return resultado
 
 
 def registar_saldos_do_dia(db: Session, dia, pasta_extratos: str) -> int:

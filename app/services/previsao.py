@@ -34,6 +34,7 @@ pagamentos, a partir de MovimentoBancario) varia todos os dias porque
 inclui explicitamente os dias sem movimento (valor 0), por isso a
 previsão fica visualmente percetível mesmo sem tendência forte.
 """
+import warnings
 from datetime import timedelta
 
 import numpy as np
@@ -91,8 +92,10 @@ def _prever_suavizacao_exponencial(valores: list, n_futuro: int) -> list:
     """Suavização exponencial de Holt (nível + tendência) - reage mais
     depressa a mudanças recentes do que a regressão linear sobre todo o
     histórico."""
-    modelo = Holt(valores, initialization_method="estimated").fit()
-    return modelo.forecast(n_futuro).tolist()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        modelo = Holt(valores, initialization_method="estimated").fit()
+        return modelo.forecast(n_futuro).tolist()
 
 
 def _prever_arima(valores: list, n_futuro: int) -> list:
@@ -106,8 +109,10 @@ def _prever_arima(valores: list, n_futuro: int) -> list:
     na série diferenciada. Sem isto, a previsão converge quase de
     imediato para uma linha praticamente constante em vez de continuar
     a tendência observada."""
-    modelo = ARIMA(valores, order=(1, 1, 1), trend="t").fit()
-    return modelo.forecast(n_futuro).tolist()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        modelo = ARIMA(valores, order=(1, 1, 1), trend="t").fit()
+        return modelo.forecast(n_futuro).tolist()
 
 
 def _prever_markov(valores: list, n_futuro: int) -> list:
@@ -117,7 +122,9 @@ def _prever_markov(valores: list, n_futuro: int) -> list:
     de uma quebra) e prevê como a mistura ponderada dos dois regimes,
     propagando as probabilidades de transição para a frente."""
     array = np.array(valores, dtype=float)
-    modelo = MarkovRegression(array, k_regimes=2, trend="c", switching_variance=True).fit()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        modelo = MarkovRegression(array, k_regimes=2, trend="c", switching_variance=True).fit()
 
     # smoothed_marginal_probabilities pode vir como DataFrame ou ndarray
     # consoante a versão/config do statsmodels - np.asarray normaliza os dois.

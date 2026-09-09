@@ -4,14 +4,17 @@ from typing import List
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.db.models import LinhaMapa, MovimentoBancario
 from app.db.session import get_db
 from app.models import AuditoriaResponse, MovimentoHistoricoOut, MovimentoStatusOut, ReconciliarResponse, ResumoDiarioOut
 from app.services.reconciliador import (
     auditoria_dia,
     listar_empresas,
+    listar_historico_auditorias,
     listar_movimentos_da_empresa,
     listar_movimentos_do_dia,
     reconciliar_dia,
+    registar_auditoria_dia,
     resumo_diario,
 )
 
@@ -22,6 +25,58 @@ router = APIRouter()
 def reconciliar(dia: date, db: Session = Depends(get_db)):
     resultado = reconciliar_dia(db, dia)
     return ReconciliarResponse(dia=dia, **resultado)
+
+
+# Os dois endpoints seguintes ("geral" e "historico") têm de ficar
+# registados ANTES de "/auditoria/{dia}" (mesmo motivo do
+# "resumo-diario" acima de "/movimentos/{dia}"): senão o Starlette tenta
+# casar "geral"/"historico" com o parâmetro {dia} (tipo date) e falha com
+# 422 antes de chegar aqui.
+@router.post("/auditoria/geral")
+def auditoria_geral(dias_atras: int = 31, db: Session = Depends(get_db)):
+    """'Fazer tudo de novo': sincroniza os últimos `dias_atras` dias a
+    partir do OneDrive e depois corre + regista (auditorias_dia) a
+    auditoria de TODOS os dias que já têm movimentos ou linhas do mapa
+    importados - não precisas de ir dia a dia no dashboard."""
+    from app.services.onedrive_sync import atualizar_dados_recentes  # import tardio: onedrive_sync já importa deste módulo
+
+    atualizar_dados_recentes(db, dias_atras)
+    dias = sorted(
+        {d for (d,) in db.query(MovimentoBancario.dia).distinct().all()}
+        | {d for (d,) in db.query(LinhaMapa.dia).distinct().all()}
+    )
+    resultados = {}
+    for dia in dias:
+        try:
+            r = registar_auditoria_dia(db, dia)
+            resultados[dia.isoformat()] = {
+                "sem_match_fwd": r["sem_match_fwd"],
+                "sem_match_rev": r["sem_match_rev"],
+                "diferenca_extrato_mapa": r["diferenca_extrato_mapa"],
+            }
+        except Exception as e:
+            db.rollback()
+            resultados[dia.isoformat()] = {"erro": str(e)}
+    return {"dias_auditados": len(resultados), "resultados": resultados}
+
+
+@router.get("/auditoria/historico")
+def auditoria_historico(limit: int = 100, db: Session = Depends(get_db)):
+    return {"historico": listar_historico_auditorias(db, limit=limit)}
+
+
+@router.post("/auditoria/{dia}/registar", response_model=AuditoriaResponse)
+def auditoria_registar(dia: date, db: Session = Depends(get_db)):
+    """Como GET /auditoria/{dia}, mas primeiro sincroniza esse dia a
+    partir do OneDrive (para não auditar dados velhos) e depois grava o
+    resultado em auditorias_dia (histórico persistente) - chamada apenas
+    pelo botão "Auditar este dia" do dashboard; não há atualmente nenhuma
+    chamada automática a partir de scripts externos."""
+    from app.services.onedrive_sync import atualizar_dados_do_dia  # import tardio: onedrive_sync já importa deste módulo
+
+    atualizar_dados_do_dia(db, dia)
+    resultado = registar_auditoria_dia(db, dia)
+    return AuditoriaResponse(dia=dia, **resultado)
 
 
 @router.get("/auditoria/{dia}", response_model=AuditoriaResponse)

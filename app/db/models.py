@@ -1,9 +1,16 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, Integer, JSON, String
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
+
+
+def _utcnow_naive() -> datetime:
+    """datetime.utcnow() está deprecated; isto devolve o mesmo valor (UTC
+    "naive", sem tzinfo) para manter a convenção usada em todo o código
+    (colunas DateTime sem timezone, comparações com .replace(tzinfo=None))."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class MovimentoBancario(Base):
@@ -41,7 +48,7 @@ class Reconciliacao(Base):
     movimento_id = Column(Integer, ForeignKey("movimentos_bancarios.id"), nullable=False)
     linha_id = Column(Integer, ForeignKey("linhas_mapa.id"), nullable=True)
     tipo_match = Column(String, nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+    timestamp = Column(DateTime, default=_utcnow_naive, nullable=False)
 
     movimento = relationship("MovimentoBancario", back_populates="reconciliacoes")
     linha = relationship("LinhaMapa", back_populates="reconciliacoes")
@@ -93,6 +100,26 @@ class FaturaRecebida(Base):
     pdf_relativo = Column(String, nullable=True)
 
 
+class AuditoriaDia(Base):
+    """Histórico persistente de auditorias já pedidas (uma linha por
+    auditoria registada, não só a mais recente) - ao contrário de
+    reconciliador.auditoria_dia (só leitura, recalcula na hora e não
+    grava nada), isto fica consultável mais tarde mesmo depois de os
+    dados em movimentos_bancarios/linhas_mapa terem mudado."""
+    __tablename__ = "auditorias_dia"
+
+    id = Column(Integer, primary_key=True)
+    dia = Column(Date, nullable=False, index=True)
+    timestamp = Column(DateTime, default=_utcnow_naive, nullable=False, index=True)
+    sem_match_fwd = Column(Integer, nullable=False)
+    sem_match_rev = Column(Integer, nullable=False)
+    soma_extrato = Column(Float, nullable=False)
+    soma_mapa = Column(Float, nullable=False)
+    diferenca = Column(Float, nullable=False)
+    movimentos_sem_match = Column(JSON, nullable=True)
+    linhas_sem_match = Column(JSON, nullable=True)
+
+
 class ExecucaoScript(Base):
     __tablename__ = "execucoes_scripts"
 
@@ -102,4 +129,20 @@ class ExecucaoScript(Base):
     erro = Column(String, nullable=True)
     log = Column(JSON, nullable=True)
     duracao_segundos = Column(Float, nullable=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    timestamp = Column(DateTime, default=_utcnow_naive, nullable=False, index=True)
+
+
+class EventoScript(Base):
+    """Um evento de log reportado em tempo real, a meio de uma corrida
+    ainda a decorrer (ex.: um [ERRO] apanhado no dia 12 de 26 a processar)
+    - ao contrário de ExecucaoScript, que só grava o resultado final de
+    uma corrida já terminada. Pedido explícito (logging em tempo real,
+    26/08/2026): dá visibilidade a um erro assim que acontece, em vez de
+    só quando a corrida toda terminar, minutos depois."""
+    __tablename__ = "eventos_scripts"
+
+    id = Column(Integer, primary_key=True)
+    script = Column(String, nullable=False, index=True)
+    nivel = Column(String, nullable=False)
+    mensagem = Column(String, nullable=False)
+    timestamp = Column(DateTime, default=_utcnow_naive, nullable=False, index=True)

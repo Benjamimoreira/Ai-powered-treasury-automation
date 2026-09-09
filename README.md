@@ -87,7 +87,7 @@ dashboard/
   api_client.py                # cliente HTTP fino - o dashboard nunca acede à BD diretamente
 mcp_server.py                # servidor MCP (tools)
 scripts/                     # scripts de migração/importação únicos + testes manuais
-tests/                       # suite pytest (65 testes)
+tests/                       # suite pytest (88 testes)
 Dockerfile · docker-compose.yml · .github/workflows/ci.yml
 ```
 
@@ -118,7 +118,7 @@ Abre `http://127.0.0.1:8501`.
 ```powershell
 pytest -v
 ```
-65 testes, todos com mocks/dados sintéticos (sem chamadas de rede nem
+88 testes, todos com mocks/dados sintéticos (sem chamadas de rede nem
 custos). O LLM e o RAG são isolados em funções próprias precisamente
 para poderem ser substituídos nos testes.
 
@@ -133,6 +133,13 @@ desenvolvimento (Docker Desktop sem WSL2 disponível).
 
 ## Limitações conhecidas
 
+- Não há Alembic - novas colunas em tabelas já existentes só ficam ativas
+  depois de correr `python scripts\criar_tabelas.py` (ou manualmente)
+  contra a BD de produção, porque `create_all` nunca altera tabelas já
+  criadas. Tabelas novas em `app/db/models.py` já não sofrem deste
+  problema: o `lifespan` de `app/main.py` corre `create_all` em todos os
+  arranques (idempotente - só cria o que falta), por isso uma tabela nova
+  fica disponível a partir do próximo deploy sem passo manual.
 - A reconciliação não deteta movimentos já lançados diretamente no Mapa
   sem terem passado por "Valor Previsto" (equivalente ao
   `filtrar_ja_registados` do script original) - aparecem como "novo".

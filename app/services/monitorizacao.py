@@ -1,14 +1,16 @@
 import logging
+import os
+import subprocess
 import time
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterator, List, Optional
 from zoneinfo import ZoneInfo
 
 import json_log_formatter
 from sqlalchemy.orm import Session
 
-from app.db.models import ExecucaoScript
+from app.db.models import EventoScript, ExecucaoScript
 
 FUSO_LOCAL = ZoneInfo("Europe/Lisbon")
 TOLERANCIA_ATRASO_MINUTOS = 20
@@ -35,14 +37,17 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
     "preencher_mapa": {
         "descricao": "Preenchimento do Mapa de Pagamentos e Recebimentos a partir dos extratos bancários",
         "hora_execucao": "08:50, 12:50, 14:10, 16:15, 18:30",
+        "ficheiro": "preencher_mapa.py",
     },
     "atualizar_mapa_saldos": {
         "descricao": "Atualização do Mapa de Saldos Bancários (folhas diárias)",
         "hora_execucao": "08:55, 12:55, 14:15, 16:20, 18:35",
+        "ficheiro": "atualizar_mapa_saldos.py",
     },
     "enviar_mapa_smtp": {
         "descricao": "Envio diário do Mapa de Pagamentos e Recebimentos por email",
         "hora_execucao": "16:30",
+        "ficheiro": "enviar_mapa_smtp.py",
     },
 }
 
@@ -132,9 +137,66 @@ def listar_scripts(db: Session) -> List[Dict[str, Any]]:
     return resultado
 
 
-def listar_logs(db: Session, limit: int = 50) -> List[Dict[str, Any]]:
+def _raiz_scripts_preenchimento() -> Optional[str]:
+    """Pasta do projeto "tesouraria preenchimento" onde vivem preencher_mapa.py,
+    atualizar_mapa_saldos.py e enviar_mapa_smtp.py - só existe na máquina onde
+    esses scripts correm agendados (não dentro do container Docker da API).
+    Por omissão, deriva-a de SCRIPTS_LOG_DIR (.../tesouraria preenchimento/logs),
+    que já aponta para lá; SCRIPTS_PREENCHIMENTO_RAIZ permite sobrepor."""
+    raiz = os.environ.get("SCRIPTS_PREENCHIMENTO_RAIZ")
+    if raiz:
+        return raiz
+    log_dir = os.environ.get("SCRIPTS_LOG_DIR")
+    return os.path.dirname(log_dir) if log_dir else None
+
+
+def correr_script(nome: str) -> Dict[str, Any]:
+    """Dispara a execução do script `nome` (preencher_mapa, atualizar_mapa_saldos
+    ou enviar_mapa_smtp) na máquina onde a API corre nativamente - fire-and-forget,
+    o próprio script reporta o resultado a registar_execucao() via
+    monitorizar()/POST /monitorizacao/scripts/{script}/executar quando terminar."""
+    nome = nome.strip().lower()
+    info = SCRIPT_PADRAO.get(nome)
+    if not info or "ficheiro" not in info:
+        raise ValueError(f"Script desconhecido: {nome}")
+
+    raiz = _raiz_scripts_preenchimento()
+    if not raiz or not os.path.isdir(raiz):
+        raise RuntimeError(
+            "Pasta dos scripts (tesouraria preenchimento) não está acessível nesta "
+            "máquina/contentor - define SCRIPTS_PREENCHIMENTO_RAIZ."
+        )
+
+    caminho_script = os.path.join(raiz, info["ficheiro"])
+    if not os.path.isfile(caminho_script):
+        raise RuntimeError(f"Ficheiro do script não encontrado: {caminho_script}")
+
+    python_exe = os.environ.get("SCRIPTS_PREENCHIMENTO_PYTHON") or os.path.join(raiz, ".venv", "Scripts", "python.exe")
+    if not os.path.isfile(python_exe):
+        raise RuntimeError(f"Python do venv dos scripts não encontrado: {python_exe}")
+
+    subprocess.Popen(
+        [python_exe, caminho_script],
+        cwd=raiz,
+        creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0),
+    )
+    return {"nome": nome, "status": "iniciado"}
+
+
+def listar_logs(db: Session, limit: int = 50, dia: Optional[date] = None) -> List[Dict[str, Any]]:
+    query = db.query(ExecucaoScript)
+    if dia is not None:
+        # timestamp é guardado em UTC "naive" (datetime.utcnow); converte a
+        # fronteira do dia local (Europe/Lisbon) para UTC "naive" para poder
+        # comparar diretamente na query, sem depender do fuso do Postgres.
+        inicio_local = datetime.combine(dia, datetime.min.time(), tzinfo=FUSO_LOCAL)
+        fim_local = inicio_local + timedelta(days=1)
+        inicio_utc = inicio_local.astimezone(timezone.utc).replace(tzinfo=None)
+        fim_utc = fim_local.astimezone(timezone.utc).replace(tzinfo=None)
+        query = query.filter(ExecucaoScript.timestamp >= inicio_utc, ExecucaoScript.timestamp < fim_utc)
+
     execucoes = (
-        db.query(ExecucaoScript)
+        query
         .order_by(ExecucaoScript.timestamp.desc())
         .limit(limit)
         .all()
@@ -175,6 +237,50 @@ def registar_execucao(db: Session, script: str, status: str, erro: Optional[str]
         "duracao_segundos": duracao_segundos,
         "logs": log or [],
     }
+
+
+def registar_evento(db: Session, script: str, nivel: str, mensagem: str) -> Dict[str, Any]:
+    """Grava um evento de log em tempo real (POST /monitorizacao/scripts/
+    {script}/eventos, enviado pelo _HandlerEventoDashboard em
+    monitorizacao_client.py assim que um [ERRO]/[AVISO] acontece durante a
+    corrida) - separado de execucoes_scripts, que só tem o resultado final
+    de cada corrida já terminada."""
+    nome = script.strip().lower()
+    evento = EventoScript(script=nome, nivel=nivel.strip().lower(), mensagem=mensagem)
+    db.add(evento)
+    db.commit()
+    db.refresh(evento)
+
+    _logger_json.info("evento_script", extra={
+        "script": nome,
+        "nivel": evento.nivel,
+        "mensagem": mensagem,
+    })
+
+    return {
+        "id": evento.id,
+        "script": nome,
+        "nivel": evento.nivel,
+        "mensagem": mensagem,
+        "timestamp": _isoformat(evento.timestamp),
+    }
+
+
+def listar_eventos(db: Session, limit: int = 50, script: Optional[str] = None) -> List[Dict[str, Any]]:
+    query = db.query(EventoScript)
+    if script:
+        query = query.filter(EventoScript.script == script.strip().lower())
+    eventos = query.order_by(EventoScript.timestamp.desc()).limit(limit).all()
+    return [
+        {
+            "id": evento.id,
+            "script": evento.script,
+            "nivel": evento.nivel,
+            "mensagem": evento.mensagem,
+            "timestamp": _isoformat(evento.timestamp),
+        }
+        for evento in eventos
+    ]
 
 
 @contextmanager

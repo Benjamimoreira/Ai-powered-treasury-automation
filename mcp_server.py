@@ -46,10 +46,19 @@ def reconciliar_dia_tool(dia: str) -> dict:
 def auditoria_dia_tool(dia: str) -> dict:
     """Verificação read-only de um dia (formato AAAA-MM-DD): conta
     movimentos sem correspondência e linhas do mapa com previsto em aberto
-    que ainda não bateram com nenhum movimento. Não altera nada."""
+    que ainda não bateram com nenhum movimento. Não altera nada. Devolve só
+    o resumo (contagens e somas) - para a lista detalhada de movimentos usa
+    movimentos_do_dia_tool."""
     db = SessionLocal()
     try:
-        return auditoria_dia(db, date.fromisoformat(dia))
+        resultado = auditoria_dia(db, date.fromisoformat(dia))
+        return {
+            "sem_match_fwd": resultado["sem_match_fwd"],
+            "sem_match_rev": resultado["sem_match_rev"],
+            "soma_extrato": resultado["soma_extrato"],
+            "soma_mapa": resultado["soma_mapa"],
+            "diferenca_extrato_mapa": resultado["diferenca_extrato_mapa"],
+        }
     finally:
         db.close()
 

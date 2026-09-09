@@ -10,12 +10,18 @@ from app.models import (
     AvaliacaoModelosOut,
     PrevisaoCashflowOut,
     PrevisaoSaldoOut,
+    SaldoMapaOut,
     SaldoOut,
     SaldoTotalOut,
 )
 from app.services.previsao import avaliar_cashflow, avaliar_modelos, prever_cashflow, prever_saldo
 from app.services.saldos import consultar_saldo as consultar_saldo_servico
-from app.services.saldos import listar_saldos_atuais, registar_saldos_do_dia, saldo_total_geral
+from app.services.saldos import (
+    listar_saldos_atuais,
+    mapa_saldos,
+    registar_saldos_do_dia,
+    saldo_total_geral,
+)
 
 router = APIRouter()
 
@@ -92,6 +98,15 @@ def saldos_atuais(dia: Optional[date] = None, db: Session = Depends(get_db)):
     """Último saldo conhecido de cada entidade até `dia` (ou o mais recente
     de sempre, sem `dia`) - para rankings/gráficos."""
     return listar_saldos_atuais(db, dia)
+
+
+@router.get("/saldos/mapa", response_model=List[SaldoMapaOut])
+def saldos_mapa(dia: Optional[date] = None, db: Session = Depends(get_db)):
+    """Mapa de saldos de todas as entidades num dia, lado a lado com a
+    leitura anterior de cada conta (valor e variação %) - para ver de
+    relance quem teve entrada/saída de dinheiro. Rota definida antes de
+    `/saldos/{empresa}` para não ser apanhada por esse path param."""
+    return mapa_saldos(db, dia)
 
 
 @router.get("/saldos/{empresa}", response_model=List[SaldoOut])

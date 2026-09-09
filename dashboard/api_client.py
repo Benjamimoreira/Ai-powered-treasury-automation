@@ -39,6 +39,25 @@ def auditoria(dia: str) -> dict:
     return r.json()
 
 
+def registar_auditoria(dia: str) -> dict:
+    """Como auditoria(), mas fica gravada em auditorias_dia (histórico)."""
+    r = requests.post(f"{API_BASE_URL}/auditoria/{dia}/registar", timeout=60)
+    r.raise_for_status()
+    return r.json()
+
+
+def auditoria_geral(dias_atras: int = 31) -> dict:
+    r = requests.post(f"{API_BASE_URL}/auditoria/geral", params={"dias_atras": dias_atras}, timeout=300)
+    r.raise_for_status()
+    return r.json()
+
+
+def historico_auditorias(limit: int = 100) -> dict:
+    r = requests.get(f"{API_BASE_URL}/auditoria/historico", params={"limit": limit})
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_movimentos(dia: str) -> list:
     r = requests.get(f"{API_BASE_URL}/movimentos/{dia}")
     r.raise_for_status()
@@ -62,6 +81,13 @@ def saldo_total(dia: Optional[str] = None) -> dict:
 def listar_saldos_atuais(dia: Optional[str] = None) -> list:
     params = {"dia": dia} if dia else {}
     r = requests.get(f"{API_BASE_URL}/saldos", params=params)
+    r.raise_for_status()
+    return r.json()
+
+
+def mapa_saldos(dia: Optional[str] = None) -> list:
+    params = {"dia": dia} if dia else {}
+    r = requests.get(f"{API_BASE_URL}/saldos/mapa", params=params)
     r.raise_for_status()
     return r.json()
 
@@ -112,12 +138,6 @@ def avaliar_previsao_cashflow(empresa: Optional[str] = None, dias_teste: int = 5
     return r.json()
 
 
-def listar_anomalias(dia: str) -> list:
-    r = requests.get(f"{API_BASE_URL}/anomalias/{dia}")
-    r.raise_for_status()
-    return r.json()
-
-
 def perguntar_chat(pergunta: str) -> dict:
     r = requests.post(f"{API_BASE_URL}/chat", json={"pergunta": pergunta}, timeout=120)
     r.raise_for_status()
@@ -142,8 +162,30 @@ def listar_monitorizacao_scripts() -> dict:
     return r.json()
 
 
-def listar_monitorizacao_logs(limit: int = 50) -> dict:
-    r = requests.get(f"{API_BASE_URL}/monitorizacao/logs", params={"limit": limit})
+def correr_script(script: str) -> dict:
+    r = requests.post(f"{API_BASE_URL}/monitorizacao/scripts/{script}/correr", timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+def listar_monitorizacao_logs(limit: int = 50, dia: str = None) -> dict:
+    params = {"limit": limit}
+    if dia:
+        params["dia"] = dia
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/logs", params=params)
+    r.raise_for_status()
+    return r.json()
+
+
+def listar_monitorizacao_eventos(limit: int = 50, script: Optional[str] = None) -> dict:
+    """Eventos de log reportados em tempo real, a meio de corridas ainda a
+    decorrer (ver _HandlerEventoDashboard em monitorizacao_client.py) -
+    diferente de listar_monitorizacao_logs(), que só tem o resultado final
+    de corridas já terminadas."""
+    params = {"limit": limit}
+    if script:
+        params["script"] = script
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/eventos", params=params)
     r.raise_for_status()
     return r.json()
 

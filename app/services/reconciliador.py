@@ -8,7 +8,8 @@ import unicodedata
 import openpyxl
 from sqlalchemy.orm import Session
 
-from app.db.models import CasoAmbiguo, LinhaMapa, MovimentoBancario, Reconciliacao
+from app.db.models import AuditoriaDia, CasoAmbiguo, LinhaMapa, MovimentoBancario, Reconciliacao
+from app.services.monitorizacao import _isoformat
 
 TOLERANCIA_VALOR = 0.01
 
@@ -229,28 +230,159 @@ def resumo_diario(db: Session):
     ]
 
 
+def analise_imputacoes(db: Session, empresa: str = None, dia_inicio=None, dia_fim=None) -> dict:
+    """Soma o valor pago (real, já sinalizado por importar_linhas - ver
+    mapa_importer.py) de cada linha do Mapa agrupado por imputação e por
+    tipo (recebimento/pagamento), para o gráfico circular "Análise de
+    Extratos" - quanto de cada categoria pesa no total recebido/pago no
+    período. Só considera linhas com pago preenchido (movimento já
+    confirmado no extrato, não só previsto)."""
+    query = db.query(LinhaMapa).filter(LinhaMapa.pago.isnot(None))
+    if dia_inicio is not None:
+        query = query.filter(LinhaMapa.dia >= dia_inicio)
+    if dia_fim is not None:
+        query = query.filter(LinhaMapa.dia <= dia_fim)
+    linhas = query.all()
+
+    if empresa:
+        alvo = chave_empresa(empresa)
+        linhas = [l for l in linhas if chave_empresa(l.empresa) == alvo]
+
+    somas = {"recebimento": {}, "pagamento": {}}
+    for l in linhas:
+        categoria = l.imputacao or "(sem imputação)"
+        somas[l.tipo][categoria] = somas[l.tipo].get(categoria, 0.0) + abs(l.pago)
+
+    def _ordenado(por_categoria: dict) -> list:
+        return [
+            {"imputacao": categoria, "valor": valor}
+            for categoria, valor in sorted(por_categoria.items(), key=lambda item: item[1], reverse=True)
+        ]
+
+    return {
+        "recebimentos": _ordenado(somas["recebimento"]),
+        "pagamentos": _ordenado(somas["pagamento"]),
+    }
+
+
 def auditoria_dia(db: Session, dia) -> dict:
-    """Verificação read-only (não grava nada): conta movimentos sem
-    correspondência numa linha do mapa (sem_match_fwd) e linhas do mapa
-    com previsto ainda em aberto (sem pago) que não correspondem a nenhum
-    movimento (sem_match_rev). Linhas com previsto E pago já preenchidos
-    (resolvidas antes de existir esta API) ficam de fora - já não são
-    "previstos por bater", são histórico. Independente de reconciliar_dia
-    já ter corrido."""
+    """Verificação read-only (não grava nada): identifica movimentos sem
+    correspondência numa linha do mapa (sem_match_fwd - algo que devia
+    estar preenchido no Mapa e não está) e linhas do mapa com previsto
+    ainda em aberto (sem pago) que não correspondem a nenhum movimento
+    (sem_match_rev - algo preenchido no Mapa sem confirmação no extrato
+    real). Devolve também a lista detalhada de cada um, com a empresa/
+    ficheiro de origem do movimento, para o dashboard (aba Monitorização
+    > Auditoria) mostrar exatamente o que falta/sobra e de onde veio.
+    Linhas com previsto E pago já preenchidos (resolvidas antes de existir
+    esta API) ficam de fora - já não são "previstos por bater", são
+    histórico. Independente de reconciliar_dia já ter corrido."""
     movimentos = db.query(MovimentoBancario).filter(MovimentoBancario.dia == dia).all()
-    linhas = db.query(LinhaMapa).filter(
+    linhas_abertas = db.query(LinhaMapa).filter(
         LinhaMapa.dia == dia, LinhaMapa.previsto.isnot(None), LinhaMapa.pago.is_(None),
     ).all()
+    linhas_todas = db.query(LinhaMapa).filter(LinhaMapa.dia == dia).all()
 
-    sem_match_fwd = sum(
-        1 for movimento in movimentos
-        if not any(_linha_bate_com_movimento(linha, movimento) for linha in linhas)
-    )
-    sem_match_rev = sum(
-        1 for linha in linhas
+    movimentos_sem_match = [
+        movimento for movimento in movimentos
+        if not any(_linha_bate_com_movimento(linha, movimento) for linha in linhas_abertas)
+    ]
+    linhas_sem_match = [
+        linha for linha in linhas_abertas
         if not any(_linha_bate_com_movimento(linha, movimento) for movimento in movimentos)
+    ]
+
+    movimentos_dia_out = [
+        {
+            "empresa": m.empresa,
+            "descricao": m.descricao,
+            "valor": m.valor,
+            "ficheiro_origem": m.ficheiro_origem,
+        }
+        for m in movimentos
+    ]
+    # soma_extrato: total real dos movimentos bancários desse dia (fonte:
+    # extratos). soma_mapa: total do que já ficou confirmado ("real"/pago)
+    # nas linhas do Mapa desse dia, com o mesmo sinal (ver mapa_importer -
+    # pagamentos negativos, recebimentos positivos), para as duas somas
+    # serem diretamente comparáveis. Uma diferença != 0 sinaliza movimento
+    # do extrato ainda não refletido no Mapa (ou vice-versa).
+    soma_extrato = sum(m.valor for m in movimentos)
+    soma_mapa = sum(l.pago for l in linhas_todas if l.pago is not None)
+
+    return {
+        "sem_match_fwd": len(movimentos_sem_match),
+        "sem_match_rev": len(linhas_sem_match),
+        "movimentos_sem_match": [
+            {
+                "empresa": m.empresa,
+                "descricao": m.descricao,
+                "valor": m.valor,
+                "ficheiro_origem": m.ficheiro_origem,
+            }
+            for m in movimentos_sem_match
+        ],
+        "linhas_sem_match": [
+            {
+                "linha": l.linha,
+                "empresa": l.empresa,
+                "previsto": l.previsto,
+                "imputacao": l.imputacao,
+            }
+            for l in linhas_sem_match
+        ],
+        "movimentos_dia": movimentos_dia_out,
+        "soma_extrato": soma_extrato,
+        "soma_mapa": soma_mapa,
+        "diferenca_extrato_mapa": soma_extrato - soma_mapa,
+    }
+
+
+def registar_auditoria_dia(db: Session, dia) -> dict:
+    """Corre auditoria_dia e grava o resultado em auditorias_dia (uma
+    linha nova por pedido, nunca substitui a anterior) - fica um histórico
+    consultável mesmo depois de os dados de origem mudarem, ao contrário
+    de auditoria_dia sozinho (só leitura, recalcula sempre na hora). Chamada
+    apenas pelo botão "Auditar este dia"/"Auditoria geral" do dashboard -
+    não há atualmente nenhuma chamada automática a partir de scripts
+    externos (ex. preencher_mapa.py, que corre noutro repositório); se essa
+    integração vier a existir, tem de ser feita explicitamente lá."""
+    resultado = auditoria_dia(db, dia)
+    db.add(AuditoriaDia(
+        dia=dia,
+        sem_match_fwd=resultado["sem_match_fwd"],
+        sem_match_rev=resultado["sem_match_rev"],
+        soma_extrato=resultado["soma_extrato"],
+        soma_mapa=resultado["soma_mapa"],
+        diferenca=resultado["diferenca_extrato_mapa"],
+        movimentos_sem_match=resultado["movimentos_sem_match"],
+        linhas_sem_match=resultado["linhas_sem_match"],
+    ))
+    db.commit()
+    return resultado
+
+
+def listar_historico_auditorias(db: Session, limit: int = 100) -> list:
+    """Últimas auditorias registadas (mais recente primeiro) - histórico
+    persistente, ao contrário do resultado ao vivo de auditoria_dia."""
+    registos = (
+        db.query(AuditoriaDia)
+        .order_by(AuditoriaDia.timestamp.desc())
+        .limit(limit)
+        .all()
     )
-    return {"sem_match_fwd": sem_match_fwd, "sem_match_rev": sem_match_rev}
+    return [
+        {
+            "dia": r.dia.isoformat(),
+            "timestamp": _isoformat(r.timestamp),
+            "sem_match_fwd": r.sem_match_fwd,
+            "sem_match_rev": r.sem_match_rev,
+            "soma_extrato": r.soma_extrato,
+            "soma_mapa": r.soma_mapa,
+            "diferenca": r.diferenca,
+        }
+        for r in registos
+    ]
 
 
 def resolver_ambiguo(db: Session, caso_id: int, linha_id, resolvido_por: str) -> CasoAmbiguo:

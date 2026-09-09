@@ -42,6 +42,71 @@ def test_auditoria_endpoint(client, db_session):
     assert resposta.json()["sem_match_fwd"] == 1
 
 
+def test_auditoria_historico_endpoint(client, db_session):
+    db_session.add(MovimentoBancario(
+        dia=DIA_DATE, empresa="SEM MAPA,LDA", descricao="TRANSF", valor=-50.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.commit()
+
+    from app.services.reconciliador import registar_auditoria_dia
+    registar_auditoria_dia(db_session, DIA_DATE)
+
+    resposta = client.get("/auditoria/historico")
+
+    assert resposta.status_code == 200
+    historico = resposta.json()["historico"]
+    assert len(historico) == 1
+    assert historico[0]["dia"] == DIA
+
+
+def test_auditoria_geral_endpoint_recupera_sessao_apos_erro_num_dia(client, db_session, monkeypatch):
+    """Regressão: se registar_auditoria_dia falhar (ex.: erro de BD) a
+    meio do loop de dias, a sessão SQLAlchemy fica "suja" até se chamar
+    rollback() - sem isso, todos os dias seguintes falhavam em cascata,
+    mesmo sem nada de errado com eles."""
+    from app.services import onedrive_sync
+    from app.db.models import AuditoriaDia
+    import app.routers.reconciliacao as reconciliacao_router
+
+    monkeypatch.setattr(onedrive_sync, "atualizar_dados_recentes", lambda db, dias_atras: None)
+
+    dia1, dia2 = date(2026, 7, 20), date(2026, 7, 21)
+    db_session.add(MovimentoBancario(
+        dia=dia1, empresa="A,LDA", descricao="TRANSF", valor=-10.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.add(MovimentoBancario(
+        dia=dia2, empresa="B,LDA", descricao="TRANSF", valor=-20.0, ficheiro_origem="x.xlsx",
+    ))
+    db_session.commit()
+
+    original = reconciliacao_router.registar_auditoria_dia
+    estado = {"chamadas": 0}
+
+    def registar_com_falha_no_primeiro_dia(db, dia):
+        estado["chamadas"] += 1
+        if estado["chamadas"] == 1:
+            # simula uma falha real de BD a meio do commit (viola a
+            # coluna NOT NULL "dia" de auditorias_dia via um INSERT feito
+            # pelo ORM, tal como o próprio registar_auditoria_dia faz) -
+            # deixa a sessão "suja" (PendingRollbackError) tal como
+            # aconteceria com um erro de integridade genuíno
+            db.add(AuditoriaDia(
+                dia=None, sem_match_fwd=0, sem_match_rev=0, soma_extrato=0, soma_mapa=0, diferenca=0,
+            ))
+            db.commit()
+        return original(db, dia)
+
+    monkeypatch.setattr(reconciliacao_router, "registar_auditoria_dia", registar_com_falha_no_primeiro_dia)
+
+    resposta = client.post("/auditoria/geral")
+
+    assert resposta.status_code == 200
+    corpo = resposta.json()
+    assert corpo["dias_auditados"] == 2
+    assert "erro" in corpo["resultados"][dia1.isoformat()]
+    assert corpo["resultados"][dia2.isoformat()]["sem_match_fwd"] == 1
+
+
 def test_ambiguos_listar_e_resolver(client, db_session):
     db_session.add(MovimentoBancario(
         dia=DIA_DATE, empresa="ANCORA APOGEU,LDA", descricao="TRANSF", valor=-100.0,
@@ -147,6 +212,37 @@ def test_monitorizacao_regista_execucao_e_log_erro(client):
         item["script"] == "preencher_mapa" and item["nivel"] == "erro"
         for item in logs.json()["logs"]
     )
+
+
+def test_monitorizacao_regista_e_lista_evento_em_tempo_real(client):
+    resposta = client.post(
+        "/monitorizacao/scripts/preencher_mapa/eventos",
+        json={"nivel": "erro", "mensagem": "Falha a meio da corrida"},
+    )
+
+    assert resposta.status_code == 200
+    corpo = resposta.json()
+    assert corpo["script"] == "preencher_mapa"
+    assert corpo["nivel"] == "erro"
+    assert corpo["mensagem"] == "Falha a meio da corrida"
+
+    eventos = client.get("/monitorizacao/eventos")
+    assert eventos.status_code == 200
+    assert any(
+        e["script"] == "preencher_mapa" and e["nivel"] == "erro" and e["mensagem"] == "Falha a meio da corrida"
+        for e in eventos.json()["eventos"]
+    )
+
+
+def test_monitorizacao_lista_eventos_filtra_por_script(client):
+    client.post("/monitorizacao/scripts/preencher_mapa/eventos", json={"nivel": "erro", "mensagem": "a"})
+    client.post("/monitorizacao/scripts/enviar_mapa_smtp/eventos", json={"nivel": "info", "mensagem": "b"})
+
+    eventos = client.get("/monitorizacao/eventos", params={"script": "enviar_mapa_smtp"})
+
+    assert eventos.status_code == 200
+    scripts = {e["script"] for e in eventos.json()["eventos"]}
+    assert scripts == {"enviar_mapa_smtp"}
 
 
 def test_monitorizacao_sinaliza_script_atrasado():
