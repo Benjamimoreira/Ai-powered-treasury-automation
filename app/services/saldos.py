@@ -177,6 +177,57 @@ def mapa_saldos(db: Session, dia=None) -> list:
     return resultado
 
 
+def _serie_saldo_total_bruta(db: Session) -> list:
+    """Núcleo de serie_saldo_total(): mesma lógica (soma da última leitura
+    conhecida de cada entidade, dia a dia), mas devolve `dia` como objeto
+    `date` em vez de string ISO - para uso interno (ex. previsao.py, que
+    precisa de objetos `date` para somar `timedelta`), reaproveitado por
+    serie_saldo_total() para a resposta da API."""
+    leituras = db.query(SaldoDiario).order_by(SaldoDiario.dia).all()
+    if not leituras:
+        return []
+
+    ultimo_contabilistico: dict = {}
+    ultimo_disponivel: dict = {}
+    resultado = []
+    dia_atual = leituras[0].dia
+
+    def _ponto(dia):
+        return {
+            "dia": dia,
+            "saldo_contabilistico_total": sum(v or 0 for v in ultimo_contabilistico.values()),
+            "saldo_disponivel_total": sum(v or 0 for v in ultimo_disponivel.values()),
+        }
+
+    for s in leituras:
+        if s.dia != dia_atual:
+            resultado.append(_ponto(dia_atual))
+            dia_atual = s.dia
+        chave = chave_empresa(s.entidade)
+        ultimo_contabilistico[chave] = s.saldo_contabilistico
+        ultimo_disponivel[chave] = s.saldo_disponivel
+
+    resultado.append(_ponto(dia_atual))
+    return resultado
+
+
+def serie_saldo_total(db: Session) -> list:
+    """Evolução do saldo total (soma de todas as entidades) ao longo do
+    tempo - para o gráfico "saldo bancário de todas as contas juntas" da
+    Visão Geral. Para cada dia com pelo menos uma leitura, soma a última
+    leitura conhecida de CADA entidade até esse dia (mesma lógica de
+    saldo_total_geral, aplicada a todos os dias de uma vez) - uma conta
+    sem movimento nesse dia entra com o saldo que já tinha, não com zero.
+
+    Percorre as leituras uma única vez, ordenadas por dia (já vêm
+    agrupadas por dia da própria ordenação) - O(leituras), evita repetir
+    a consulta por dia que saldo_total_geral faz para um único dia."""
+    return [
+        {**ponto, "dia": ponto["dia"].isoformat()}
+        for ponto in _serie_saldo_total_bruta(db)
+    ]
+
+
 def registar_saldos_do_dia(db: Session, dia, pasta_extratos: str) -> int:
     """Lê os saldos finais de cada extrato da pasta e grava-os em
     saldos_diarios. Devolve o número de entidades registadas.

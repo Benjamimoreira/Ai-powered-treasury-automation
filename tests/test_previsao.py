@@ -45,12 +45,13 @@ def test_prever_saldo_devolve_historico_e_os_modelos_basicos(db_session):
     resultado = prever_saldo(db_session, "EMPRESA TESTE,LDA", dias_futuro=3)
 
     assert len(resultado["historico"]) == 10
-    # os modelos mais simples nunca deviam falhar com uma série tão limpa;
-    # markov_switching pode falhar aqui (sem "regimes" a distinguir numa
-    # tendência perfeitamente linear e sem ruído) - por isso não é exigido.
-    assert {"regressao_linear", "media_movel", "suavizacao_exponencial", "arima"} <= set(
-        resultado["previsao"].keys()
-    )
+    # numa tendência perfeitamente linear e sem ruído, a regressão linear
+    # acerta quase exatamente no teste retido - por isso é, de longe, a
+    # que sobrevive à filtragem de melhores modelos (ver
+    # _manter_melhores_modelos), a par do ensemble. Não se exige mais
+    # nenhum modelo específico: qual deles fica dependente do RMSE de
+    # cada um, não é garantido a priori.
+    assert {"regressao_linear", "ensemble"} <= set(resultado["previsao"].keys())
     for pontos in resultado["previsao"].values():
         assert len(pontos) == 3
 
@@ -152,9 +153,11 @@ def test_prever_cashflow_preenche_dias_sem_movimento_a_zero_e_agrega_entidades(d
     assert dia_com_pagamento["pagamentos"] == pytest.approx(40.0)
     assert dia_com_pagamento["liquido"] == pytest.approx(-40.0)
 
-    assert {"regressao_linear", "media_movel", "suavizacao_exponencial", "arima"} <= set(
-        resultado["previsao"].keys()
-    )
+    # histórico tão curto (7 dias) já chega para medir RMSE num pequeno
+    # teste retido (ver _dias_teste_ensemble) e por isso filtrar os
+    # modelos claramente piores nesta série - não se exige mais nenhum
+    # modelo específico além do ensemble, só que a previsão exista.
+    assert "ensemble" in resultado["previsao"]
     for pontos in resultado["previsao"].values():
         assert len(pontos) == 3
 
@@ -203,8 +206,14 @@ def test_prever_cashflow_inclui_gradient_boosting_com_historico_suficiente(db_se
 
     resultado = prever_cashflow(db_session, "EMPRESA GB,LDA", dias_futuro=4)
 
-    assert "gradient_boosting" in resultado["previsao"]
-    assert len(resultado["previsao"]["gradient_boosting"]) == 4
+    # o gradient boosting é sempre calculado com histórico suficiente
+    # (dá para ver pelas suas importâncias de feature, abaixo) mas só
+    # sobrevive como linha em resultado["previsao"] se estiver entre os
+    # melhores no teste retido (ver _manter_melhores_modelos) - um padrão
+    # semanal tão limpo como este costuma favorecer a suavização
+    # exponencial sazonal (Holt-Winters), que o filtra; por isso não se
+    # exige aqui que a linha sobreviva, só que o ensemble exista.
+    assert "ensemble" in resultado["previsao"]
     assert resultado["importancia_features"] is not None
     # as importâncias são um "peso" por feature - devem existir para as 7
     # features e somar ~1 (é assim que sklearn normaliza feature_importances_)
@@ -227,6 +236,39 @@ def test_prever_cashflow_sem_gradient_boosting_com_historico_curto(db_session):
     assert "gradient_boosting" not in resultado["previsao"]
     assert resultado["importancia_features"] is None
     assert "regressao_linear" in resultado["previsao"]
+
+
+def test_prever_saldo_total_agrega_todas_as_entidades(db_session):
+    # duas entidades com tendências diferentes - o saldo total é a soma
+    # das duas, dia a dia (mesma lógica de serie_saldo_total).
+    valores_a = [100.0 + 10 * i for i in range(10)]
+    valores_b = [50.0 + 5 * i for i in range(10)]
+    _adicionar_serie(db_session, "EMPRESA A,LDA", valores_a)
+    _adicionar_serie(db_session, "EMPRESA B,LDA", valores_b)
+
+    resultado = prever_saldo(db_session, dias_futuro=3)
+
+    assert len(resultado["historico"]) == 10
+    assert resultado["historico"][0]["valor"] == pytest.approx(150.0)
+    assert resultado["historico"][-1]["valor"] == pytest.approx(
+        valores_a[-1] + valores_b[-1]
+    )
+    assert {"regressao_linear", "ensemble"} <= set(resultado["previsao"].keys())
+    for pontos in resultado["previsao"].values():
+        assert len(pontos) == 3
+
+
+def test_avaliar_saldo_total_calcula_rmse_com_arima(db_session):
+    valores_a = [100.0 + 10 * i for i in range(15)]
+    valores_b = [50.0 + 5 * i for i in range(15)]
+    _adicionar_serie(db_session, "EMPRESA A,LDA", valores_a)
+    _adicionar_serie(db_session, "EMPRESA B,LDA", valores_b)
+
+    resultado = avaliar_modelos(db_session, dias_teste=3)
+
+    assert resultado["dias_teste"] == 3
+    assert "arima" in resultado["rmse_por_modelo"]
+    assert resultado["melhor_modelo"] is not None
 
 
 def test_avaliar_cashflow_inclui_gradient_boosting_no_rmse(db_session):

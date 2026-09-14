@@ -110,6 +110,32 @@ def resumo_diario() -> list:
     return r.json()
 
 
+def analise_imputacoes(empresa: Optional[str] = None, dia_inicio: Optional[str] = None, dia_fim: Optional[str] = None) -> dict:
+    params = {}
+    if empresa:
+        params["empresa"] = empresa
+    if dia_inicio:
+        params["dia_inicio"] = dia_inicio
+    if dia_fim:
+        params["dia_fim"] = dia_fim
+    r = requests.get(f"{API_BASE_URL}/analise/imputacoes", params=params)
+    r.raise_for_status()
+    return r.json()
+
+
+def listar_linhas_imputacao(empresa: Optional[str] = None, dia_inicio: Optional[str] = None, dia_fim: Optional[str] = None) -> list:
+    params = {}
+    if empresa:
+        params["empresa"] = empresa
+    if dia_inicio:
+        params["dia_inicio"] = dia_inicio
+    if dia_fim:
+        params["dia_fim"] = dia_fim
+    r = requests.get(f"{API_BASE_URL}/analise/imputacoes/linhas", params=params)
+    r.raise_for_status()
+    return r.json().get("linhas", [])
+
+
 def previsao_saldo(empresa: str, dias: int = 7) -> dict:
     r = requests.get(f"{API_BASE_URL}/previsao/saldo/{empresa}", params={"dias": dias})
     r.raise_for_status()
@@ -120,6 +146,36 @@ def avaliar_previsao(empresa: str, dias_teste: int = 5) -> dict:
     r = requests.get(f"{API_BASE_URL}/previsao/avaliacao/{empresa}", params={"dias_teste": dias_teste})
     r.raise_for_status()
     return r.json()
+
+
+def previsao_saldo_total(dias: int = 7) -> dict:
+    r = requests.get(f"{API_BASE_URL}/previsao/saldo-total", params={"dias": dias})
+    r.raise_for_status()
+    return r.json()
+
+
+def avaliar_previsao_saldo_total(dias_teste: int = 5) -> dict:
+    r = requests.get(f"{API_BASE_URL}/previsao/saldo-total-avaliacao", params={"dias_teste": dias_teste})
+    r.raise_for_status()
+    return r.json()
+
+
+def previsao_risco(empresa: str, dias: int = 7) -> dict:
+    r = requests.get(f"{API_BASE_URL}/previsao/risco/{empresa}", params={"dias": dias})
+    r.raise_for_status()
+    return r.json()
+
+
+def previsao_risco_ranking(dias: int = 30) -> list:
+    r = requests.get(f"{API_BASE_URL}/previsao/risco-ranking", params={"dias": dias})
+    r.raise_for_status()
+    return r.json()
+
+
+def saldo_serie_total() -> list:
+    r = requests.get(f"{API_BASE_URL}/saldos/serie-total")
+    r.raise_for_status()
+    return r.json().get("serie", [])
 
 
 def previsao_cashflow(empresa: Optional[str] = None, dias: int = 7) -> dict:
@@ -205,10 +261,20 @@ def registrar_execucao_script(script: str, status: str, erro: Optional[str] = No
     return r.json()
 
 
-def listar_faturas_recebidas(dia: Optional[str] = None, pesquisa: Optional[str] = None, limit: int = 200) -> list:
+def listar_faturas_recebidas(
+    dia: Optional[str] = None,
+    desde: Optional[str] = None,
+    ate: Optional[str] = None,
+    pesquisa: Optional[str] = None,
+    limit: int = 200,
+) -> list:
     params = {"limit": limit}
     if dia:
         params["dia"] = dia
+    if desde:
+        params["desde"] = desde
+    if ate:
+        params["ate"] = ate
     if pesquisa:
         params["pesquisa"] = pesquisa
     r = requests.get(f"{API_BASE_URL}/faturas/recebidas", params=params)
@@ -235,3 +301,14 @@ def resolver_ambiguo(caso_id: int, linha_id: Optional[int], resolvido_por: str) 
     )
     r.raise_for_status()
     return r.json()
+
+
+def listar_cpcv_escrituras(dia_inicio: Optional[str] = None, dia_fim: Optional[str] = None) -> list:
+    params = {}
+    if dia_inicio:
+        params["dia_inicio"] = dia_inicio
+    if dia_fim:
+        params["dia_fim"] = dia_fim
+    r = requests.get(f"{API_BASE_URL}/comercial/cpcv", params=params)
+    r.raise_for_status()
+    return r.json().get("linhas", [])
