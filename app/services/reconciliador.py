@@ -82,12 +82,50 @@ def nome_empresa_do_ficheiro(caminho):
     return nome.strip()
 
 
+def _partes_significativas(nome_completo) -> list:
+    partes = [p for p in re.split(r"[\s,]+", str(nome_completo).strip()) if p]
+    return [p for p in partes if normalizar(p) not in PALAVRAS_IGNORAR]
+
+
 def chave_empresa(nome_completo):
     """Chave normalizada do nome da empresa sem palavras tipo LDA/SA, para
     que 'ANCORA APOGEU,LDA' e 'Ancora Apogeu' (sem sigla) batam certo."""
-    partes = [p for p in re.split(r"[\s,]+", str(nome_completo).strip()) if p]
-    significativas = [p for p in partes if normalizar(p) not in PALAVRAS_IGNORAR]
-    return normalizar(" ".join(significativas))
+    return normalizar(" ".join(_partes_significativas(nome_completo)))
+
+
+_ABREVIATURA_SGPS = "SOCIEDADE GESTORA PARTICIPACOES SOCIAIS"
+
+
+def _chave_ampla(nome) -> str:
+    """Como chave_empresa(), mas expande a sigla legal "SGPS" (Sociedade
+    Gestora de Participações Sociais) antes de normalizar - só usada para
+    aproximar os códigos curtos do Mapa (linhas_mapa.empresa, ex. "Vidor
+    SGPS") da designação social completa (movimentos_bancarios.empresa /
+    saldos_diarios.entidade, ex. "VIDOR SOCIEDADE GESTORA PARTICIPACOES
+    SOCIAIS,SA"). Nunca usada na reconciliação banco vs. Mapa
+    (chave_empresa, já validada) para não lhe mudar o comportamento."""
+    nome = re.sub(r"\bSGPS\b", _ABREVIATURA_SGPS, str(nome), flags=re.IGNORECASE)
+    return chave_empresa(nome)
+
+
+def empresa_do_mapa_corresponde(nome_mapa: str, nome_canonico: str) -> bool:
+    """True se `nome_mapa` (texto livre de linhas_mapa.empresa - ex.
+    "H.C.C", "Vidor SGPS", "Palavra", "Viduarte") pode razoavelmente
+    designar `nome_canonico` (designação social completa, de
+    movimentos_bancarios.empresa / saldos_diarios.entidade - a mesma lista
+    de empresas usada na aba Saldos): por igualdade direta, por
+    `nome_mapa` ser um prefixo/abreviação por corte do nome completo (ex.
+    "Viduarte" de "VIDUARTE INDUSTRIA CONSTRUCAO CIVIL,LDA") ou por serem
+    as iniciais de cada palavra significativa (ex. "H.C.C" para "Habiserve
+    Construções Centro")."""
+    chave_mapa = _chave_ampla(nome_mapa)
+    if not chave_mapa:
+        return False
+    chave_canonico = _chave_ampla(nome_canonico)
+    if chave_mapa == chave_canonico or chave_canonico.startswith(chave_mapa):
+        return True
+    iniciais = "".join(p[0] for p in _partes_significativas(nome_canonico))
+    return chave_mapa == normalizar(iniciais)
 
 
 def importar_extrato_para_bd(db: Session, caminho: str, dia, empresa: str) -> int:
@@ -230,6 +268,28 @@ def resumo_diario(db: Session):
     ]
 
 
+def _linhas_mapa_filtradas(db: Session, empresa: str = None, dia_inicio=None, dia_fim=None) -> list:
+    """Linhas do Mapa já confirmadas no extrato (pago preenchido) no
+    período/empresa pedidos - base comum de analise_imputacoes() (somas
+    por categoria, para o gráfico circular) e listar_linhas_imputacao()
+    (linhas em detalhe, para a tabela por baixo do gráfico).
+
+    `empresa`, quando dado, é a designação social completa (a mesma lista
+    da aba Saldos - ver listar_empresas()); linhas_mapa.empresa usa
+    códigos curtos/abreviados (ex. "H.C.C"), por isso a comparação usa
+    empresa_do_mapa_corresponde() em vez de igualdade direta."""
+    query = db.query(LinhaMapa).filter(LinhaMapa.pago.isnot(None))
+    if dia_inicio is not None:
+        query = query.filter(LinhaMapa.dia >= dia_inicio)
+    if dia_fim is not None:
+        query = query.filter(LinhaMapa.dia <= dia_fim)
+    linhas = query.order_by(LinhaMapa.dia.desc()).all()
+
+    if empresa:
+        linhas = [l for l in linhas if empresa_do_mapa_corresponde(l.empresa, empresa)]
+    return linhas
+
+
 def analise_imputacoes(db: Session, empresa: str = None, dia_inicio=None, dia_fim=None) -> dict:
     """Soma o valor pago (real, já sinalizado por importar_linhas - ver
     mapa_importer.py) de cada linha do Mapa agrupado por imputação e por
@@ -237,16 +297,7 @@ def analise_imputacoes(db: Session, empresa: str = None, dia_inicio=None, dia_fi
     Extratos" - quanto de cada categoria pesa no total recebido/pago no
     período. Só considera linhas com pago preenchido (movimento já
     confirmado no extrato, não só previsto)."""
-    query = db.query(LinhaMapa).filter(LinhaMapa.pago.isnot(None))
-    if dia_inicio is not None:
-        query = query.filter(LinhaMapa.dia >= dia_inicio)
-    if dia_fim is not None:
-        query = query.filter(LinhaMapa.dia <= dia_fim)
-    linhas = query.all()
-
-    if empresa:
-        alvo = chave_empresa(empresa)
-        linhas = [l for l in linhas if chave_empresa(l.empresa) == alvo]
+    linhas = _linhas_mapa_filtradas(db, empresa=empresa, dia_inicio=dia_inicio, dia_fim=dia_fim)
 
     somas = {"recebimento": {}, "pagamento": {}}
     for l in linhas:
@@ -263,6 +314,29 @@ def analise_imputacoes(db: Session, empresa: str = None, dia_inicio=None, dia_fi
         "recebimentos": _ordenado(somas["recebimento"]),
         "pagamentos": _ordenado(somas["pagamento"]),
     }
+
+
+def listar_linhas_imputacao(db: Session, empresa: str = None, dia_inicio=None, dia_fim=None) -> list:
+    """Linhas do Mapa em detalhe (uma por movimento, não agregada) para a
+    tabela de extratos por baixo do gráfico circular de "Análise de
+    Extratos" - o dashboard usa `imputacao` de cada linha para pintá-la
+    com a mesma cor da fatia do gráfico a que pertence. `previsto` vem
+    também (sem sinal alterado, já vem sinalizado do mapa_importer.py) -
+    usado pela tabela de CPCVs/Escrituras do início da aba (previsto =
+    "valor tabelado/proposto" no vocabulário comercial, pago = "valor
+    recebido")."""
+    linhas = _linhas_mapa_filtradas(db, empresa=empresa, dia_inicio=dia_inicio, dia_fim=dia_fim)
+    return [
+        {
+            "dia": l.dia.isoformat(),
+            "empresa": l.empresa,
+            "tipo": l.tipo,
+            "imputacao": l.imputacao or "(sem imputação)",
+            "previsto": l.previsto,
+            "valor": abs(l.pago),
+        }
+        for l in linhas
+    ]
 
 
 def auditoria_dia(db: Session, dia) -> dict:

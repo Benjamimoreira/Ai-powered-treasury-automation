@@ -145,9 +145,15 @@ class PontoSerieOut(BaseModel):
     valor: float
 
 
+class BandaIncertezaOut(BaseModel):
+    baixa: List[PontoSerieOut]
+    alta: List[PontoSerieOut]
+
+
 class PrevisaoSaldoOut(BaseModel):
     historico: List[PontoSerieOut]
     previsao: Dict[str, List[PontoSerieOut]]
+    banda_incerteza: Optional[BandaIncertezaOut] = None
 
 
 class PontoCashflowOut(BaseModel):
@@ -161,6 +167,7 @@ class PrevisaoCashflowOut(BaseModel):
     historico: List[PontoCashflowOut]
     previsao: Dict[str, List[PontoSerieOut]]
     importancia_features: Optional[Dict[str, float]] = None
+    banda_incerteza: Optional[BandaIncertezaOut] = None
 
 
 class AvaliacaoModelosOut(BaseModel):
@@ -168,6 +175,30 @@ class AvaliacaoModelosOut(BaseModel):
     rmse_por_modelo: Dict[str, float]
     melhor_modelo: Optional[str] = None
     falhas: Dict[str, str]
+
+
+class RiscoSaldoOut(BaseModel):
+    saldo_atual: float
+    despesa_media_mensal: float
+    taxa_diaria_liquida: float
+    dias_autonomia_tendencia: Optional[float] = None
+    dias_autonomia_despesa: Optional[float] = None
+    zona_atual: str
+    zona_prevista: str
+    dia_risco: Optional[str] = None
+
+
+class RiscoRankingItemOut(BaseModel):
+    empresa: str
+    saldo_atual: float
+    despesa_media_mensal: float
+    taxa_diaria_liquida: float
+    dias_autonomia_tendencia: Optional[float] = None
+    dias_autonomia_despesa: Optional[float] = None
+    zona_atual: str
+    zona_prevista: str
+    dia_risco: Optional[str] = None
+    saldo_previsto_fim: Optional[float] = None
 
 
 class FaturaRecebidaIn(BaseModel):
