@@ -93,6 +93,10 @@ def criar_agent() -> Agent:
             "command": sys.executable,
             "args": [MCP_SERVER_PATH],
             "cwd": RAIZ_PROJETO,
+            # sem isto o cliente MCP só passa PATH/HOME ao subprocesso: sem
+            # DATABASE_URL o mcp_server.py abria um SQLite vazio em vez do
+            # Postgres do container ("tabela saldos_diarios não existe")
+            "env": dict(os.environ),
             "allowed_tools": FERRAMENTAS_PERMITIDAS,
         }
     ]
