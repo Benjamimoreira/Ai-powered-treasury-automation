@@ -14,3 +14,6 @@ python-dotenv~=1.2
 streamlit~=1.61
 scikit-learn~=1.9
 statsmodels~=0.14
+langgraph~=1.2
+opentelemetry-sdk~=1.45
+opentelemetry-exporter-otlp-proto-http~=1.45

@@ -46,3 +46,39 @@ def sugerir(caso_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.post("/ambiguos/{caso_id}/investigar")
+def investigar(caso_id: int, db: Session = Depends(get_db)):
+    """Põe o agente de investigação (app/services/agente_ambiguos.py) a
+    preparar um dossier para o caso: histórico da empresa, movimentos com
+    descritivo parecido, faturas com o mesmo valor, recomendação e
+    alertas. Grava o dossier e devolve-o - não resolve o caso (a decisão
+    continua a ser POST /ambiguos/{id}/resolver, feita por uma pessoa)."""
+    from app.services.agente_ambiguos import investigar_caso
+
+    try:
+        registo = investigar_caso(db, caso_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return {"id": registo.id, "caso_id": registo.caso_id, "criado_em": registo.criado_em.isoformat(),
+            "fornecedor": registo.fornecedor, "modelo": registo.modelo, **registo.dossier}
+
+
+@router.get("/ambiguos/{caso_id}/dossiers")
+def listar_dossiers(caso_id: int, db: Session = Depends(get_db)):
+    """Dossiers já preparados pelo agente para um caso, mais recente primeiro -
+    o registo de que modelo recomendou o quê e quando."""
+    from app.db.models import DossierAmbiguo
+
+    registos = (
+        db.query(DossierAmbiguo).filter(DossierAmbiguo.caso_id == caso_id)
+        .order_by(DossierAmbiguo.criado_em.desc()).all()
+    )
+    return [
+        {"id": r.id, "criado_em": r.criado_em.isoformat(), "fornecedor": r.fornecedor, "modelo": r.modelo,
+         "linha_id_recomendada": r.linha_id_recomendada, "confianca": r.confianca, **r.dossier}
+        for r in registos
+    ]

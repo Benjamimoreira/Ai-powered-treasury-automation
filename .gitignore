@@ -10,3 +10,4 @@ backups_onedrive/
 .pytest_cache/
 *.log
 desktop.ini
+evals/resultados/

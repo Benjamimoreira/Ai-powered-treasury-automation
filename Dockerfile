@@ -15,6 +15,9 @@ COPY .streamlit/ .streamlit/
 # o Assistente (app/services/chatbot.py) arranca o servidor MCP como
 # subprocesso - sem ele no container o separador Assistente não funciona
 COPY mcp_server.py .
+# conjunto de avaliação do LLM - a porta de qualidade do deploy corre-o
+# dentro da imagem nova (ver .github/workflows/ci.yml)
+COPY evals/ambiguos.json evals/ambiguos.json
 
 EXPOSE 8000
 EXPOSE 8501

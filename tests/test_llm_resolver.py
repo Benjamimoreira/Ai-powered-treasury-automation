@@ -104,8 +104,37 @@ def test_sugerir_resolucao_lida_com_resposta_sem_json(db_session, monkeypatch):
     assert "não sei responder a isto" in resultado.justificacao_sugerida
 
 
-def test_chamar_llm_falha_sem_token(monkeypatch):
-    monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+def test_sugerir_resolucao_decide_por_regra_sem_chamar_o_llm(db_session, monkeypatch):
+    caso, linha_a, linha_b = _criar_caso_ambiguo(db_session)
+    linha_a.imputacao, linha_b.imputacao = "TRANSF fornecedor", "Agua"
+    db_session.commit()
+
+    def nao_chamar(prompt):
+        raise AssertionError("o LLM não devia ser chamado")
+
+    monkeypatch.setattr(llm_resolver, "chamar_llm", nao_chamar)
+
+    resultado = sugerir_resolucao(db_session, caso.id)
+
+    assert resultado.resolucao_sugerida == f"linha_id={linha_a.id}"
+    assert resultado.justificacao_sugerida.startswith("[regra: triagem_texto, sem LLM]")
+    assert resultado.resolvido_por is None
+
+
+def test_chamar_llm_recusa_fornecedor_externo(monkeypatch):
+    # só o modelo local é suportado - pedir a Groq (retirada) tem de falhar logo
+    monkeypatch.setenv("LLM_FORNECEDOR", "groq")
     with pytest.raises(RuntimeError):
+        llm_resolver.chamar_llm("qualquer prompt")
+
+
+def test_chamar_llm_explica_quando_o_ollama_nao_esta_a_correr(monkeypatch):
+    import httpx
+
+    def recusar(*a, **k):
+        raise httpx.ConnectError("recusado")
+
+    monkeypatch.delenv("LLM_FORNECEDOR", raising=False)
+    monkeypatch.setattr(llm_resolver.httpx, "post", recusar)
+    with pytest.raises(RuntimeError, match="Ollama"):
         llm_resolver.chamar_llm("qualquer prompt")

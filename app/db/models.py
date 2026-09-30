@@ -70,6 +70,27 @@ class CasoAmbiguo(Base):
     justificacao_sugerida = Column(String, nullable=True)
 
 
+class DossierAmbiguo(Base):
+    """Dossier preparado pelo agente de investigação (app/services/
+    agente_ambiguos.py) para um caso ambíguo: provas recolhidas,
+    recomendação e alertas. É só preparação para a decisão humana - nunca
+    resolve o caso. Tabela própria (e não colunas novas em casos_ambiguos)
+    porque sem Alembic uma coluna nova não chega às bases já existentes;
+    uma tabela nova é criada pelo create_all no arranque. Guarda também o
+    modelo usado - registo das decisões assistidas por IA (AI Act, ver
+    docs/GOVERNANCA_IA.md)."""
+    __tablename__ = "dossiers_ambiguos"
+
+    id = Column(Integer, primary_key=True)
+    caso_id = Column(Integer, ForeignKey("casos_ambiguos.id"), nullable=False, index=True)
+    criado_em = Column(DateTime, default=_utcnow_naive, nullable=False)
+    fornecedor = Column(String, nullable=False)
+    modelo = Column(String, nullable=False)
+    linha_id_recomendada = Column(Integer, nullable=True)
+    confianca = Column(String, nullable=True)
+    dossier = Column(JSON, nullable=False)
+
+
 class SaldoDiario(Base):
     __tablename__ = "saldos_diarios"
 

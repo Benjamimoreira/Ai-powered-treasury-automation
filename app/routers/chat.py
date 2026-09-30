@@ -44,11 +44,15 @@ async def chat(pedido: ChatRequest, request: Request):
         if status == 429:
             raise HTTPException(
                 status_code=503,
-                detail="O assistente atingiu o limite de pedidos do provedor de LLM "
-                       "gratuito (Groq) - espera um pouco e tenta outra vez.",
+                detail="O modelo local (Ollama) está ocupado - espera um pouco e tenta outra vez.",
             ) from e
         raise HTTPException(
-            status_code=503, detail=f"O provedor de LLM falhou ao responder: {e}",
+            status_code=503, detail=f"O modelo local (Ollama) falhou ao responder: {e}",
+        ) from e
+    except OSError as e:  # ligação recusada: o Ollama não está a correr
+        raise HTTPException(
+            status_code=503,
+            detail="Não foi possível ligar ao modelo local (Ollama) - confirma que está a correr.",
         ) from e
 
 

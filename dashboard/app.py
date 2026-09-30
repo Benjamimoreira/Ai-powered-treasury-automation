@@ -1,6 +1,7 @@
 from datetime import date
 from html import escape
 from pathlib import Path
+import os
 import re
 import sys
 
@@ -1904,9 +1905,14 @@ with aba_analise_extratos:
 
 with aba_assistente:
     with st.container(border=True, horizontal=True, vertical_alignment="center"):
+        # transparência (AI Act, art. 50.º): quem conversa tem de saber que é
+        # uma IA e o que ela pode fazer - ver docs/GOVERNANCA_IA.md
         st.markdown(
-            "**Assistente** · explica os dados e vai buscar informação real através de "
-            "ferramentas de leitura - nunca reconcilia nem resolve nada sozinho."
+            "**Assistente de IA** · respostas geradas por um modelo de linguagem "
+            f"local ({os.environ.get('OLLAMA_MODEL_ID', 'qwen2.5:3b')}, via Ollama - os dados não saem desta máquina) "
+            "a partir dos dados reais, "
+            "com ferramentas só de leitura - nunca reconcilia nem resolve nada sozinho. "
+            "Pode errar: confirma os números importantes nos outros separadores."
         )
         if st.button("🗑 Reiniciar conversa"):
             try:

@@ -68,8 +68,19 @@ def test_ferramentas_permitidas_inclui_as_tools_de_leitura_esperadas():
     assert set(chatbot.FERRAMENTAS_PERMITIDAS) == esperadas
 
 
-def test_criar_agent_falha_sem_token(monkeypatch):
-    monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    with pytest.raises(RuntimeError):
-        chatbot.criar_agent()
+def test_criar_agent_usa_o_ollama_local(monkeypatch):
+    capturado = {}
+
+    class AgentFalso:
+        def __init__(self, **kwargs):
+            capturado.update(kwargs)
+
+    monkeypatch.setattr(chatbot, "Agent", AgentFalso)
+    monkeypatch.setenv("OLLAMA_URL", "http://host.docker.internal:11434/v1")
+    monkeypatch.setenv("OLLAMA_MODEL_ID", "qwen2.5:3b")
+
+    chatbot.criar_agent()
+
+    assert capturado["base_url"] == "http://host.docker.internal:11434/v1"
+    assert capturado["model"] == "qwen2.5:3b"
+    assert capturado["servers"][0]["allowed_tools"] == chatbot.FERRAMENTAS_PERMITIDAS

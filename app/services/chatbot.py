@@ -2,8 +2,9 @@
 que está a ser mostrado e vai buscar informação real através de tools,
 nunca inventa números. Reutiliza o mcp_server.py já existente (mesmas
 tools que um cliente MCP como o Claude Desktop veria) como fonte de
-ferramentas, ligado via huggingface_hub.Agent ao mesmo modelo/router HF
-já usado em llm_resolver.py - evita reinventar um loop de tool-calling.
+ferramentas, ligado via huggingface_hub.Agent ao mesmo modelo local
+(Ollama) usado em llm_resolver.py - evita reinventar um loop de
+tool-calling, e nenhum dado sai da máquina.
 
 Só tools de leitura são permitidas (FERRAMENTAS_PERMITIDAS): o chatbot
 nunca reconcilia nem resolve nada sozinho, isso continua a ser feito
@@ -16,13 +17,11 @@ from huggingface_hub.inference._generated.types.chat_completion import ChatCompl
 
 # ChatCompletionInputMessage declara tool_calls para qualquer role (default
 # None), e o mcp_client da huggingface_hub usa-a também para as mensagens
-# role="tool" - ficam sempre com "tool_calls": null no JSON enviado. O
-# router da HuggingFace tolera isso, mas a Groq (chamada diretamente via
-# base_url em vez de provider="groq") valida o schema de forma estrita e
-# rejeita esse campo em mensagens role="tool" com erro 400. Removemos a
-# chave quando vem a None - inofensivo para qualquer backend, já que
-# omitir o campo e tê-lo a null significam o mesmo (mensagem sem chamadas
-# de ferramenta associadas).
+# role="tool" - ficam sempre com "tool_calls": null no JSON enviado. Há
+# servidores compatíveis com OpenAI que validam o schema de forma estrita e
+# rejeitam esse campo em mensagens role="tool" (erro 400). Removemos a chave
+# quando vem a None - inofensivo para qualquer backend, já que omitir o
+# campo e tê-lo a null significam o mesmo.
 _parse_obj_as_instance_original = ChatCompletionInputMessage.parse_obj_as_instance
 
 
@@ -59,7 +58,10 @@ através das ferramentas disponíveis - nunca inventes números nem \
 "lembres-te" de um valor sem o teres consultado.
 
 Regras:
-- Responde sempre em português.
+- Responde sempre em português de Portugal.
+- Todos os valores são em euros (€), nunca noutra moeda. Copia os números \
+exatamente como vêm das ferramentas, sem acrescentar nem tirar dígitos, e \
+escreve-os no formato português: 233 203,52 €.
 - A comparação de nomes de empresa nas ferramentas é exata (ignora \
 LDA/SA mas não é parcial) - se não tiveres a certeza do nome completo \
 de uma empresa, usa primeiro `listar_empresas_tool` para veres os \
@@ -83,10 +85,8 @@ MCP_SERVER_PATH = os.path.join(RAIZ_PROJETO, "mcp_server.py")
 
 def criar_agent() -> Agent:
     """Constrói o Agent ligado ao mcp_server.py local, restrito às tools
-    de leitura. Usa o Groq (gratuito) se GROQ_API_KEY estiver definido;
-    caso contrário cai para a HuggingFace (HF_TOKEN) - mesma lógica de
-    llm_resolver.chamar_llm. Levanta RuntimeError se nenhum estiver
-    definido."""
+    de leitura, com o modelo local do Ollama (OLLAMA_URL/OLLAMA_MODEL_ID -
+    os mesmos de llm_resolver)."""
     servers = [
         {
             "type": "stdio",
@@ -101,25 +101,14 @@ def criar_agent() -> Agent:
         }
     ]
 
-    groq_key = os.environ.get("GROQ_API_KEY")
-    if groq_key:
-        # base_url directo à Groq - ver nota em llm_resolver.chamar_llm sobre
-        # porque não usamos provider="groq" (catálogo da HF é mais limitado).
-        modelo = os.environ.get("GROQ_MODEL_ID", "openai/gpt-oss-20b")
-        return Agent(
-            model=modelo, base_url="https://api.groq.com/openai/v1", api_key=groq_key,
-            servers=servers, prompt=PROMPT_SISTEMA,
-        )
+    from app.services.llm_resolver import FORNECEDORES
 
-    token = os.environ.get("HF_TOKEN")
-    if not token:
-        raise RuntimeError(
-            "Nem GROQ_API_KEY nem HF_TOKEN estão definidos - cria/edita o "
-            "ficheiro .env (a partir de .env.example) com um dos dois."
-        )
-    modelo = os.environ.get("HF_MODEL_ID", "Qwen/Qwen2.5-72B-Instruct")
+    config = FORNECEDORES["ollama"]
     return Agent(
-        model=modelo, api_key=token,
+        model=os.environ.get(config["modelo_env"]) or config["modelo"],
+        base_url=os.environ.get(config["url_env"]) or config["url"],
+        # o Ollama não pede chave, mas o cliente OpenAI exige uma
+        api_key="ollama",
         servers=servers, prompt=PROMPT_SISTEMA,
     )
 

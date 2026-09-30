@@ -31,6 +31,14 @@ services:
       # pasta que o contém é montada como /comercial (ver volumes) a
       # partir de COMERCIAL_INDICE_RAIZ_DOCKER.
       COMERCIAL_INDICE_PATH: /comercial/${COMERCIAL_INDICE_NOME}
+      # tracing das chamadas ao LLM (latência, tokens, custo) - ver serviço phoenix
+      PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
+      # LLM local: o Ollama corre no Windows, fora do Docker; o Docker Desktop
+      # encaminha host.docker.internal para o 127.0.0.1 do anfitrião (não é
+      # preciso abrir o Ollama à rede). Nenhum dado sai da máquina.
+      LLM_FORNECEDOR: ollama
+      OLLAMA_URL: http://host.docker.internal:11434/v1
+      OLLAMA_MODEL_ID: ${OLLAMA_MODEL_ID:-qwen2.5:3b}
     env_file:
       - .env
     volumes:
@@ -61,6 +69,20 @@ services:
       sh -c "streamlit run dashboard/app.py --server.address 0.0.0.0 --server.port 8501 2>&1 | tee /var/log/app/dashboard.log"
     depends_on:
       - api
+    restart: unless-stopped
+
+  # Tracing de LLMs (Arize Phoenix, open source): cada chamada ao LLM da api
+  # fica registada com prompt, resposta, latência, tokens e custo estimado.
+  # Um só container, e os traces não saem desta máquina (RGPD - ver
+  # docs/GOVERNANCA_IA.md). UI em http://localhost:6006.
+  phoenix:
+    image: arizephoenix/phoenix:version-12.0.0
+    ports:
+      - "6006:6006"
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+    volumes:
+      - phoenix_data:/mnt/data
     restart: unless-stopped
 
   log-viewer:
@@ -125,6 +147,7 @@ services:
 
 volumes:
   postgres_data:
+  phoenix_data:
   logs:
   logs_archive:
   faturas_extraidas:

@@ -85,6 +85,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           clean: false
+          fetch-depth: 0
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -100,6 +101,29 @@ jobs:
           docker compose config --quiet
       - name: Puxar imagens novas
         run: docker compose pull --quiet
+      # Porta de qualidade do LLM: corre o conjunto de avaliação dos casos
+      # ambíguos (evals/ambiguos.json) DENTRO da imagem nova, contra o Ollama
+      # desta máquina, antes de reiniciar os containers - se a exatidão ficar
+      # abaixo do limiar, o passo falha e os containers antigos continuam a
+      # correr. Só corre quando muda algo que afeta o LLM (ou em Run
+      # workflow): são ~30 chamadas ao modelo local, ~15-20 minutos em CPU.
+      # Corre aqui e não nos servidores do GitHub porque o modelo é local
+      # (os dados não saem da máquina). Ver docs/AVALIACAO_LLM.md.
+      - name: Mudou algo que afeta o LLM?
+        id: mudou
+        run: |
+          if "${{ github.event_name }}"=="workflow_dispatch" (echo correr=true>>%GITHUB_OUTPUT% & exit /b 0)
+          git diff --name-only ${{ github.event.before }} HEAD > alterados.txt 2>nul || git diff --name-only HEAD~1 HEAD > alterados.txt
+          findstr /R /C:"^app/services/llm_resolver\.py" /C:"^app/services/llm_tracing\.py" /C:"^app/services/agente_ambiguos\.py" /C:"^app/services/resolucao_regras\.py" /C:"^app/evals/" /C:"^evals/ambiguos\.json" alterados.txt >nul && (echo correr=true>>%GITHUB_OUTPUT%) || (echo correr=false>>%GITHUB_OUTPUT% & echo Nada que afete o LLM mudou - avaliacao nao corre.)
+          exit /b 0
+      - name: Porta de qualidade do LLM (Ollama local, imagem nova)
+        if: steps.mudou.outputs.correr == 'true'
+        timeout-minutes: 90
+        env:
+          LIMIAR_EXATIDAO: "0.65"
+        run: |
+          curl -s -o nul http://localhost:11434/api/tags || (echo ERRO: o Ollama nao esta a correr nesta maquina & exit /b 1)
+          docker run --rm -e LLM_FORNECEDOR=ollama -e OLLAMA_URL=http://host.docker.internal:11434/v1 -e OLLAMA_MODEL_ID=qwen2.5:3b %IMAGE_PREFIX%/api:%IMAGE_TAG% python -m app.evals.avaliar --estrategia hibrida --limiar %LIMIAR_EXATIDAO%
       - name: Reiniciar containers
         run: docker compose up -d --no-build --remove-orphans
       - name: Limpar imagens antigas
