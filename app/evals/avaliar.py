@@ -200,6 +200,8 @@ def main(argv=None) -> int:
         json.dump(relatorio, f, ensure_ascii=False, indent=1)
     print(resumo_texto(relatorio))
     print(f"  relatório: evals/resultados/{nome}")
+    from app.services.llm_tracing import esvaziar
+    esvaziar()
 
     if args.limiar is not None and relatorio["metricas"]["exatidao"] < args.limiar:
         print(f"FALHOU: exatidão {relatorio['metricas']['exatidao']:.1%} abaixo do limiar {args.limiar:.0%}")

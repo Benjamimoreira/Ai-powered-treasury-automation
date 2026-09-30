@@ -141,3 +141,26 @@ def span_llm(nome: str, fornecedor: str, modelo: str, mensagens: list, **atribut
         run = _abrir_run_langsmith(pilha, nome, fornecedor, modelo, mensagens, atributos)
         span = _abrir_span_phoenix(pilha, nome, fornecedor, modelo, mensagens, atributos)
         yield _Registo(span, run, modelo)
+
+
+def esvaziar():
+    """Envia o que está em fila antes de o processo terminar - os dois
+    destinos enviam em segundo plano, e um script curto (ex. a avaliação)
+    podia acabar antes de os traces saírem."""
+    if _tracer is not None:
+        try:
+            from opentelemetry import trace
+            trace.get_tracer_provider().force_flush()
+        except Exception:
+            pass
+    if langsmith_ativo():
+        try:
+            from langchain_core.tracers.langchain import wait_for_all_tracers
+            wait_for_all_tracers()
+        except Exception:
+            pass
+        try:
+            from langsmith.run_trees import get_cached_client
+            get_cached_client().flush()
+        except Exception:
+            pass

@@ -29,6 +29,10 @@ FORNECEDORES = {
     },
 }
 TENTATIVAS_LIMITE_PEDIDOS = 5
+# ocupado (429) ou falha transitória do servidor - ex. o Ollama devolve 500
+# se o pedido chegar enquanto recarrega o modelo (tira-o da memória ao fim
+# de 5 min parado)
+ESTADOS_A_REPETIR = {429, 500, 502, 503}
 
 _modelo_embeddings = None
 
@@ -269,7 +273,8 @@ def chamar_llm_detalhado(
 ) -> RespostaLLM:
     """Chamada ao LLM local (Ollama, API compatível com OpenAI), com
     tokens e latência - para a avaliação e para o tracing (Phoenix/
-    LangSmith). Repete com espera se o servidor devolver 429 (ocupado).
+    LangSmith). Repete com espera se o servidor devolver 429 (ocupado) ou
+    um 5xx transitório (ex. o Ollama a recarregar o modelo).
     `formato_json` pede o modo JSON nativo
     (response_format) - sem ele os modelos pequenos partem o JSON com aspas
     dentro da justificação."""
@@ -305,7 +310,7 @@ def chamar_llm_detalhado(
                     f"Não foi possível ligar ao Ollama em {url} - está a correr? (ícone na barra de tarefas, "
                     f"ou 'ollama serve'; e o modelo {modelo} descarregado: 'ollama pull {modelo}')"
                 ) from erro
-            if resposta.status_code != 429 or tentativa == TENTATIVAS_LIMITE_PEDIDOS - 1:
+            if resposta.status_code not in ESTADOS_A_REPETIR or tentativa == TENTATIVAS_LIMITE_PEDIDOS - 1:
                 break
             time.sleep(float(resposta.headers.get("retry-after") or 2 ** (tentativa + 2)))
         try:
