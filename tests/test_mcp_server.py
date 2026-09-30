@@ -131,8 +131,15 @@ def test_listar_saldos_tool(db_session, session_factory, monkeypatch):
     assert resultado[0]["dia"] == DIA_STR
 
 
+def _sem_fontes_externas(monkeypatch):
+    """Rendas (OneDrive) e índice comercial ficam de fora dos testes."""
+    monkeypatch.setattr("app.services.previsao_ancorada.recebimentos_comerciais_por_empresa", lambda db: [])
+    monkeypatch.setattr("app.services.previsao._onedrive_raiz", lambda: "/nao/existe")
+
+
 def test_previsao_saldo_tool(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_server, "SessionLocal", session_factory)
+    _sem_fontes_externas(monkeypatch)
     for i in range(10):
         db_session.add(SaldoDiario(
             dia=DIA + timedelta(days=i), entidade="Ancora Apogeu",
@@ -140,26 +147,47 @@ def test_previsao_saldo_tool(db_session, session_factory, monkeypatch):
         ))
     db_session.commit()
 
-    resultado = mcp_server.previsao_saldo_tool("Ancora Apogeu", dias=3)
+    resultado = mcp_server.previsao_saldo_tool("Ancora Apogeu", dias=14)
 
-    assert len(resultado["historico"]) == 10
-    assert "regressao_linear" in resultado["previsao"]
-    assert len(resultado["previsao"]["regressao_linear"]) == 3
+    assert resultado["saldo_atual"] == 190.0
+    assert resultado["dias"] == 14
+    # sem fluxos conhecidos a previsão não extrapola a subida do histórico
+    assert resultado["saldo_previsto"] == 190.0
+    assert resultado["previsao_por_semana"][-1]["dia"] == (DIA + timedelta(days=9 + 14)).isoformat()
+    assert resultado["maiores_fluxos_conhecidos"] == []
+    assert resultado["fluxos_conhecidos_por_tipo"] == {}
 
 
 def test_avaliar_previsao_tool(db_session, session_factory, monkeypatch):
     monkeypatch.setattr(mcp_server, "SessionLocal", session_factory)
-    for i in range(15):
+    _sem_fontes_externas(monkeypatch)
+    for i in range(40):
         db_session.add(SaldoDiario(
             dia=DIA + timedelta(days=i), entidade="Ancora Apogeu",
             saldo_contabilistico=100.0 + 10 * i, saldo_disponivel=100.0,
         ))
     db_session.commit()
 
-    resultado = mcp_server.avaliar_previsao_tool("Ancora Apogeu", dias_teste=3)
+    resultado = mcp_server.avaliar_previsao_tool("Ancora Apogeu", dias=7)
 
-    assert resultado["dias_teste"] == 3
-    assert resultado["melhor_modelo"] is not None
+    assert resultado["cortes_avaliados"] > 0
+    assert resultado["erro_medio_previsao"] == resultado["erro_medio_saldo_fica_igual"]
+
+
+def test_faturas_recebidas_tool_pesquisa(db_session, session_factory, monkeypatch):
+    from app.db.models import FaturaRecebida
+
+    monkeypatch.setattr(mcp_server, "SessionLocal", session_factory)
+    for i, fornecedor in enumerate(("EDP Comercial", "Aguas do Porto")):
+        db_session.add(FaturaRecebida(
+            outlook_id=f"id-{i}", dia=DIA, hora="10:00", fornecedor=fornecedor, empresa="Ancora Apogeu",
+        ))
+    db_session.commit()
+
+    resultado = mcp_server.faturas_recebidas_tool(pesquisa="edp")
+
+    assert [f["fornecedor"] for f in resultado] == ["EDP Comercial"]
+    assert resultado[0]["tem_pdf"] is False
 
 
 def test_anomalias_do_dia_tool(db_session, session_factory, monkeypatch):

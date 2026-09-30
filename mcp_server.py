@@ -14,7 +14,10 @@ from mcp.server.fastmcp import FastMCP
 
 from app.db.session import SessionLocal
 from app.services.anomalias import detetar_anomalias_do_dia
-from app.services.previsao import avaliar_modelos, prever_saldo
+from app.services.faturas import listar_faturas
+from app.services.monitorizacao import listar_scripts
+from app.services.previsao import listar_ranking_risco
+from app.services.previsao_ancorada import backtest_previsao_ancorada, prever_saldo_ancorado
 from app.services.reconciliador import (
     auditoria_dia,
     listar_empresas,
@@ -182,27 +185,146 @@ def listar_saldos_tool() -> list:
         db.close()
 
 
+MAX_FLUXOS_MCP = 25
+
+
+def _fim_de_cada_semana(serie: list) -> list:
+    """Último ponto de cada semana (domingo) e o último do horizonte - uma
+    série de 180 pontos diários não cabe no contexto do modelo do
+    Assistente e não acrescenta nada a uma resposta de gestão."""
+    pontos = [p for p in serie if date.fromisoformat(p["dia"]).weekday() == 6]
+    if serie and (not pontos or pontos[-1]["dia"] != serie[-1]["dia"]):
+        pontos.append(serie[-1])
+    return [{"dia": p["dia"], "valor": round(p["valor"], 2)} for p in pontos]
+
+
 @mcp.tool()
-def previsao_saldo_tool(empresa: str, dias: int = 7) -> dict:
-    """Previsão do saldo contabilístico dos próximos dias de uma
-    empresa (nome exato - ver listar_empresas_tool), com vários
-    modelos de séries temporais para comparação lado a lado."""
+def previsao_saldo_tool(empresa: Optional[str] = None, dias: int = 30) -> dict:
+    """Previsão do saldo nos próximos `dias` dias (máx. 180) - a mesma do
+    separador Forecast da dashboard. Sem `empresa`, o grupo inteiro; com
+    `empresa`, o nome exato (ver listar_empresas_tool).
+
+    Método: saldo de hoje + fluxos já conhecidos (rendas, recorrentes,
+    linhas do Mapa com data futura), sem extrapolar tendências. O
+    `intervalo_provavel` (80%) diz quanto o saldo costuma mexer. O
+    `saldo_com_recebimentos_comercial` soma à parte os sinais/reforços/
+    escrituras do índice comercial - não entra no `saldo_previsto` porque
+    as saídas grandes não estão marcadas em lado nenhum. Ver
+    avaliar_previsao_tool para quão fiável é."""
     db = SessionLocal()
     try:
-        return prever_saldo(db, empresa, dias)
+        r = prever_saldo_ancorado(db, empresa, dias)
+        banda = r["banda_incerteza"]
+        com_comercial = r["previsao_com_comercial"]
+        fluxos = r["fluxos_conhecidos_previstos"]
+        totais_por_fonte = {}
+        for f in fluxos:
+            total = totais_por_fonte.setdefault(f["fonte"], {"n": 0, "total": 0.0})
+            total["n"] += 1
+            total["total"] = round(total["total"] + f["valor"], 2)
+        return {
+            "entidade": empresa or "Grupo (todas as contas)",
+            "saldo_atual": round(r["saldo_partida"], 2),
+            "dia_saldo_atual": r["dia_partida"],
+            "dias": len(r["previsao"]),
+            "saldo_previsto": round(r["previsao"][-1]["valor"], 2),
+            "intervalo_provavel": (
+                {"minimo": round(banda["baixa"][-1]["valor"], 2), "maximo": round(banda["alta"][-1]["valor"], 2)}
+                if banda else None
+            ),
+            "saldo_com_recebimentos_comercial": round(com_comercial[-1]["valor"], 2) if com_comercial else None,
+            "previsao_por_semana": _fim_de_cada_semana(r["previsao"]),
+            "fluxos_conhecidos_por_tipo": totais_por_fonte,
+            # os maiores, por dia - a lista inteira a 180 dias do grupo tem
+            # centenas de linhas e não cabe no contexto do Assistente
+            "maiores_fluxos_conhecidos": sorted(
+                (
+                    {k: f[k] for k in ("dia", "valor", "fonte", "empresa", "descricao")}
+                    for f in sorted(fluxos, key=lambda f: -abs(f["valor"]))[:MAX_FLUXOS_MCP]
+                ),
+                key=lambda f: f["dia"],
+            ),
+        }
     finally:
         db.close()
 
 
 @mcp.tool()
-def avaliar_previsao_tool(empresa: str, dias_teste: int = 5) -> dict:
-    """Avaliação treino/teste dos modelos de previsão de saldo de uma
-    empresa (nome exato - ver listar_empresas_tool): retira os últimos
-    `dias_teste` dias, treina cada modelo só com o resto, e compara com
-    o valor real (RMSE) - responde a "qual modelo acerta mais"."""
+def avaliar_previsao_tool(empresa: Optional[str] = None, dias: int = 30) -> dict:
+    """Quão fiável é a previsão de previsao_saldo_tool: repete-a a partir de
+    até 20 datas passadas (uma por semana), só com os dados desse dia, e
+    compara com o saldo real `dias` dias depois - ao lado do palpite "o
+    saldo fica igual". Sem `empresa`, o grupo inteiro. Demora ~10 s."""
     db = SessionLocal()
     try:
-        return avaliar_modelos(db, empresa, dias_teste)
+        b = backtest_previsao_ancorada(db, dias, empresa=empresa)
+        return {
+            "entidade": empresa or "Grupo (todas as contas)",
+            "dias": dias,
+            "cortes_avaliados": len(b["cortes"]),
+            "erro_medio_previsao": b["erro_medio_modelo"],
+            "erro_medio_saldo_fica_igual": b["erro_medio_sem_alteracao"],
+            "erro_medio_com_recebimentos_comercial": b["erro_medio_com_comercial"],
+            "real_dentro_do_intervalo": b["cobertura_banda"],
+        }
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def ranking_risco_tool(dias: int = 30) -> list:
+    """Todas as empresas por risco de liquidez (crítico primeiro): zona
+    atual e prevista a `dias` dias, saldo atual e previsto, ritmo de caixa
+    dos últimos 30 dias e autonomia. Crítico = o saldo cobre menos de 1
+    semana de despesa média; alerta = menos de 1 mês. Demora ~40 s."""
+    db = SessionLocal()
+    try:
+        campos = (
+            "empresa", "zona_atual", "zona_prevista", "dia_risco", "saldo_atual", "saldo_previsto_fim",
+            "taxa_diaria_liquida", "dias_autonomia_tendencia", "dias_autonomia_despesa",
+        )
+        return [{c: r[c] for c in campos} for r in listar_ranking_risco(db, dias)]
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def estado_scripts_tool() -> list:
+    """Estado dos scripts de automação agendados (preenchimento do Mapa,
+    Mapa de Saldos, recolha de faturas, ...): último resultado, hora da
+    última execução, último erro e se está atrasado face à hora esperada."""
+    db = SessionLocal()
+    try:
+        return listar_scripts(db)
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def faturas_recebidas_tool(
+    pesquisa: Optional[str] = None, desde: Optional[str] = None, ate: Optional[str] = None, limite: int = 50,
+) -> list:
+    """Faturas recebidas em faturas@vidor.pt. `pesquisa` procura em empresa,
+    fornecedor, NIF, assunto, remetente ou valor, em qualquer dia; `desde`/
+    `ate` (AAAA-MM-DD) limitam o período. Mais recentes primeiro, no
+    máximo `limite` (até 200)."""
+    db = SessionLocal()
+    try:
+        faturas = listar_faturas(
+            db,
+            desde=date.fromisoformat(desde) if desde else None,
+            ate=date.fromisoformat(ate) if ate else None,
+            pesquisa=pesquisa or None,
+            limit=max(1, min(int(limite), 200)),
+        )
+        return [
+            {
+                "dia": f.dia.isoformat(), "hora": f.hora, "empresa": f.empresa, "fornecedor": f.fornecedor,
+                "nif_fornecedor": f.nif_fornecedor, "valor_fatura": f.valor_fatura, "assunto": f.assunto,
+                "tem_pdf": bool(f.pdf_relativo),
+            }
+            for f in faturas
+        ]
     finally:
         db.close()
 

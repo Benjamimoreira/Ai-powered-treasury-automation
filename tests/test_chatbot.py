@@ -62,6 +62,7 @@ def test_ferramentas_permitidas_inclui_as_tools_de_leitura_esperadas():
         "consultar_saldo_tool", "movimentos_do_dia_tool", "auditoria_dia_tool",
         "listar_ambiguos_tool", "saldo_total_tool", "listar_saldos_tool",
         "listar_empresas_tool", "previsao_saldo_tool", "avaliar_previsao_tool",
+        "ranking_risco_tool", "estado_scripts_tool", "faturas_recebidas_tool",
         "anomalias_do_dia_tool",
     }
     assert set(chatbot.FERRAMENTAS_PERMITIDAS) == esperadas

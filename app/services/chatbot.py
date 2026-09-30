@@ -47,6 +47,9 @@ FERRAMENTAS_PERMITIDAS = [
     "listar_empresas_tool",
     "previsao_saldo_tool",
     "avaliar_previsao_tool",
+    "ranking_risco_tool",
+    "estado_scripts_tool",
+    "faturas_recebidas_tool",
     "anomalias_do_dia_tool",
 ]
 
@@ -66,6 +69,12 @@ utilizador em vez de adivinhar ou inventar um valor.
 - Só tens ferramentas de leitura. Nunca sugiras nem finjas que \
 consegues reconciliar um dia ou resolver um caso ambíguo - isso só se \
 faz manualmente nas abas "Reconciliação"/"Ambíguos" da dashboard.
+- Previsões: usa `previsao_saldo_tool` (sem empresa = grupo inteiro). \
+Apresenta sempre o saldo previsto junto com o intervalo provável - a \
+previsão não adivinha movimentos grandes não planeados, e o intervalo \
+mostra quanto o saldo costuma mexer. Os recebimentos do comercial são \
+um cenário à parte, não a previsão. Se perguntarem quão fiável é, usa \
+`avaliar_previsao_tool`.
 """
 
 RAIZ_PROJETO = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
