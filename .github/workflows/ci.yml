@@ -106,15 +106,20 @@ jobs:
       # desta máquina, antes de reiniciar os containers - se a exatidão ficar
       # abaixo do limiar, o passo falha e os containers antigos continuam a
       # correr. Só corre quando muda algo que afeta o LLM (ou em Run
-      # workflow): são ~30 chamadas ao modelo local, ~15-20 minutos em CPU.
+      # workflow; também quando mudam requirements/Dockerfile/este ficheiro):
+      # são ~30 chamadas ao modelo local, ~15-20 minutos em CPU.
       # Corre aqui e não nos servidores do GitHub porque o modelo é local
       # (os dados não saem da máquina). Ver docs/AVALIACAO_LLM.md.
       - name: Mudou algo que afeta o LLM?
         id: mudou
         run: |
           if "${{ github.event_name }}"=="workflow_dispatch" (echo correr=true>>%GITHUB_OUTPUT% & exit /b 0)
-          git diff --name-only ${{ github.event.before }} HEAD > alterados.txt 2>nul || git diff --name-only HEAD~1 HEAD > alterados.txt
-          findstr /R /C:"^app/services/llm_resolver\.py" /C:"^app/services/llm_tracing\.py" /C:"^app/services/agente_ambiguos\.py" /C:"^app/services/resolucao_regras\.py" /C:"^app/evals/" /C:"^evals/ambiguos\.json" alterados.txt >nul && (echo correr=true>>%GITHUB_OUTPUT%) || (echo correr=false>>%GITHUB_OUTPUT% & echo Nada que afete o LLM mudou - avaliacao nao corre.)
+          rem safe.directory: o runner corre como "Servico de rede" e a pasta de
+          rem trabalho pode pertencer a outra conta - sem isto o git recusa
+          rem ("dubious ownership"), a lista fica vazia e a avaliacao era saltada
+          git -c safe.directory=* diff --name-only ${{ github.event.before }} HEAD > alterados.txt || git -c safe.directory=* diff --name-only HEAD~1 HEAD > alterados.txt
+          echo Ficheiros alterados: & type alterados.txt
+          findstr /R /C:"^app/services/llm_resolver\.py" /C:"^app/services/llm_tracing\.py" /C:"^app/services/agente_ambiguos\.py" /C:"^app/services/resolucao_regras\.py" /C:"^app/evals/" /C:"^evals/ambiguos\.json" /C:"^requirements\.txt" /C:"^Dockerfile" /C:"^\.github/workflows/ci\.yml" alterados.txt >nul && (echo correr=true>>%GITHUB_OUTPUT%) || (echo correr=false>>%GITHUB_OUTPUT% & echo Nada que afete o LLM mudou - avaliacao nao corre.)
           exit /b 0
       - name: Porta de qualidade do LLM (Ollama local, imagem nova)
         if: steps.mudou.outputs.correr == 'true'
