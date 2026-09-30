@@ -20,10 +20,13 @@ from app.services.previsao import (
     avaliar_cashflow,
     avaliar_modelos,
     avaliar_zona_risco,
+    backtest_saldo_total,
     listar_ranking_risco,
     prever_cashflow,
     prever_saldo,
+    prever_saldo_total_por_cashflow,
 )
+from app.services.previsao_ancorada import backtest_previsao_ancorada, prever_saldo_ancorado
 from app.services.saldos import consultar_saldo as consultar_saldo_servico
 from app.services.saldos import (
     listar_saldos_atuais,
@@ -56,6 +59,55 @@ def previsao_saldo_total(dias: int = 7, db: Session = Depends(get_db)):
     especial) para não colidir com `/previsao/saldo/{empresa}`."""
     try:
         return prever_saldo(db, None, dias)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/previsao/saldo-total-cashflow", response_model=PrevisaoSaldoOut)
+def previsao_saldo_total_cashflow(dias: int = 30, db: Session = Depends(get_db)):
+    """Saldo total previsto = último saldo total + cash-flow previsto
+    acumulado (ver previsao.py::prever_saldo_total_por_cashflow) - no
+    backtest erra cerca de metade de `/previsao/saldo-total`."""
+    try:
+        return prever_saldo_total_por_cashflow(db, dias)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/previsao/saldo-total-backtest")
+def previsao_saldo_total_backtest(
+    dias: int = 30, cortes: int = 6, fluxos_conhecidos: bool = True, db: Session = Depends(get_db),
+):
+    """Backtest da previsão de saldo total a `dias` dias a partir de
+    `cortes` datas passadas, com erro médio vs. "o saldo fica igual".
+    `fluxos_conhecidos=false` repete-o sem rendas/recorrentes (comparação)."""
+    try:
+        return backtest_saldo_total(db, dias, cortes, usar_fluxos_conhecidos=fluxos_conhecidos)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/previsao/ancorada")
+def previsao_ancorada(dias: int = 30, empresa: Optional[str] = None, db: Session = Depends(get_db)):
+    """Saldo previsto = saldo de hoje + fluxos conhecidos (rendas,
+    recorrentes, Mapa com data futura), com banda de incerteza a partir de
+    dias reais do histórico e, à parte, a linha com os recebimentos do
+    índice comercial - ver previsao_ancorada.py. Sem `empresa`, o grupo
+    inteiro. É a previsão usada no Forecast e na Análise de Contas."""
+    try:
+        return prever_saldo_ancorado(db, empresa, dias)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/previsao/ancorada-backtest")
+def previsao_ancorada_backtest(
+    dias: int = 30, cortes: int = 20, empresa: Optional[str] = None, db: Session = Depends(get_db),
+):
+    """Backtest de `/previsao/ancorada` a `dias` dias, a partir de `cortes`
+    datas passadas (uma por semana), com erro médio vs. "o saldo fica igual"."""
+    try:
+        return backtest_previsao_ancorada(db, dias, cortes, empresa=empresa)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -130,7 +182,7 @@ def previsao_risco_ranking(dias: int = 30, db: Session = Depends(get_db)):
 def previsao_risco(empresa: str, dias: int = 7, db: Session = Depends(get_db)):
     """Classifica a saúde do saldo de `empresa` em zonas (ok/alerta/crítico)
     com base na despesa mensal média, e avisa com antecedência se a
-    previsão de saldo (ensemble) vai entrar numa zona pior nos próximos
+    previsão de saldo (ancorada) vai entrar numa zona pior nos próximos
     `dias` dias - para o aviso de "zona de risco" no dashboard."""
     try:
         return avaliar_zona_risco(db, empresa, dias)

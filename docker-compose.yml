@@ -14,20 +14,30 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # image: publicada pelo GitHub Actions no GHCR (ver .github/workflows/ci.yml);
+  # build: continua a permitir "docker compose up --build" localmente.
   api:
     build: .
+    image: ${IMAGE_PREFIX:-ghcr.io/benjamimoreira/ai-powered-treasury-automation}/api:${IMAGE_TAG:-latest}
     ports:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql+psycopg://tesouraria:tesouraria@db:5432/tesouraria
       ONEDRIVE_RAIZ: /onedrive
       FORNECEDORES_RAIZ: /fornecedores
+      # Caminho do Índice do Departamento Comercial *dentro* do container -
+      # substitui o valor Windows de COMERCIAL_INDICE_PATH/CSV vindo do
+      # .env (env_file, abaixo), que não existe dentro do container; a
+      # pasta que o contém é montada como /comercial (ver volumes) a
+      # partir de COMERCIAL_INDICE_RAIZ_DOCKER.
+      COMERCIAL_INDICE_PATH: /comercial/${COMERCIAL_INDICE_NOME}
     env_file:
       - .env
     volumes:
       - logs:/var/log/app
       - "${ONEDRIVE_RAIZ_DOCKER}:/onedrive:ro"
       - "${FORNECEDORES_RAIZ_DOCKER}:/fornecedores:ro"
+      - "${COMERCIAL_INDICE_RAIZ_DOCKER}:/comercial:ro"
     command: >
       sh -c "python scripts/criar_tabelas.py &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 2>&1 | tee /var/log/app/api.log"
@@ -38,6 +48,7 @@ services:
 
   dashboard:
     build: .
+    image: ${IMAGE_PREFIX:-ghcr.io/benjamimoreira/ai-powered-treasury-automation}/api:${IMAGE_TAG:-latest}
     ports:
       - "8501:8501"
     environment:
@@ -85,6 +96,7 @@ services:
   # (volume "logs_archive"), pronto a ser copiado/enviado para outra máquina.
   log-archiver:
     build: ./docker/log-archiver
+    image: ${IMAGE_PREFIX:-ghcr.io/benjamimoreira/ai-powered-treasury-automation}/log-archiver:${IMAGE_TAG:-latest}
     environment:
       TZ: Europe/Lisbon
     volumes:
@@ -101,6 +113,7 @@ services:
   # a execução à API pela rede interna do Docker (http://api:8000).
   faturas-ocr:
     build: ./docker/faturas-ocr
+    image: ${IMAGE_PREFIX:-ghcr.io/benjamimoreira/ai-powered-treasury-automation}/faturas-ocr:${IMAGE_TAG:-latest}
     environment:
       ONEDRIVE_RAIZ: /onedrive
       API_TESOURARIA_URL: http://api:8000

@@ -54,10 +54,21 @@ def obter_fatura(db: Session, fatura_id: int) -> Optional[FaturaRecebida]:
     return db.query(FaturaRecebida).filter(FaturaRecebida.id == fatura_id).first()
 
 
-def listar_faturas(db: Session, dia: Optional[date] = None, pesquisa: Optional[str] = None, limit: int = 200) -> list:
+def listar_faturas(
+    db: Session,
+    dia: Optional[date] = None,
+    desde: Optional[date] = None,
+    ate: Optional[date] = None,
+    pesquisa: Optional[str] = None,
+    limit: int = 200,
+) -> list:
     query = db.query(FaturaRecebida)
     if dia:
         query = query.filter(FaturaRecebida.dia == dia)
+    if desde:
+        query = query.filter(FaturaRecebida.dia >= desde)
+    if ate:
+        query = query.filter(FaturaRecebida.dia <= ate)
     if pesquisa:
         # pesquisa em qualquer dia (não só na janela recente do "limit") -
         # por isso é um filtro à parte, não um contains() sobre o que já

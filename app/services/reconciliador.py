@@ -4,11 +4,15 @@ import shutil
 import tempfile
 import time
 import unicodedata
+from datetime import date
+from functools import lru_cache
+from typing import Any, Dict
 
 import openpyxl
 from sqlalchemy.orm import Session
 
 from app.db.models import AuditoriaDia, CasoAmbiguo, LinhaMapa, MovimentoBancario, Reconciliacao
+from app.services.alertas import enviar_alerta_auditoria
 from app.services.monitorizacao import _isoformat
 
 TOLERANCIA_VALOR = 0.01
@@ -90,6 +94,15 @@ def _partes_significativas(nome_completo) -> list:
 def chave_empresa(nome_completo):
     """Chave normalizada do nome da empresa sem palavras tipo LDA/SA, para
     que 'ANCORA APOGEU,LDA' e 'Ancora Apogeu' (sem sigla) batam certo."""
+    return _chave_empresa_em_cache(str(nome_completo))
+
+
+# Função pura sobre poucas dezenas de nomes distintos, mas chamada para cada
+# linha de saldos/movimentos em cada consulta - o ranking de risco chegava a
+# 775 mil chamadas (~metade dos ~48s do /previsao/risco-ranking). A cache
+# guarda o resultado por nome.
+@lru_cache(maxsize=4096)
+def _chave_empresa_em_cache(nome_completo: str) -> str:
     return normalizar(" ".join(_partes_significativas(nome_completo)))
 
 
@@ -250,35 +263,78 @@ def listar_movimentos_da_empresa(db: Session, empresa: str):
     ]
 
 
+# Transferências entre empresas do grupo (mútuos "IG ...", "REFORCO SALDO",
+# Caixadirecta) - ~2/3 do movimento bruto dos extratos (jul-set 2026). No
+# grupo anulam-se, mas somadas como recebimentos E pagamentos dominavam o
+# gráfico da Visão Geral (ex. 11/09: 481k€ "recebidos" / 513k€ "pagos" para
+# 0,6k€ / 33k€ de fora do grupo) e a média do cenário what-if.
+DIAS_PAR_INTRAGRUPO = 3
+
+
+def ids_intragrupo(movimentos: list) -> set:
+    """Ids dos movimentos que são uma transferência entre duas empresas do
+    grupo: um recebimento e um pagamento do mesmo valor (ao cêntimo), em
+    empresas diferentes, com até DIAS_PAR_INTRAGRUPO dias de diferença.
+    Cada movimento entra no máximo num par."""
+    pagamentos_por_valor = {}
+    for m in movimentos:
+        if m.valor < 0:
+            pagamentos_por_valor.setdefault(round(-m.valor, 2), []).append(m)
+    ids = set()
+    for m in sorted((m for m in movimentos if m.valor > 0), key=lambda m: m.dia):
+        candidatos = [
+            p for p in pagamentos_por_valor.get(round(m.valor, 2), [])
+            if p.id not in ids and chave_empresa(p.empresa) != chave_empresa(m.empresa)
+            and abs((p.dia - m.dia).days) <= DIAS_PAR_INTRAGRUPO
+        ]
+        if candidatos:
+            par = min(candidatos, key=lambda p: abs((p.dia - m.dia).days))
+            ids.update((m.id, par.id))
+    return ids
+
+
+
+
 def resumo_diario(db: Session):
     """Totais de recebimentos (valor >= 0) e pagamentos (valor < 0, em
     módulo) por dia, somados por todas as empresas - para o gráfico de
-    fluxo mensal da Visão Geral."""
+    fluxo mensal da Visão Geral. `*_externos` tira as transferências entre
+    empresas do grupo (ver ids_intragrupo)."""
     movimentos = db.query(MovimentoBancario).order_by(MovimentoBancario.dia).all()
+    internos = ids_intragrupo(movimentos)
     por_dia = {}
     for m in movimentos:
-        totais = por_dia.setdefault(m.dia, {"recebimentos": 0.0, "pagamentos": 0.0})
-        if m.valor >= 0:
-            totais["recebimentos"] += m.valor
-        else:
-            totais["pagamentos"] += -m.valor
-    return [
-        {"dia": dia, "recebimentos": totais["recebimentos"], "pagamentos": totais["pagamentos"]}
-        for dia, totais in sorted(por_dia.items())
-    ]
+        totais = por_dia.setdefault(m.dia, {
+            "recebimentos": 0.0, "pagamentos": 0.0, "recebimentos_externos": 0.0, "pagamentos_externos": 0.0,
+        })
+        chave = "recebimentos" if m.valor >= 0 else "pagamentos"
+        totais[chave] += abs(m.valor)
+        if m.id not in internos:
+            totais[f"{chave}_externos"] += abs(m.valor)
+    return [{"dia": dia, **totais} for dia, totais in sorted(por_dia.items())]
 
 
 def _linhas_mapa_filtradas(db: Session, empresa: str = None, dia_inicio=None, dia_fim=None) -> list:
-    """Linhas do Mapa já confirmadas no extrato (pago preenchido) no
-    período/empresa pedidos - base comum de analise_imputacoes() (somas
-    por categoria, para o gráfico circular) e listar_linhas_imputacao()
-    (linhas em detalhe, para a tabela por baixo do gráfico).
+    """Linhas do Mapa com previsto e/ou pago preenchido (isto é, linhas
+    reais, não as vazias que sobram na folha) no período/empresa pedidos -
+    base comum de analise_imputacoes() (somas por categoria, para o
+    gráfico circular) e listar_linhas_imputacao() (linhas em detalhe, para
+    a tabela por baixo do gráfico e para "CPCVs/Escrituras do período").
+
+    Inclui também linhas ainda PENDENTES (previsto preenchido, pago vazio -
+    ex. uma escritura ainda não confirmada no extrato bancário) - antes só
+    entravam as já confirmadas, o que fazia escrituras/recebimentos recém-
+    -lançados no Mapa "desaparecerem" da dashboard até o dinheiro entrar de
+    facto no banco. Quem consome esta lista distingue os dois casos pelo
+    campo `pago` (None = pendente).
 
     `empresa`, quando dado, é a designação social completa (a mesma lista
     da aba Saldos - ver listar_empresas()); linhas_mapa.empresa usa
     códigos curtos/abreviados (ex. "H.C.C"), por isso a comparação usa
     empresa_do_mapa_corresponde() em vez de igualdade direta."""
-    query = db.query(LinhaMapa).filter(LinhaMapa.pago.isnot(None))
+    query = db.query(LinhaMapa).filter(
+        (LinhaMapa.pago.isnot(None)) | (LinhaMapa.previsto.isnot(None))
+    )
     if dia_inicio is not None:
         query = query.filter(LinhaMapa.dia >= dia_inicio)
     if dia_fim is not None:
@@ -290,19 +346,94 @@ def _linhas_mapa_filtradas(db: Session, empresa: str = None, dia_inicio=None, di
     return linhas
 
 
+# Palavra-chave (sem acentos, minúsculas) procurada como substring da
+# Descrição -> Imputação a usar quando a coluna Imputação vem vazia -
+# visto em produção: quem preenche o Mapa por vezes só escreve do que se
+# trata na Descrição (ex. "CPCV - 00.PO.23.035", "IVA", "Kinto") e deixa a
+# Imputação em branco, e essas linhas desapareciam da "Análise de
+# Extratos" (agrupada só por Imputação) e, no caso de CPCV/Escritura,
+# também da tabela "CPCVs/Escrituras do período". A entrada mais específica
+# que bater primeiro (ordem do dicionário) ganha - por isso um nome mais
+# longo/específico deve vir antes de uma palavra genérica que o contenha.
+PALAVRAS_CHAVE_IMPUTACAO = {
+    "cpcv": "CPCV",
+    "escritura": "Escritura",
+    "iva": "Impostos",
+    "camara municipal do porto": "Custos de gabinete",
+    "kinto": "Publicidade",
+}
+
+
+def _imputacao_de_linha(l: LinhaMapa) -> str:
+    """Imputação a usar para uma linha do Mapa: a coluna Imputação, ou,
+    quando essa vier vazia, inferida da Descrição via
+    PALAVRAS_CHAVE_IMPUTACAO. Comparação sem acentos/maiúsculas (mesma
+    normalização de chave_empresa) para "Câmara Municipal do Porto" bater
+    com a entrada "camara municipal do porto"."""
+    if l.imputacao:
+        return l.imputacao
+    descricao = remover_acentos(l.descricao or "").lower()
+    for palavra_chave, imputacao_inferida in PALAVRAS_CHAVE_IMPUTACAO.items():
+        if palavra_chave in descricao:
+            return imputacao_inferida
+    return "(sem imputação)"
+
+
+# Código de referência de uma fração no Índice do Departamento Comercial
+# (ex. "00.PO.23.035" - dois dígitos, duas letras, dois dígitos, três
+# dígitos, sempre separados por ponto) - ver app/services/comercial.py
+# (COL_REF). Aparece escrito à mão na Descrição de linhas do Mapa (CPCVs,
+# escrituras, e também sinais/depósitos ainda categorizados só como
+# "DEPOSITO" na Imputação) - é o que liga uma linha do Mapa ao espaço
+# físico/fração da venda a que se refere.
+PADRAO_REF_FRACAO = re.compile(r"\b\d{2}\.[A-Z]{2}\.\d{2}\.\d{3}\b", re.IGNORECASE)
+
+
+def _refs_fracao_de_linha(l: LinhaMapa) -> list:
+    """Códigos de referência (ver PADRAO_REF_FRACAO) mencionados na
+    Descrição desta linha - pode haver mais que um (ex. uma escritura de
+    várias frações juntas: "Escritura - 00.AV.04.002, 00.AV.04.003, ...").
+    Maiúsculas, para bater certo com as chaves de
+    comercial.mapa_espaco_fracao_por_ref()."""
+    if not l.descricao:
+        return []
+    return [m.upper() for m in PADRAO_REF_FRACAO.findall(l.descricao)]
+
+
+def _e_cpcv_ou_escritura(l: LinhaMapa) -> bool:
+    """True se esta linha do Mapa pertence ao "mundo" CPCV/Escritura -
+    para a tabela "CPCVs/Escrituras do período" do dashboard, mais
+    abrangente que _imputacao_de_linha(): também apanha linhas com
+    Imputação própria (ex. "DEPOSITO", um sinal de CPCV) desde que a
+    Descrição refira um código de fração - essas linhas não devem mudar de
+    categoria no gráfico circular (continuam "DEPOSITO"), mas fazem parte
+    do mesmo processo de venda e ficavam de fora da tabela dedicada."""
+    if _imputacao_de_linha(l) in ("CPCV", "Escritura"):
+        return True
+    return bool(_refs_fracao_de_linha(l))
+
+
 def analise_imputacoes(db: Session, empresa: str = None, dia_inicio=None, dia_fim=None) -> dict:
-    """Soma o valor pago (real, já sinalizado por importar_linhas - ver
-    mapa_importer.py) de cada linha do Mapa agrupado por imputação e por
-    tipo (recebimento/pagamento), para o gráfico circular "Análise de
-    Extratos" - quanto de cada categoria pesa no total recebido/pago no
-    período. Só considera linhas com pago preenchido (movimento já
-    confirmado no extrato, não só previsto)."""
+    """Soma o valor de cada linha do Mapa agrupado por imputação e por tipo
+    (recebimento/pagamento), para o gráfico circular "Análise de Extratos"
+    - quanto de cada categoria pesa no total recebido/pago no período.
+
+    Linhas já confirmadas no extrato (pago preenchido) entram em
+    recebimentos/pagamentos, pelo valor real. Linhas ainda pendentes (só
+    previsto, ex. uma escritura por confirmar) entram à parte em
+    recebimentos_pendentes/pagamentos_pendentes, pelo valor previsto - para
+    não inflacionar o "já recebido/pago" com dinheiro que ainda não
+    entrou/saiu do banco, mas sem as esconder da dashboard."""
     linhas = _linhas_mapa_filtradas(db, empresa=empresa, dia_inicio=dia_inicio, dia_fim=dia_fim)
 
     somas = {"recebimento": {}, "pagamento": {}}
+    somas_pendentes = {"recebimento": {}, "pagamento": {}}
     for l in linhas:
-        categoria = l.imputacao or "(sem imputação)"
-        somas[l.tipo][categoria] = somas[l.tipo].get(categoria, 0.0) + abs(l.pago)
+        categoria = _imputacao_de_linha(l)
+        if l.pago is not None:
+            somas[l.tipo][categoria] = somas[l.tipo].get(categoria, 0.0) + abs(l.pago)
+        elif l.previsto is not None:
+            somas_pendentes[l.tipo][categoria] = somas_pendentes[l.tipo].get(categoria, 0.0) + abs(l.previsto)
 
     def _ordenado(por_categoria: dict) -> list:
         return [
@@ -313,6 +444,8 @@ def analise_imputacoes(db: Session, empresa: str = None, dia_inicio=None, dia_fi
     return {
         "recebimentos": _ordenado(somas["recebimento"]),
         "pagamentos": _ordenado(somas["pagamento"]),
+        "recebimentos_pendentes": _ordenado(somas_pendentes["recebimento"]),
+        "pagamentos_pendentes": _ordenado(somas_pendentes["pagamento"]),
     }
 
 
@@ -324,16 +457,28 @@ def listar_linhas_imputacao(db: Session, empresa: str = None, dia_inicio=None, d
     também (sem sinal alterado, já vem sinalizado do mapa_importer.py) -
     usado pela tabela de CPCVs/Escrituras do início da aba (previsto =
     "valor tabelado/proposto" no vocabulário comercial, pago = "valor
-    recebido")."""
+    recebido").
+
+    Inclui linhas pendentes (só previsto, pago ainda vazio) - `confirmado`
+    diz se já bateu no extrato; `valor` é o pago quando confirmado, senão
+    o previsto (para a linha ter sempre um valor mostrável). `refs_fracao`
+    e `e_cpcv_escritura` (ver _refs_fracao_de_linha/_e_cpcv_ou_escritura)
+    servem para a tabela "CPCVs/Escrituras do período" apanhar também
+    linhas com Imputação própria (ex. "DEPOSITO") que se refiram a uma
+    fração do Índice do Departamento Comercial, e para a ligar ao espaço
+    físico/fração dessa fração (GET /comercial/espaco-fracao-por-ref)."""
     linhas = _linhas_mapa_filtradas(db, empresa=empresa, dia_inicio=dia_inicio, dia_fim=dia_fim)
     return [
         {
             "dia": l.dia.isoformat(),
             "empresa": l.empresa,
             "tipo": l.tipo,
-            "imputacao": l.imputacao or "(sem imputação)",
+            "imputacao": _imputacao_de_linha(l),
             "previsto": l.previsto,
-            "valor": abs(l.pago),
+            "valor": abs(l.pago) if l.pago is not None else abs(l.previsto),
+            "confirmado": l.pago is not None,
+            "refs_fracao": _refs_fracao_de_linha(l),
+            "e_cpcv_escritura": _e_cpcv_ou_escritura(l),
         }
         for l in linhas
     ]
@@ -384,9 +529,46 @@ def auditoria_dia(db: Session, dia) -> dict:
     soma_extrato = sum(m.valor for m in movimentos)
     soma_mapa = sum(l.pago for l in linhas_todas if l.pago is not None)
 
+    # Mesma comparação que soma_extrato/soma_mapa, mas por empresa - para
+    # identificar exatamente qual empresa tem valores em falta/a mais (ex.
+    # "VidorSGPS -390.84") em vez de só o total do dia todo. O Mapa usa
+    # nomes curtos ("H.C.N", "Vidor SGPS") e os extratos a designação social
+    # completa ("HABISERVE CONSTRUCOES NORTE,LDA", "VIDOR SOCIEDADE GESTORA
+    # PARTICIPACOES SOCIAIS,SA") - agrupa cada linha do Mapa sob a
+    # designação completa correspondente (empresa_do_mapa_corresponde, a
+    # mesma função que já resolve isto noutros pontos do reconciliador),
+    # senão a mesma empresa aparecia duas vezes com diferenças opostas que
+    # se anulam no total mas pareciam duas discrepâncias reais.
+    nomes_canonicos = sorted({m.empresa for m in movimentos}, key=len, reverse=True)
+    grupos: Dict[str, Dict[str, Any]] = {}
+    for m in movimentos:
+        chave = chave_empresa(m.empresa)
+        grupo = grupos.setdefault(chave, {"nome": m.empresa, "soma_extrato": 0.0, "soma_mapa": 0.0})
+        grupo["soma_extrato"] += m.valor
+    for l in linhas_todas:
+        if l.pago is None:
+            continue
+        canonico = next((c for c in nomes_canonicos if empresa_do_mapa_corresponde(l.empresa, c)), None)
+        chave = chave_empresa(canonico) if canonico else chave_empresa(l.empresa)
+        grupo = grupos.setdefault(chave, {"nome": canonico or l.empresa, "soma_extrato": 0.0, "soma_mapa": 0.0})
+        grupo["soma_mapa"] += l.pago
+
+    diferencas_por_empresa = []
+    for grupo in grupos.values():
+        diferenca = grupo["soma_extrato"] - grupo["soma_mapa"]
+        if abs(diferenca) > TOLERANCIA_VALOR:
+            diferencas_por_empresa.append({
+                "empresa": grupo["nome"],
+                "soma_extrato": grupo["soma_extrato"],
+                "soma_mapa": grupo["soma_mapa"],
+                "diferenca": diferenca,
+            })
+    diferencas_por_empresa.sort(key=lambda d: d["empresa"])
+
     return {
         "sem_match_fwd": len(movimentos_sem_match),
         "sem_match_rev": len(linhas_sem_match),
+        "diferencas_por_empresa": diferencas_por_empresa,
         "movimentos_sem_match": [
             {
                 "empresa": m.empresa,
@@ -420,7 +602,16 @@ def registar_auditoria_dia(db: Session, dia) -> dict:
     apenas pelo botão "Auditar este dia"/"Auditoria geral" do dashboard -
     não há atualmente nenhuma chamada automática a partir de scripts
     externos (ex. preencher_mapa.py, que corre noutro repositório); se essa
-    integração vier a existir, tem de ser feita explicitamente lá."""
+    integração vier a existir, tem de ser feita explicitamente lá.
+
+    Quando há discrepância (sem_match_fwd/rev > 0) NO DIA DE HOJE, dispara
+    também um alerta por email (ver app.services.alertas) - não bloqueia
+    nem falha o registo da auditoria se o envio do email falhar. Dias
+    diferentes de hoje (ex.: "Auditoria geral"/dias_atras, que revisita até
+    31 dias de cada vez, ou o botão "Auditar este dia" para um dia antigo)
+    NUNCA disparam email - pedido explícito 18/09/2026, depois de confirmar
+    que reauditar o histórico enviava um alerta por cada dia antigo com
+    discrepância já conhecida, em vez de só avisar sobre hoje."""
     resultado = auditoria_dia(db, dia)
     db.add(AuditoriaDia(
         dia=dia,
@@ -431,8 +622,11 @@ def registar_auditoria_dia(db: Session, dia) -> dict:
         diferenca=resultado["diferenca_extrato_mapa"],
         movimentos_sem_match=resultado["movimentos_sem_match"],
         linhas_sem_match=resultado["linhas_sem_match"],
+        diferencas_por_empresa=resultado["diferencas_por_empresa"],
     ))
     db.commit()
+    if dia == date.today():
+        enviar_alerta_auditoria(dia, resultado)
     return resultado
 
 
@@ -454,6 +648,7 @@ def listar_historico_auditorias(db: Session, limit: int = 100) -> list:
             "soma_extrato": r.soma_extrato,
             "soma_mapa": r.soma_mapa,
             "diferenca": r.diferenca,
+            "diferencas_por_empresa": r.diferencas_por_empresa or [],
         }
         for r in registos
     ]

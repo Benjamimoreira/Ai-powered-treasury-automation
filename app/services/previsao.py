@@ -49,9 +49,11 @@ pagamentos, a partir de MovimentoBancario) varia todos os dias porque
 inclui explicitamente os dias sem movimento (valor 0), por isso a
 previsão fica visualmente percetível mesmo sem tendência forte.
 """
+import os
 import warnings
 from collections import namedtuple
-from datetime import timedelta
+from datetime import date, timedelta
+from functools import lru_cache
 from typing import Optional
 
 import numpy as np
@@ -64,6 +66,13 @@ from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 from app.db.models import LinhaMapa, MovimentoBancario, SaldoDiario
+from app.services.fluxos_conhecidos import (
+    detetar_fluxos,
+    fluxos_nos_dias,
+    ler_contratos_rendas,
+    mapa_rendas_mais_recente,
+)
+from app.services.onedrive_sync import _onedrive_raiz
 from app.services.reconciliador import chave_empresa, empresa_do_mapa_corresponde, listar_empresas
 from app.services.saldos import _serie_saldo_total_bruta
 
@@ -99,6 +108,21 @@ def _janela_treino(dias_futuro: int, n_disponiveis: int) -> int:
     """Tamanho da janela de treino a usar, em função de quantos dias se
     quer prever - ver JANELA_TREINO_MAXIMA."""
     return min(max(JANELA_TREINO_MODELOS, dias_futuro * 3), JANELA_TREINO_MAXIMA, n_disponiveis)
+
+
+# O cash-flow não tem o problema de "regimes" do saldo (é um fluxo diário,
+# não um nível acumulado), e tem ciclos mensais (salários, impostos,
+# rendas) que 30-90 dias mal chegam a mostrar. Backtest de 10 datas de
+# corte (jun-set 2026, ver _backtest_saldo): treinar com mais histórico
+# baixou o erro do saldo previsto a 14 e 30 dias; o mesmo não se verificou
+# ao alargar a janela do próprio saldo, por isso esta janela é só do
+# cash-flow.
+JANELA_TREINO_CASHFLOW_MIN = 90
+JANELA_TREINO_CASHFLOW_MAX = 365
+
+
+def _janela_treino_cashflow(dias_futuro: int, n_disponiveis: int) -> int:
+    return min(max(JANELA_TREINO_CASHFLOW_MIN, dias_futuro * 3), JANELA_TREINO_CASHFLOW_MAX, n_disponiveis)
 
 
 def _janela_recente(valores: list, dias: list = None, tamanho: int = JANELA_TREINO_MODELOS):
@@ -161,7 +185,7 @@ def _preencher_dias_em_falta(pontos: list) -> list:
     return resultado
 
 
-def _historico_saldo(db: Session, empresa: Optional[str] = None):
+def _historico_saldo(db: Session, empresa: Optional[str] = None, ate: date = None):
     """Histórico de saldo contabilístico usado para prever/avaliar.
     `empresa=None` devolve a "riqueza" da empresa como um todo: o saldo
     total (soma da última leitura conhecida de cada entidade, dia a dia -
@@ -182,6 +206,8 @@ def _historico_saldo(db: Session, empresa: Optional[str] = None):
             s for s in todos
             if chave_empresa(s.entidade) == alvo and s.saldo_contabilistico is not None
         ]
+    if ate is not None:
+        pontos = [p for p in pontos if p.dia <= ate]
     return _preencher_dias_em_falta(pontos)
 
 
@@ -340,6 +366,40 @@ def _prever_gradient_boosting(dias: list, valores: list, n_futuro: int):
     return previsoes, importancias
 
 
+def _bloco_do_mes(dia) -> int:
+    """Parte do mês em blocos de 5 dias (1-5, 6-10, ..., 26-31) - os dias
+    28-31 juntam-se ao último bloco para não haver um bloco só com os
+    poucos dias 31 do histórico."""
+    return min((dia.day - 1) // 5, 5)
+
+
+def _prever_perfil_calendario(dias: list, valores: list, n_futuro: int) -> list:
+    """Cash-flow típico de cada dia futuro pelo calendário: média geral +
+    efeito do dia da semana + efeito da parte do mês, aprendidos no treino.
+    Os modelos de séries temporais puras (ARIMA, suavização exponencial)
+    revertem para uma média quase constante - somada dia a dia, a previsão
+    de saldo fica uma reta. O cash-flow real da tesouraria tem padrão de
+    calendário (visto no histórico jan-set 2026: quarta-feira com -45k€ de
+    média, início do mês com -17k€/dia, segunda quinzena positiva - ex.
+    salários/impostos/rendas), e é isso que este modelo capta. Só dias com
+    datas (cash-flow), por isso fica fora de _FUNCOES_MODELO, como o
+    gradient boosting."""
+    if len(valores) < 2 * PERIODO_SAZONAL:
+        raise ValueError("histórico curto de mais para um perfil de calendário")
+    media = float(np.mean(valores))
+    por_dia_semana, por_bloco = {}, {}
+    for d, v in zip(dias, valores):
+        por_dia_semana.setdefault(d.weekday(), []).append(v)
+        por_bloco.setdefault(_bloco_do_mes(d), []).append(v)
+    efeito_dia_semana = {k: float(np.mean(v)) - media for k, v in por_dia_semana.items()}
+    efeito_bloco = {k: float(np.mean(v)) - media for k, v in por_bloco.items()}
+    futuros = [dias[-1] + timedelta(days=i + 1) for i in range(n_futuro)]
+    return [
+        media + efeito_dia_semana.get(d.weekday(), 0.0) + efeito_bloco.get(_bloco_do_mes(d), 0.0)
+        for d in futuros
+    ]
+
+
 _FUNCOES_MODELO = {
     "regressao_linear": lambda valores, n_futuro: _prever_linear(len(valores), valores, n_futuro),
     "media_movel": lambda valores, n_futuro: _prever_media_movel(valores, n_futuro),
@@ -385,21 +445,57 @@ def _previsao_sensata(previsoes: list, limite: float) -> bool:
     return all(np.isfinite(v) and abs(v) <= limite for v in previsoes)
 
 
+# Amplitude mínima que a previsão de um modelo tem de ter, face à
+# volatilidade real recente da série, para não ser tratada como "sem
+# sinal" - ver _previsao_tem_variacao. 2% é deliberadamente baixo (só
+# apanha previsões praticamente em linha reta, não qualquer tendência
+# suave) - visto em produção: media_movel (constante por construção) e
+# markov_switching (converge para a média ponderada dos 2 regimes, quase
+# sempre quase-constante em poucos dias) podiam "ganhar" um backtest curto
+# por sorte e dominar sozinhos o ensemble (peso ~78% num caso real, com
+# saldo a oscilar 446k-576k na mesma semana) - o gráfico ficava uma linha
+# reta mesmo com o histórico visivelmente volátil. Excluí-los da
+# comparação como se tivessem falhado deixa os modelos que realmente
+# captam variação (regressão linear, ARIMA, suavização exponencial,
+# gradient boosting) competir e aparecer.
+LIMIAR_VARIACAO_RELATIVA = 0.02
+
+
+def _previsao_tem_variacao(previsoes: list, valores_referencia: list) -> bool:
+    """False se `previsoes` for praticamente uma linha reta face à
+    amplitude real de `valores_referencia` (a série de treino) - ver
+    LIMIAR_VARIACAO_RELATIVA. Quando a própria série de referência já é
+    constante (amplitude 0 - conta parada), não há variação nenhuma para
+    exigir de ninguém, por isso não rejeita nesse caso."""
+    if len(previsoes) < 2:
+        return True
+    amplitude_previsao = max(previsoes) - min(previsoes)
+    amplitude_referencia = max(valores_referencia) - min(valores_referencia)
+    if amplitude_referencia <= 0:
+        return True
+    return amplitude_previsao >= LIMIAR_VARIACAO_RELATIVA * amplitude_referencia
+
+
 def _prever_com_guarda(funcao, valores_treino: list, n_futuro: int, limite: float, *args):
     """Invólucro à volta de qualquer função de `_FUNCOES_MODELO` (ou do
     gradient boosting) que rejeita a previsão se ela divergir para além
-    de `_limite_sensato` - ver comentário de FATOR_LIMITE_SENSATO. Levanta
-    ValueError em vez de devolver o valor absurdo, para ser apanhado pelo
-    mesmo `except Exception: continue` que já trata modelos que não
-    convergem - um modelo "insensato" é tratado exatamente como um
-    modelo que falhou, em vez de entrar no ensemble ou aparecer no
-    gráfico."""
+    de `_limite_sensato` (ver FATOR_LIMITE_SENSATO) ou se sair praticamente
+    constante (ver LIMIAR_VARIACAO_RELATIVA). Levanta ValueError em vez de
+    devolver o valor problemático, para ser apanhado pelo mesmo `except
+    Exception: continue` que já trata modelos que não convergem - um
+    modelo "insensato" ou "sem sinal" é tratado exatamente como um modelo
+    que falhou, em vez de entrar no ensemble ou aparecer no gráfico."""
     resultado = funcao(valores_treino, n_futuro, *args)
     previsoes = resultado[0] if isinstance(resultado, tuple) else resultado
     if not _previsao_sensata(previsoes, limite):
         raise ValueError(
             f"previsão divergiu para além do plausível para esta série "
             f"(limite ±{limite:,.2f})"
+        )
+    if not _previsao_tem_variacao(previsoes, valores_treino):
+        raise ValueError(
+            "previsão praticamente constante - sem variação face à "
+            "volatilidade recente da série"
         )
     return resultado
 
@@ -523,6 +619,15 @@ def _pesos_ensemble(valores: list, modelos_disponiveis: list, dias: list = None,
                 if not _previsao_sensata(previsto_gb, _limite_sensato(valores)):
                     raise ValueError("previsão do gradient boosting divergiu para além do plausível")
                 rmse_por_modelo["gradient_boosting"] = _rmse(teste_real, previsto_gb)
+            except Exception:
+                pass
+
+        if "perfil_calendario" in modelos_disponiveis and dias is not None:
+            try:
+                previsto_pc = _prever_perfil_calendario(
+                    dias[:-dias_teste], _suavizar_outliers(valores[:-dias_teste]), dias_teste,
+                )
+                rmse_por_modelo["perfil_calendario"] = _rmse(valores[-dias_teste:], previsto_pc)
             except Exception:
                 pass
 
@@ -816,7 +921,47 @@ def avaliar_cashflow(db: Session, empresa: str = None, dias_teste: int = 5) -> d
     return resultado
 
 
-def _movimentos_por_dia(db: Session, empresa: str = None) -> list:
+# Na carteira agregada (todas as contas do grupo) há movimentos em
+# praticamente todos os dias úteis - N dias de calendário seguidos sem
+# nenhum movimento não é "não houve movimento", é "não há extrato" (ex.
+# 01-19/04/2026, entre os extratos mensais de Jan-Mar e as pastas
+# diárias). Tratar esses dias como zero ensinava aos modelos um período
+# de caixa parada que nunca existiu.
+MIN_DIAS_SEGUIDOS_SEM_EXTRATO = 7
+
+
+def _dias_sem_extrato(por_dia: dict, primeiro, ultimo) -> set:
+    buracos, sequencia = set(), []
+    dia = primeiro
+    while dia <= ultimo:
+        if dia in por_dia:
+            if len(sequencia) >= MIN_DIAS_SEGUIDOS_SEM_EXTRATO:
+                buracos.update(sequencia)
+            sequencia = []
+        else:
+            sequencia.append(dia)
+        dia += timedelta(days=1)
+    return buracos
+
+
+def _media_por_dia_semana(por_dia: dict) -> dict:
+    """Recebimentos/pagamentos médios por dia da semana (0=segunda), só
+    sobre dias com extrato - usado para preencher dias sem extrato (ver
+    MIN_DIAS_SEGUIDOS_SEM_EXTRATO) com um valor típico em vez de zero."""
+    somas = {d: {"recebimentos": 0.0, "pagamentos": 0.0, "n": 0} for d in range(7)}
+    for dia, totais in por_dia.items():
+        s = somas[dia.weekday()]
+        s["recebimentos"] += totais["recebimentos"]
+        s["pagamentos"] += totais["pagamentos"]
+        s["n"] += 1
+    return {
+        d: {"recebimentos": s["recebimentos"] / s["n"], "pagamentos": s["pagamentos"] / s["n"]}
+        if s["n"] else {"recebimentos": 0.0, "pagamentos": 0.0}
+        for d, s in somas.items()
+    }
+
+
+def _movimentos_por_dia(db: Session, empresa: str = None, ate: date = None, excluir_ids: set = None) -> list:
     """Recebimentos/pagamentos/líquido por dia. `empresa=None` agrega
     todas as entidades (série mais densa, melhor para ver o padrão geral
     da tesouraria); com `empresa`, filtra só essa entidade. Preenche a
@@ -830,6 +975,12 @@ def _movimentos_por_dia(db: Session, empresa: str = None) -> list:
         movimentos = [m for m in query.all() if chave_empresa(m.empresa) == alvo]
     else:
         movimentos = query.all()
+    if ate is not None:
+        movimentos = [m for m in movimentos if m.dia <= ate]
+    if excluir_ids:
+        # fluxos conhecidos (rendas/recorrentes - ver fluxos_conhecidos.py)
+        # entram na previsão à parte; aqui ficam de fora para não contarem 2x
+        movimentos = [m for m in movimentos if m.id not in excluir_ids]
 
     if not movimentos:
         return []
@@ -843,10 +994,15 @@ def _movimentos_por_dia(db: Session, empresa: str = None) -> list:
             totais["pagamentos"] += -m.valor
 
     primeiro, ultimo = min(por_dia), max(por_dia)
+    dias_sem_extrato = _dias_sem_extrato(por_dia, primeiro, ultimo) if empresa is None else set()
+    media_dia_semana = _media_por_dia_semana(por_dia) if dias_sem_extrato else {}
     serie = []
     dia = primeiro
     while dia <= ultimo:
-        totais = por_dia.get(dia, {"recebimentos": 0.0, "pagamentos": 0.0})
+        if dia in dias_sem_extrato:
+            totais = media_dia_semana[dia.weekday()]
+        else:
+            totais = por_dia.get(dia, {"recebimentos": 0.0, "pagamentos": 0.0})
         serie.append({
             "dia": dia,
             "recebimentos": totais["recebimentos"],
@@ -857,12 +1013,17 @@ def _movimentos_por_dia(db: Session, empresa: str = None) -> list:
     return serie
 
 
-def prever_cashflow(db: Session, empresa: str = None, dias_futuro: int = 7) -> dict:
+def prever_cashflow(
+    db: Session, empresa: str = None, dias_futuro: int = 7, ate: date = None, excluir_ids: set = None,
+) -> dict:
     """Prevê o cash-flow líquido diário (recebimentos - pagamentos) dos
     próximos dias, com os mesmos modelos usados em `prever_saldo`.
     `empresa=None` prevê o cash-flow agregado de toda a carteira.
-    Levanta ValueError se não houver histórico suficiente."""
-    serie = _movimentos_por_dia(db, empresa)
+    Levanta ValueError se não houver histórico suficiente. `ate` corta o
+    histórico nessa data (backtest - ver _backtest_saldo_total);
+    `excluir_ids` tira movimentos da série (fluxos conhecidos, previstos à
+    parte - ver prever_saldo_total_por_cashflow)."""
+    serie = _movimentos_por_dia(db, empresa, ate, excluir_ids)
     if len(serie) < MIN_PONTOS:
         alvo = empresa or "todas as entidades"
         raise ValueError(
@@ -876,7 +1037,7 @@ def prever_cashflow(db: Session, empresa: str = None, dias_futuro: int = 7) -> d
     dias_futuros = [ultimo_dia + timedelta(days=i + 1) for i in range(dias_futuro)]
 
     liquidos_recentes, dias_recentes = _janela_recente(
-        liquidos, dias, tamanho=_janela_treino(dias_futuro, len(liquidos)),
+        liquidos, dias, tamanho=_janela_treino_cashflow(dias_futuro, len(liquidos)),
     )
 
     previsao = {}
@@ -898,6 +1059,14 @@ def prever_cashflow(db: Session, empresa: str = None, dias_futuro: int = 7) -> d
         previsao["gradient_boosting"] = previsao_gb
     except Exception:
         importancia_features = None
+
+    try:
+        previsao["perfil_calendario"] = _prever_com_guarda(
+            lambda v, n: _prever_perfil_calendario(dias_recentes, v, n),
+            liquidos_treino, dias_futuro, limite_sensato,
+        )
+    except Exception:
+        pass
 
     pesos, rmse_estimado = _pesos_ensemble(
         liquidos_recentes, list(previsao.keys()), dias=dias_recentes,
@@ -1020,16 +1189,16 @@ def _classificar_zona(saldo: float, despesa_media_mensal: float) -> str:
     return "ok"
 
 
-def avaliar_zona_risco(db: Session, empresa: str, dias_futuro: int = 7) -> dict:
+def avaliar_zona_risco(db: Session, empresa: str, dias_futuro: int = 7, contexto=None) -> dict:
     """Classifica a saúde do saldo de `empresa` em três zonas, com base na
     despesa mensal média (extrato bancário): "critico" (saldo cobre menos
     de 1 semana de despesa média, ou já é negativo), "alerta" (cobre menos
-    de 1 mês) e "ok". Usa também a previsão de saldo (ensemble, quando
-    disponível - que pode legitimamente prever valores negativos) para
-    avisar com antecedência se o saldo vai entrar numa zona pior nos
-    próximos `dias_futuro` dias, mesmo partindo de uma zona atual "ok" -
-    a falha da previsão (histórico curto, modelo que não converge) nunca
-    impede a classificação da zona atual, só fica sem aviso antecipado.
+    de 1 mês) e "ok". Usa também a previsão de saldo ancorada (saldo +
+    fluxos conhecidos - ver previsao_ancorada.py) para avisar com
+    antecedência se o saldo vai entrar numa zona pior nos próximos
+    `dias_futuro` dias, mesmo partindo de uma zona atual "ok" - a falha da
+    previsão (histórico curto) nunca impede a classificação da zona atual,
+    só fica sem aviso antecipado.
 
     "Quanto tempo aguenta" tem duas leituras, ambas devolvidas:
     dias_autonomia_tendencia (ver estimar_autonomia) usa o ritmo de caixa
@@ -1053,8 +1222,15 @@ def avaliar_zona_risco(db: Session, empresa: str, dias_futuro: int = 7) -> dict:
     dia_risco = None
     saldo_previsto_fim = None
     try:
-        previsao = prever_saldo(db, empresa, dias_futuro)
-        serie_prevista = previsao["previsao"].get("ensemble") or next(iter(previsao["previsao"].values()), [])
+        # previsão ancorada (saldo + fluxos conhecidos - ver
+        # previsao_ancorada.py), a mesma do Forecast e da Análise de
+        # Contas; `contexto` partilhado evita recalcular os fluxos
+        # conhecidos para cada empresa do ranking.
+        from app.services.previsao_ancorada import prever_saldo_ancorado
+
+        serie_prevista = prever_saldo_ancorado(
+            db, empresa, dias_futuro, contexto=contexto, com_banda=False,
+        )["previsao"]
         if serie_prevista:
             saldo_previsto_fim = serie_prevista[-1]["valor"]
         for ponto in serie_prevista:
@@ -1074,12 +1250,9 @@ def avaliar_zona_risco(db: Session, empresa: str, dias_futuro: int = 7) -> dict:
         "zona_atual": zona_atual,
         "zona_prevista": zona_prevista,
         "dia_risco": dia_risco,
-        # Último ponto do ensemble (ou do primeiro modelo disponível, se o
-        # histórico for curto de mais para pesar o ensemble - ver
-        # _pesos_ensemble) ao fim de `dias_futuro` dias. None só quando a
-        # previsão falhou mesmo (histórico insuficiente para todos os
-        # modelos) - não é um "sem dados" por omissão, é o forecast a
-        # sério aplicado a esta empresa.
+        # Último ponto da previsão ancorada ao fim de `dias_futuro` dias.
+        # None só quando a previsão falhou mesmo (histórico insuficiente) -
+        # não é um "sem dados" por omissão.
         "saldo_previsto_fim": saldo_previsto_fim,
     }
 
@@ -1103,15 +1276,291 @@ def listar_ranking_risco(db: Session, dias_futuro: int = 30) -> list:
     da previsão, ela fica apenas sem zona_prevista/saldo_previsto_fim
     (ver avaliar_zona_risco). Ignora silenciosamente empresas sem
     histórico de saldo (nada a classificar)."""
+    from app.services.previsao_ancorada import carregar_contexto
+
+    contexto = carregar_contexto(db)
     resultado = []
     for empresa in listar_empresas(db):
         if not _historico_saldo(db, empresa):
             continue
         try:
-            risco = avaliar_zona_risco(db, empresa, dias_futuro)
+            risco = avaliar_zona_risco(db, empresa, dias_futuro, contexto)
         except ValueError:
             continue
         resultado.append({"empresa": empresa, **risco})
 
     resultado.sort(key=lambda r: (_ORDEM_ZONA_PIOR_PRIMEIRO[r["zona_atual"]], r["saldo_atual"]))
     return resultado
+
+
+# ---------------------------------------------------------------------------
+# Saldo total previsto a partir do cash-flow + backtest
+# ---------------------------------------------------------------------------
+# Backtest com o histórico completo (jan-set 2026, 6-10 datas de corte):
+# prever o saldo total com os modelos aplicados à própria série de saldo
+# errou em média ~370k€ a 30 dias; saldo atual + cash-flow previsto
+# acumulado errou ~180-195k€ - quase metade. O saldo total é um nível
+# acumulado com saltos grandes (entradas/saídas pontuais), que os modelos
+# de séries temporais leem como tendência; o cash-flow diário é a série
+# que tem de facto padrão. Tem também a vantagem de o saldo previsto e o
+# cash-flow previsto passarem a contar a mesma história.
+
+
+def _serie_central_previsao(previsao_por_modelo: dict) -> list:
+    return previsao_por_modelo.get("ensemble") or next(
+        (v for m, v in previsao_por_modelo.items() if m != "previsto_mapa"), []
+    )
+
+
+@lru_cache(maxsize=16)
+def _contratos_rendas_em_cache(caminho: str, modificado: float, ano: int) -> tuple:
+    # `modificado` (mtime) faz parte da chave: um Mapa de Rendas atualizado
+    # volta a ser lido, sem reler o Excel a cada previsão.
+    return tuple(ler_contratos_rendas(caminho, ano))
+
+
+def _fluxos_conhecidos(db: Session, ate: date = None) -> tuple:
+    """(fluxos, ids_conhecidos) - ver fluxos_conhecidos.detetar_fluxos.
+    Sem Mapa de Rendas acessível, só os recorrentes."""
+    movimentos = db.query(MovimentoBancario).all()
+    if not movimentos:
+        return [], set()
+    ate = ate or max(m.dia for m in movimentos)
+    contratos = []
+    try:
+        caminho = mapa_rendas_mais_recente(_onedrive_raiz(), ate)
+        if caminho:
+            contratos = list(_contratos_rendas_em_cache(caminho, os.path.getmtime(caminho), ate.year))
+    except Exception:
+        contratos = []
+    return detetar_fluxos(movimentos, ate, contratos)
+
+
+def prever_saldo_total_por_cashflow(
+    db: Session, dias_futuro: int = 30, ate: date = None, usar_fluxos_conhecidos: bool = True,
+) -> dict:
+    """Saldo total previsto = último saldo total conhecido + cash-flow
+    previsto (prever_cashflow da carteira) acumulado dia a dia, para cada
+    modelo e para o ensemble. Mesmo formato de prever_saldo, mais
+    `trajetorias_exemplo`; a banda de incerteza vem das trajetórias
+    simuladas (ver _simular_saldo), não do RMSE.
+
+    Com `usar_fluxos_conhecidos`, as rendas e os recorrentes (ver
+    fluxos_conhecidos.py) entram com valor e dia certos em todas as séries
+    (média e trajetórias), e os movimentos equivalentes do histórico saem
+    dos modelos e do sorteio para não contarem a dobrar."""
+    historico = _historico_saldo(db, None, ate)
+    if len(historico) < MIN_PONTOS:
+        raise ValueError(f"Histórico de saldo insuficiente ({len(historico)} pontos, mínimo {MIN_PONTOS}).")
+    fluxos, ids_conhecidos = _fluxos_conhecidos(db, ate) if usar_fluxos_conhecidos else ([], set())
+    cashflow = prever_cashflow(db, None, dias_futuro, ate, ids_conhecidos)
+
+    primeiro_dia_previsto = date.fromisoformat(_serie_central_previsao(cashflow["previsao"])[0]["dia"])
+    anteriores = [h for h in historico if h.dia < primeiro_dia_previsto]
+    saldo_partida = (anteriores or historico)[-1].saldo_contabilistico
+
+    dias_futuros = [date.fromisoformat(p["dia"]) for p in _serie_central_previsao(cashflow["previsao"])]
+    conhecidos_por_dia = fluxos_nos_dias(fluxos, dias_futuros)
+    receb_fixos = np.array([sum(v for _, v in conhecidos_por_dia.get(d, []) if v > 0) for d in dias_futuros])
+    pag_fixos = np.array([-sum(v for _, v in conhecidos_por_dia.get(d, []) if v < 0) for d in dias_futuros])
+    liquido_fixo = dict(zip((d.isoformat() for d in dias_futuros), receb_fixos - pag_fixos))
+
+    def _acumular(pontos: list) -> list:
+        acumulado, resultado = saldo_partida, []
+        for p in pontos:
+            acumulado += p["valor"] + liquido_fixo.get(p["dia"], 0.0)
+            resultado.append({"dia": p["dia"], "valor": acumulado})
+        return resultado
+
+    previsao = {modelo: _acumular(pontos) for modelo, pontos in cashflow["previsao"].items()}
+
+    banda, trajetorias, cashflow_semanal = _simular_saldo(
+        _movimentos_por_dia(db, None, ate, ids_conhecidos), dias_futuros, saldo_partida,
+        receb_fixos=receb_fixos, pag_fixos=pag_fixos,
+    )
+
+    return {
+        "historico": [{"dia": h.dia.isoformat(), "valor": h.saldo_contabilistico} for h in historico],
+        "previsao": previsao,
+        "banda_incerteza": banda,
+        "trajetorias_exemplo": trajetorias,
+        "cashflow_semanal_previsto": cashflow_semanal,
+        "fluxos_conhecidos_previstos": [
+            {
+                "dia": d.isoformat(), "valor": float(valor), "fonte": f.fonte,
+                "empresa": f.empresa, "descricao": f.descricao,
+            }
+            for d in dias_futuros for f, valor in conhecidos_por_dia.get(d, [])
+        ],
+    }
+
+
+# Simulação de trajetórias (bootstrap): cada dia futuro recebe o cash-flow
+# de um dia REAL do histórico sorteado com o mesmo dia da semana e a mesma
+# parte do mês (ver _bloco_do_mes) - o que mantém os pagamentos grandes e
+# pontuais (salários, impostos) que os modelos de média alisam. A média de
+# muitas trajetórias é suave por natureza (é uma média); cada trajetória
+# individual mostra como o saldo se mexe de facto. Backtest (6 cortes,
+# histórico completo): a banda 10-90% das trajetórias conteve o saldo real
+# em 6/6 cortes a 14, 30 e 60 dias, contra 4/6, 6/6 e 3/6 da banda
+# sqrt(horizonte) à volta do ensemble - por isso é esta a banda usada.
+N_TRAJETORIAS = 1000
+N_TRAJETORIAS_EXEMPLO = 4
+JANELA_SIMULACAO = 365
+MIN_DIAS_POR_GRUPO = 3
+PERCENTIS_BANDA = (10, 90)
+
+
+def _simular_dias(serie_cf: list, dias_futuros: list, semente: int = 0):
+    """Sorteia, para cada dia futuro e cada trajetória, um dia REAL do
+    histórico (mesmo dia da semana e parte do mês) e devolve as matrizes
+    (recebimentos, pagamentos) [N_TRAJETORIAS x dias] - sorteia o dia
+    inteiro, não o líquido, para recebimentos e pagamentos continuarem a
+    pertencer ao mesmo dia real. None sem histórico suficiente."""
+    serie = serie_cf[-JANELA_SIMULACAO:]
+    if not dias_futuros or len(serie) < 2 * PERIODO_SAZONAL:
+        return None
+    receb_hist = np.array([s["recebimentos"] for s in serie])
+    pag_hist = np.array([s["pagamentos"] for s in serie])
+    por_grupo, por_dia_semana = {}, {}
+    for i, s in enumerate(serie):
+        por_grupo.setdefault((s["dia"].weekday(), _bloco_do_mes(s["dia"])), []).append(i)
+        por_dia_semana.setdefault(s["dia"].weekday(), []).append(i)
+
+    gerador = np.random.default_rng(semente)
+    indices = np.zeros((N_TRAJETORIAS, len(dias_futuros)), dtype=int)
+    for j, d in enumerate(dias_futuros):
+        pool = por_grupo.get((d.weekday(), _bloco_do_mes(d)), [])
+        if len(pool) < MIN_DIAS_POR_GRUPO:
+            pool = por_dia_semana.get(d.weekday()) or list(range(len(serie)))
+        indices[:, j] = gerador.choice(pool, size=N_TRAJETORIAS)
+    return receb_hist[indices], pag_hist[indices]
+
+
+def _cashflow_semanal_simulado(recebimentos, pagamentos, dias_futuros: list, receb_fixos=None, pag_fixos=None) -> list:
+    """Cash-flow previsto por semana (segunda a domingo) a partir das
+    trajetórias simuladas: mediana dos recebimentos, dos pagamentos e do
+    líquido da semana, e intervalo 10-90% do líquido. `dias` < 7 marca uma
+    semana parcial (início/fim do horizonte). `*_conhecidos` é a parte que
+    vem de fluxos conhecidos (rendas/recorrentes) - já incluída nos totais."""
+    n = len(dias_futuros)
+    receb_fixos = np.zeros(n) if receb_fixos is None else receb_fixos
+    pag_fixos = np.zeros(n) if pag_fixos is None else pag_fixos
+    semanas = {}
+    for j, d in enumerate(dias_futuros):
+        semanas.setdefault(d - timedelta(days=d.weekday()), []).append(j)
+    resultado = []
+    for inicio, colunas in sorted(semanas.items()):
+        receb = recebimentos[:, colunas].sum(axis=1)
+        pag = pagamentos[:, colunas].sum(axis=1)
+        liquido = receb - pag
+        p10, p90 = np.percentile(liquido, PERCENTIS_BANDA)
+        resultado.append({
+            "semana": inicio.isoformat(),
+            "dias": len(colunas),
+            "recebimentos": float(np.median(receb)),
+            "pagamentos": float(np.median(pag)),
+            "liquido": float(np.median(liquido)),
+            "liquido_baixo": float(p10),
+            "liquido_alto": float(p90),
+            "recebimentos_conhecidos": float(receb_fixos[colunas].sum()),
+            "pagamentos_conhecidos": float(pag_fixos[colunas].sum()),
+        })
+    return resultado
+
+
+def _simular_saldo(
+    serie_cf: list, dias_futuros: list, saldo_partida: float, semente: int = 0, receb_fixos=None, pag_fixos=None,
+):
+    """Devolve (banda, trajetorias_exemplo, cashflow_semanal) - banda no
+    formato de _serializar_banda (percentis 10-90 do saldo simulado, dia a
+    dia), algumas trajetórias individuais para desenhar e o cash-flow
+    semanal previsto (ver _cashflow_semanal_simulado). `receb_fixos` /
+    `pag_fixos` (um valor por dia futuro) são fluxos conhecidos somados a
+    todas as trajetórias por igual. (None, None, None) sem histórico
+    suficiente."""
+    simulado = _simular_dias(serie_cf, dias_futuros, semente)
+    if simulado is None:
+        return None, None, None
+    recebimentos, pagamentos = simulado
+    if receb_fixos is not None:
+        recebimentos = recebimentos + receb_fixos
+    if pag_fixos is not None:
+        pagamentos = pagamentos + pag_fixos
+    saldos = saldo_partida + np.cumsum(recebimentos - pagamentos, axis=1)
+
+    baixa, alta = np.percentile(saldos, PERCENTIS_BANDA, axis=0)
+    dias_iso = [d.isoformat() for d in dias_futuros]
+    banda = {
+        "baixa": [{"dia": d, "valor": float(v)} for d, v in zip(dias_iso, baixa)],
+        "alta": [{"dia": d, "valor": float(v)} for d, v in zip(dias_iso, alta)],
+    }
+    # exemplos "típicos": as trajetórias cujo saldo final fica nos percentis
+    # 20/40/60/80 - nem os extremos, nem todas iguais à mediana.
+    ordem = np.argsort(saldos[:, -1])
+    indices = [ordem[int(q * (N_TRAJETORIAS - 1))] for q in (0.2, 0.4, 0.6, 0.8)][:N_TRAJETORIAS_EXEMPLO]
+    trajetorias = [
+        [{"dia": d, "valor": float(v)} for d, v in zip(dias_iso, saldos[i])] for i in indices
+    ]
+    return banda, trajetorias, _cashflow_semanal_simulado(
+        recebimentos, pagamentos, dias_futuros, receb_fixos, pag_fixos,
+    )
+
+
+def backtest_saldo_total(
+    db: Session, dias_futuro: int = 30, n_cortes: int = 6, passo_dias: int = 7,
+    usar_fluxos_conhecidos: bool = True,
+) -> dict:
+    """Quão certa é a previsão? Repete-a a partir de `n_cortes` datas
+    passadas (cortando o histórico nessa data, como se o resto ainda não
+    tivesse acontecido) e compara o saldo previsto ao fim de `dias_futuro`
+    dias com o saldo real. Compara com a referência mais simples possível
+    ("o saldo fica igual") - um modelo que não bata esta referência não
+    está a acrescentar informação. `dentro_banda` diz em quantos cortes o
+    real caiu dentro da banda de incerteza (~80% esperado)."""
+    historico = _historico_saldo(db, None)
+    if not historico:
+        raise ValueError("Sem histórico de saldo.")
+    real = {h.dia: h.saldo_contabilistico for h in historico}
+    ultimo = historico[-1].dia
+
+    cortes = []
+    for k in range(n_cortes):
+        corte = ultimo - timedelta(days=dias_futuro + passo_dias * k)
+        fim = corte + timedelta(days=dias_futuro)
+        if corte not in real or fim not in real:
+            continue
+        try:
+            r = prever_saldo_total_por_cashflow(db, dias_futuro, ate=corte, usar_fluxos_conhecidos=usar_fluxos_conhecidos)
+        except ValueError:
+            continue
+        central = _serie_central_previsao(r["previsao"])
+        if not central:
+            continue
+        previsto = central[-1]["valor"]
+        banda = r["banda_incerteza"]
+        cortes.append({
+            "corte": corte.isoformat(),
+            "fim": fim.isoformat(),
+            "saldo_no_corte": float(real[corte]),
+            "real": float(real[fim]),
+            "previsto": float(previsto),
+            "erro_modelo": float(abs(previsto - real[fim])),
+            "erro_sem_alteracao": float(abs(real[corte] - real[fim])),
+            "dentro_banda": (
+                bool(banda["baixa"][-1]["valor"] <= real[fim] <= banda["alta"][-1]["valor"]) if banda else None
+            ),
+        })
+
+    def _media(chave):
+        return sum(c[chave] for c in cortes) / len(cortes) if cortes else None
+
+    com_banda = [c for c in cortes if c["dentro_banda"] is not None]
+    return {
+        "dias_futuro": dias_futuro,
+        "cortes": cortes,
+        "erro_medio_modelo": _media("erro_modelo"),
+        "erro_medio_sem_alteracao": _media("erro_sem_alteracao"),
+        "saldo_medio": _media("real"),
+        "cobertura_banda": (sum(c["dentro_banda"] for c in com_banda) / len(com_banda)) if com_banda else None,
+    }

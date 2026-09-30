@@ -154,6 +154,38 @@ def previsao_saldo_total(dias: int = 7) -> dict:
     return r.json()
 
 
+def previsao_saldo_total_cashflow(dias: int = 30) -> dict:
+    r = requests.get(f"{API_BASE_URL}/previsao/saldo-total-cashflow", params={"dias": dias})
+    r.raise_for_status()
+    return r.json()
+
+
+def backtest_saldo_total(dias: int = 30, cortes: int = 6) -> dict:
+    r = requests.get(
+        f"{API_BASE_URL}/previsao/saldo-total-backtest", params={"dias": dias, "cortes": cortes}, timeout=600,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def previsao_ancorada(empresa: Optional[str] = None, dias: int = 30) -> dict:
+    params = {"dias": dias}
+    if empresa:
+        params["empresa"] = empresa
+    r = requests.get(f"{API_BASE_URL}/previsao/ancorada", params=params, timeout=120)
+    r.raise_for_status()
+    return r.json()
+
+
+def backtest_previsao_ancorada(empresa: Optional[str] = None, dias: int = 30, cortes: int = 20) -> dict:
+    params = {"dias": dias, "cortes": cortes}
+    if empresa:
+        params["empresa"] = empresa
+    r = requests.get(f"{API_BASE_URL}/previsao/ancorada-backtest", params=params, timeout=600)
+    r.raise_for_status()
+    return r.json()
+
+
 def avaliar_previsao_saldo_total(dias_teste: int = 5) -> dict:
     r = requests.get(f"{API_BASE_URL}/previsao/saldo-total-avaliacao", params={"dias_teste": dias_teste})
     r.raise_for_status()
@@ -312,3 +344,9 @@ def listar_cpcv_escrituras(dia_inicio: Optional[str] = None, dia_fim: Optional[s
     r = requests.get(f"{API_BASE_URL}/comercial/cpcv", params=params)
     r.raise_for_status()
     return r.json().get("linhas", [])
+
+
+def espaco_fracao_por_ref() -> dict:
+    r = requests.get(f"{API_BASE_URL}/comercial/espaco-fracao-por-ref")
+    r.raise_for_status()
+    return r.json().get("por_ref", {})

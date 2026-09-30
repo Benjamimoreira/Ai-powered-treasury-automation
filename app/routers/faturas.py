@@ -21,8 +21,15 @@ def registar(pedido: RegistarFaturasRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/recebidas", response_model=List[FaturaRecebidaOut])
-def listar(dia: Optional[date] = None, pesquisa: Optional[str] = None, limit: int = 200, db: Session = Depends(get_db)):
-    return listar_faturas(db, dia, pesquisa, limit)
+def listar(
+    dia: Optional[date] = None,
+    desde: Optional[date] = None,
+    ate: Optional[date] = None,
+    pesquisa: Optional[str] = None,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+):
+    return listar_faturas(db, dia, desde, ate, pesquisa, limit)
 
 
 @router.get("/recebidas/{fatura_id}/pdf")

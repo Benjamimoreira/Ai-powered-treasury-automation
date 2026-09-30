@@ -293,6 +293,21 @@ def test_resumo_diario_soma_recebimentos_e_pagamentos_de_todas_as_empresas(db_se
     resultado = resumo_diario(db_session)
 
     assert resultado == [
-        {"dia": date(2026, 7, 20), "recebimentos": 0.0, "pagamentos": 10.0},
-        {"dia": DIA, "recebimentos": 100.0, "pagamentos": 40.0},
+        {"dia": date(2026, 7, 20), "recebimentos": 0.0, "pagamentos": 10.0,
+         "recebimentos_externos": 0.0, "pagamentos_externos": 10.0},
+        {"dia": DIA, "recebimentos": 100.0, "pagamentos": 40.0,
+         "recebimentos_externos": 100.0, "pagamentos_externos": 40.0},
     ]
+
+
+def test_resumo_diario_separa_transferencias_entre_empresas_do_grupo(db_session):
+    for empresa, valor in (("Empresa A", -5000.0), ("Empresa B", 5000.0), ("Empresa B", 120.0)):
+        db_session.add(MovimentoBancario(
+            dia=DIA, empresa=empresa, descricao="IG Mutuo", valor=valor, ficheiro_origem="x.xlsx",
+        ))
+    db_session.commit()
+
+    [dia] = resumo_diario(db_session)
+
+    assert (dia["recebimentos"], dia["pagamentos"]) == (5120.0, 5000.0)
+    assert (dia["recebimentos_externos"], dia["pagamentos_externos"]) == (120.0, 0.0)

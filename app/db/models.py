@@ -37,6 +37,7 @@ class LinhaMapa(Base):
     previsto = Column(Float, nullable=True)
     pago = Column(Float, nullable=True)
     imputacao = Column(String, nullable=True)
+    descricao = Column(String, nullable=True)
 
     reconciliacoes = relationship("Reconciliacao", back_populates="linha")
 
@@ -118,6 +119,7 @@ class AuditoriaDia(Base):
     diferenca = Column(Float, nullable=False)
     movimentos_sem_match = Column(JSON, nullable=True)
     linhas_sem_match = Column(JSON, nullable=True)
+    diferencas_por_empresa = Column(JSON, nullable=True)
 
 
 class ExecucaoScript(Base):

@@ -1,9 +1,11 @@
-# AI-Powered Treasury Automation (FastAPI, RAG, MCP)
+# Financial Forecasting & Treasury Automation (FastAPI, ML, RAG, MCP)
 
-Serviço de reconciliação bancária — casa movimentos de extratos CGD com
-linhas de um Mapa de Pagamentos e Recebimentos, com uma camada de
-LLM+RAG para casos ambíguos, deteção de anomalias por ML, um servidor
-MCP, e um dashboard Streamlit.
+Plataforma de forecast financeiro para uma tesouraria de grupo: prevê
+saldo e cash-flow (ensemble de modelos de séries temporais com banda de
+incerteza), simula cenários what-if e sinaliza empresas em risco de
+liquidez. Assenta numa camada de reconciliação bancária (extratos CGD vs.
+Mapa de Pagamentos e Recebimentos), com LLM+RAG para casos ambíguos,
+deteção de anomalias por ML, um servidor MCP e um dashboard Streamlit.
 
 Nasceu de um protótipo real (scripts Python usados em produção numa
 tesouraria de grupo) e foi reconstruído aqui como serviço testável,
@@ -58,7 +60,8 @@ camadas com responsabilidades claras:
 | **Ambíguos** | Movimentos com mais que uma linha candidata ficam em fila para decisão humana. |
 | **LLM + RAG** | Para cada caso ambíguo, procura casos parecidos já resolvidos (embeddings `sentence-transformers`) e pede a um LLM uma sugestão com justificação. Nunca aplica sozinho. |
 | **Anomalias (ML)** | `IsolationForest` por empresa (scikit-learn) - assinala movimentos fora do padrão habitual da própria conta. |
-| **Previsão de saldos (ML)** | 5 modelos por conta (regressão linear, média móvel, suavização exponencial, ARIMA, Markov-switching) lado a lado, mais avaliação treino/teste (RMSE) para saber qual acerta mais em cada conta. |
+| **Previsão de saldos** | Saldo de hoje + fluxos conhecidos (rendas, recorrentes, Mapa com data futura), com banda de incerteza por simulação de dias reais e, à parte, os recebimentos marcados no índice comercial (sinal, reforços, escritura). Mesmo motor para o grupo (Forecast) e por empresa (Análise de Contas), com backtest contra "o saldo fica igual" (`/previsao/ancorada`, `app/services/previsao_ancorada.py`). |
+| **Modelos de séries temporais** | 5 modelos por conta (regressão linear, média móvel, suavização exponencial, ARIMA, Markov-switching) e ensemble, ainda disponíveis na API (`/previsao/saldo`, `/previsao/cashflow`) - já não usados na dashboard: no backtest erravam mais do que "o saldo fica igual". |
 | **Saldos** | Lê saldos diretamente dos extratos, histórico por conta e total geral. |
 | **Sincronização** | Importa do OneDrive (só leitura) os dias ainda não existentes localmente - sob pedido (botão) ou script. |
 | **MCP** | As mesmas operações expostas como *tools* para um agente LLM chamar diretamente. |
@@ -130,6 +133,39 @@ docker compose up --build
 Sobe a API + Postgres + dashboard. Build confirmado em produção via CI
 (GitHub Actions, runner self-hosted) - não nesta máquina de
 desenvolvimento (Docker Desktop sem WSL2 disponível).
+
+## Deploy noutra máquina
+
+A cada push para `master`, o GitHub Actions ([ci.yml](.github/workflows/ci.yml))
+corre os testes, faz o build das imagens e publica-as no GitHub Container
+Registry (`ghcr.io/benjamimoreira/ai-powered-treasury-automation/{api,log-archiver,faturas-ocr}`,
+tags `latest` e `<sha do commit>`). A máquina de destino só precisa de
+Docker - não compila nada nem precisa de Python.
+
+**Preparar a máquina (uma vez):**
+
+1. Instalar Docker Desktop (Windows, com WSL2) ou Docker Engine (Linux).
+2. Instalar um runner self-hosted do GitHub: no repositório,
+   *Settings > Actions > Runners > New self-hosted runner*, seguir os
+   comandos indicados e instalá-lo como serviço.
+3. Na pasta de trabalho do runner (`_work/<repo>/<repo>`), criar o `.env`
+   a partir do `.env.example` com os caminhos *dessa* máquina
+   (`ONEDRIVE_RAIZ_DOCKER`, `FORNECEDORES_RAIZ_DOCKER`, `SCRIPTS_LOG_DIR`, ...).
+   O deploy usa `clean: false`, por isso o `.env` não é apagado.
+
+A partir daí cada push para `master` faz deploy sozinho (`docker compose pull`
++ `up -d`). Também se pode correr à mão em *Actions > CI/CD > Run workflow*.
+
+**Alternativa sem runner (deploy manual):** copiar `docker-compose.yml` e
+`.env` para a máquina e correr:
+
+```powershell
+docker login ghcr.io -u <utilizador-github>   # password: token com read:packages
+docker compose pull
+docker compose up -d --no-build
+```
+
+Para voltar a uma versão anterior: `$env:IMAGE_TAG="<sha>"; docker compose up -d --no-build`.
 
 ## Limitações conhecidas
 

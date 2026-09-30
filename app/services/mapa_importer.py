@@ -34,6 +34,7 @@ def importar_linhas(db, ws, dia, cols, tipo, linha_totais, sinal):
         previsto = ws[f"{cols['previsto']}{r}"].value
         pago = ws[f"{cols['real']}{r}"].value
         imputacao = ws[f"{cols['imputacao']}{r}"].value
+        descricao = ws[f"{cols['desc']}{r}"].value
         db.add(LinhaMapa(
             dia=dia,
             tipo=tipo,
@@ -42,6 +43,7 @@ def importar_linhas(db, ws, dia, cols, tipo, linha_totais, sinal):
             previsto=sinal * previsto if isinstance(previsto, (int, float)) else None,
             pago=sinal * pago if isinstance(pago, (int, float)) else None,
             imputacao=str(imputacao).strip() if imputacao else None,
+            descricao=str(descricao).strip() if descricao else None,
         ))
         total += 1
     return total

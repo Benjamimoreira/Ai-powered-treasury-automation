@@ -1,11 +1,12 @@
 from datetime import date
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models import AtualizarDadosResponse
-from app.services.onedrive_sync import atualizar_dados_do_dia, atualizar_dados_recentes
+from app.services.onedrive_sync import atualizar_dados_do_dia, atualizar_dados_recentes, importar_historico
 
 router = APIRouter()
 
@@ -29,5 +30,17 @@ def atualizar_dados_dia(dia: date, db: Session = Depends(get_db)):
     Seguro chamar repetidamente - dados já importados são ignorados."""
     try:
         return atualizar_dados_do_dia(db, dia)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.post("/atualizar-historico")
+def atualizar_historico(desde: Optional[date] = None, db: Session = Depends(get_db)):
+    """Importa todo o histórico disponível na pasta de extratos (extratos
+    mensais + todas as pastas diárias desde `desde`, por omissão 1 de
+    janeiro) - para a previsão treinar com o histórico completo e não só
+    com os últimos dias sincronizados. Seguro repetir."""
+    try:
+        return importar_historico(db, desde)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))

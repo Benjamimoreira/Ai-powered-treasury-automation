@@ -1,5 +1,5 @@
 from datetime import date
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -8,9 +8,11 @@ from app.db.models import LinhaMapa, MovimentoBancario
 from app.db.session import get_db
 from app.models import AuditoriaResponse, MovimentoHistoricoOut, MovimentoStatusOut, ReconciliarResponse, ResumoDiarioOut
 from app.services.reconciliador import (
+    analise_imputacoes,
     auditoria_dia,
     listar_empresas,
     listar_historico_auditorias,
+    listar_linhas_imputacao,
     listar_movimentos_da_empresa,
     listar_movimentos_do_dia,
     reconciliar_dia,
@@ -116,3 +118,29 @@ def movimentos_da_empresa(empresa: str, db: Session = Depends(get_db)):
     ordenado por dia - para analisar o fluxo de uma conta ao longo do
     tempo."""
     return listar_movimentos_da_empresa(db, empresa)
+
+
+@router.get("/analise/imputacoes")
+def analise_imputacoes_endpoint(
+    empresa: Optional[str] = None,
+    dia_inicio: Optional[date] = None,
+    dia_fim: Optional[date] = None,
+    db: Session = Depends(get_db),
+):
+    """Soma o valor recebido/pago por imputação (categoria do Mapa) no
+    período - opcionalmente filtrado por empresa - para os gráficos
+    circulares da aba "Análise de Extratos" do dashboard."""
+    return analise_imputacoes(db, empresa=empresa, dia_inicio=dia_inicio, dia_fim=dia_fim)
+
+
+@router.get("/analise/imputacoes/linhas")
+def analise_imputacoes_linhas_endpoint(
+    empresa: Optional[str] = None,
+    dia_inicio: Optional[date] = None,
+    dia_fim: Optional[date] = None,
+    db: Session = Depends(get_db),
+):
+    """Linhas do Mapa em detalhe (mesmo filtro de /analise/imputacoes) -
+    para a tabela de extratos por baixo do gráfico circular, colorida
+    conforme a fatia/imputação a que cada linha pertence."""
+    return {"linhas": listar_linhas_imputacao(db, empresa=empresa, dia_inicio=dia_inicio, dia_fim=dia_fim)}

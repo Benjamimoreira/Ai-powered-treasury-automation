@@ -25,6 +25,13 @@ class LinhaSemMatchOut(BaseModel):
     imputacao: Optional[str] = None
 
 
+class DiferencaEmpresaOut(BaseModel):
+    empresa: str
+    soma_extrato: float
+    soma_mapa: float
+    diferenca: float
+
+
 class AuditoriaResponse(BaseModel):
     dia: date
     sem_match_fwd: int
@@ -35,6 +42,7 @@ class AuditoriaResponse(BaseModel):
     soma_extrato: float = 0.0
     soma_mapa: float = 0.0
     diferenca_extrato_mapa: float = 0.0
+    diferencas_por_empresa: List[DiferencaEmpresaOut] = []
 
 
 class CandidatoLinhaOut(BaseModel):
@@ -84,6 +92,9 @@ class ResumoDiarioOut(BaseModel):
     dia: date
     recebimentos: float
     pagamentos: float
+    # sem transferências entre empresas do grupo
+    recebimentos_externos: float = 0.0
+    pagamentos_externos: float = 0.0
 
 
 class ResolverAmbiguoRequest(BaseModel):
@@ -150,10 +161,35 @@ class BandaIncertezaOut(BaseModel):
     alta: List[PontoSerieOut]
 
 
+class CashflowSemanalOut(BaseModel):
+    semana: str
+    dias: int
+    recebimentos: float
+    pagamentos: float
+    liquido: float
+    liquido_baixo: float
+    liquido_alto: float
+    recebimentos_conhecidos: float = 0.0
+    pagamentos_conhecidos: float = 0.0
+
+
+class FluxoConhecidoOut(BaseModel):
+    dia: str
+    valor: float
+    fonte: str  # "renda" | "recorrente"
+    empresa: str
+    descricao: str
+
+
 class PrevisaoSaldoOut(BaseModel):
     historico: List[PontoSerieOut]
     previsao: Dict[str, List[PontoSerieOut]]
     banda_incerteza: Optional[BandaIncertezaOut] = None
+    # Só em /previsao/saldo-total-cashflow: algumas trajetórias simuladas
+    # (ver previsao.py::_simular_saldo) para mostrar a volatilidade real.
+    trajetorias_exemplo: Optional[List[List[PontoSerieOut]]] = None
+    cashflow_semanal_previsto: Optional[List[CashflowSemanalOut]] = None
+    fluxos_conhecidos_previstos: Optional[List[FluxoConhecidoOut]] = None
 
 
 class PontoCashflowOut(BaseModel):

@@ -10,7 +10,7 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
-set PYTHON_EXE=%~dp0.venv\Scripts\python.exe
+set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
 set API_URL=http://127.0.0.1:8000/
 set DASH_URL=http://127.0.0.1:8501/
 
@@ -28,10 +28,10 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr :8501 2^>nul') do (
     )
 )
 
-call :wait_for_url "%API_URL%" "API Tesouraria" 30
+call :wait_for_url "%API_URL%" "API Tesouraria" 1
 if errorlevel 1 (
     echo Iniciando API...
-    start "API Tesouraria" cmd /k "%PYTHON_EXE% -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+    start "API Tesouraria" /D "%~dp0" cmd /k ""%PYTHON_EXE%" -m uvicorn app.main:app --host 127.0.0.1 --port 8000""
 )
 
 call :wait_for_url "%API_URL%" "API Tesouraria" 30
@@ -41,10 +41,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
-call :wait_for_url "%DASH_URL%" "Dashboard Tesouraria" 30
+call :wait_for_url "%DASH_URL%" "Dashboard Tesouraria" 1
 if errorlevel 1 (
     echo Iniciando dashboard...
-    start "Dashboard Tesouraria" cmd /k "%PYTHON_EXE% -m streamlit run dashboard\app.py --server.address 127.0.0.1 --server.port 8501"
+    start "Dashboard Tesouraria" /D "%~dp0" cmd /k ""%PYTHON_EXE%" -m streamlit run dashboard\app.py --server.address 127.0.0.1 --server.port 8501""
 )
 
 call :wait_for_url "%DASH_URL%" "Dashboard Tesouraria" 30
@@ -77,7 +77,7 @@ if not errorlevel 1 (
     exit /b 0
 )
 if %ATTEMPTS% geq %MAX_WAIT% (
-    echo %LABEL% ainda nao respondeu em %URL% (timeout %MAX_WAIT%s)
+    echo %LABEL% ainda nao respondeu em %URL% ^(timeout %MAX_WAIT%s^)
     exit /b 1
 )
 PING -n 2 127.0.0.1 >nul

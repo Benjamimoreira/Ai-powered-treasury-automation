@@ -1,9 +1,15 @@
-name: CI
+name: CI/CD
 
 on:
   push:
     branches: [main, master]
   pull_request:
+  # Permite correr o deploy à mão (separador Actions > CI/CD > Run workflow).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   test:
@@ -13,28 +19,74 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
       - name: Instalar dependências
         run: pip install -r requirements.txt
       - name: Correr testes
         run: pytest -v
 
-  build-docker:
+  # Faz o build das 3 imagens e publica-as no GitHub Container Registry
+  # (ghcr.io/<dono>/<repo>/<nome>:latest e :<sha>). Em pull requests só faz
+  # o build (sem push), para validar que o Dockerfile continua a funcionar.
+  build-push:
     runs-on: ubuntu-latest
     needs: test
+    outputs:
+      prefix: ${{ steps.prefix.outputs.prefix }}
+    strategy:
+      matrix:
+        include:
+          - name: api
+            context: .
+          - name: log-archiver
+            context: ./docker/log-archiver
+          - name: faturas-ocr
+            context: ./docker/faturas-ocr
     steps:
       - uses: actions/checkout@v4
-      - name: Build da imagem Docker
-        run: docker build -t api-tesouraria .
+      - name: Prefixo das imagens (tem de ser minúsculas)
+        id: prefix
+        run: echo "prefix=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ steps.prefix.outputs.prefix }}/${{ matrix.name }}:latest
+            ${{ steps.prefix.outputs.prefix }}/${{ matrix.name }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
+  # Corre na máquina de destino (runner self-hosted instalado lá - ver
+  # README, "Deploy noutra máquina"). Não faz build: só puxa as imagens
+  # publicadas acima e reinicia os containers. O .env fica na pasta de
+  # trabalho do runner (não é apagado por causa de clean: false).
   deploy:
     runs-on: self-hosted
-    needs: build-docker
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: build-push
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    env:
+      IMAGE_PREFIX: ${{ needs.build-push.outputs.prefix }}
+      IMAGE_TAG: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           clean: false
-      - name: Rebuild e reiniciar containers (api, dashboard, db)
-        run: docker compose up -d --build
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Puxar imagens novas
+        run: docker compose pull
+      - name: Reiniciar containers
+        run: docker compose up -d --no-build --remove-orphans
       - name: Limpar imagens antigas
         run: docker image prune -f
