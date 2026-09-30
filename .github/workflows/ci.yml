@@ -75,6 +75,12 @@ jobs:
     env:
       IMAGE_PREFIX: ${{ needs.build-push.outputs.prefix }}
       IMAGE_TAG: ${{ github.sha }}
+    # cmd em vez do PowerShell por omissão: sem pwsh instalado o runner cai
+    # no Windows PowerShell 5.1, que trata o progresso que o docker escreve
+    # no stderr como erro (o passo falhava com exit code 1 e sem mensagem).
+    defaults:
+      run:
+        shell: cmd
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,8 +90,16 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Diagnóstico
+        run: |
+          whoami
+          where docker
+          docker version --format "cliente {{.Client.Version}} / servidor {{.Server.Version}}"
+          docker compose version
+          if not exist .env (echo ERRO: falta o .env em %CD% - ver README, "Deploy noutra maquina" & exit /b 1)
+          docker compose config --quiet
       - name: Puxar imagens novas
-        run: docker compose pull
+        run: docker compose pull --quiet
       - name: Reiniciar containers
         run: docker compose up -d --no-build --remove-orphans
       - name: Limpar imagens antigas
