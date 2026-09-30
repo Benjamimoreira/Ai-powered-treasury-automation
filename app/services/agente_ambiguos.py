@@ -190,6 +190,13 @@ def _analisar(estado: Estado) -> dict:
         for c in ctx.candidatos
     )
     pode_pedir = estado["ronda"] < MAX_RONDAS - 1
+    # fora da f-string: o Python 3.11 (CI e imagem Docker) não aceita
+    # barras invertidas dentro das expressões {...} de uma f-string
+    regra_pedir_mais = (
+        '- Se precisares de mais histórico desta empresa para decidir, responde precisa_de: "historico_alargado".'
+        if pode_pedir else ""
+    )
+    campo_pedir_mais = ', "precisa_de": null' if pode_pedir else ""
     prompt = f"""És um analista de tesouraria a investigar um movimento bancário que \
 bate com várias linhas do Mapa de Pagamentos e Recebimentos (mesma empresa, \
 mesmo valor). Usa as provas para decidir qual linha corresponde ao \
@@ -206,10 +213,10 @@ Regras:
 - Escolhe uma linha só se as provas a ligarem ao descritivo do movimento \
 (mesma entidade, ou o histórico mostra este descritivo imputado assim).
 - Se nenhuma linha tiver ligação ao movimento, responde linha_id null.
-{"- Se precisares de mais histórico desta empresa para decidir, responde precisa_de: \"historico_alargado\"." if pode_pedir else ""}
+{regra_pedir_mais}
 
 Responde APENAS com JSON:
-{{"linha_id": <id ou null>, "confianca": "alta|media|baixa", "justificacao": "<curta, cita as provas>"{', "precisa_de": null' if pode_pedir else ''}}}
+{{"linha_id": <id ou null>, "confianca": "alta|media|baixa", "justificacao": "<curta, cita as provas>"{campo_pedir_mais}}}
 """
     resposta = chamar_llm_detalhado(prompt, estado.get("fornecedor"), estado.get("modelo"),
                                     nome_span="agente_analisar", formato_json=True, ronda=estado["ronda"])
