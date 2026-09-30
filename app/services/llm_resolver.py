@@ -128,7 +128,7 @@ def chamar_llm(prompt: str) -> str:
         # próprio - a maioria dos modelos leves da Groq não está lá listada).
         # Assim usamos o nome nativo da Groq e o limite de tokens/minuto mais
         # alto dos modelos pequenos.
-        modelo = os.environ.get("GROQ_MODEL_ID", "llama-3.1-8b-instant")
+        modelo = os.environ.get("GROQ_MODEL_ID", "openai/gpt-oss-20b")
         cliente = InferenceClient(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
         resposta = cliente.chat_completion(
             messages=[{"role": "user", "content": prompt}], model=modelo,

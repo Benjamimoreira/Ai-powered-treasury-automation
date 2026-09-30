@@ -101,7 +101,7 @@ def criar_agent() -> Agent:
     if groq_key:
         # base_url directo à Groq - ver nota em llm_resolver.chamar_llm sobre
         # porque não usamos provider="groq" (catálogo da HF é mais limitado).
-        modelo = os.environ.get("GROQ_MODEL_ID", "llama-3.1-8b-instant")
+        modelo = os.environ.get("GROQ_MODEL_ID", "openai/gpt-oss-20b")
         return Agent(
             model=modelo, base_url="https://api.groq.com/openai/v1", api_key=groq_key,
             servers=servers, prompt=PROMPT_SISTEMA,
