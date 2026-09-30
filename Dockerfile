@@ -12,6 +12,9 @@ COPY app/ app/
 COPY scripts/ scripts/
 COPY dashboard/ dashboard/
 COPY .streamlit/ .streamlit/
+# o Assistente (app/services/chatbot.py) arranca o servidor MCP como
+# subprocesso - sem ele no container o separador Assistente não funciona
+COPY mcp_server.py .
 
 EXPOSE 8000
 EXPOSE 8501
