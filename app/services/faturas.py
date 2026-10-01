@@ -89,3 +89,116 @@ def listar_faturas(
         .limit(limit)
         .all()
     )
+
+
+# ---------------------------------------------------------------------------
+# Fornecedor normalizado
+# ---------------------------------------------------------------------------
+# O fornecedor vem do recolher_faturas_recebidas.py (texto extraído do PDF/
+# email) e em set/2026 vinha vazio em ~40% das faturas e com lixo noutras:
+# "do titular IBAN", "Payment method Paid", moradas, "Referente a Factura nº
+# ... | PCI ...", ou o próprio CLIENTE (uma empresa do grupo - ex. a morada
+# da Palavradicional nas faturas da Miio). Aqui escolhe-se o melhor nome por
+# esta ordem, sem tocar no valor original:
+#   1. texto extraído, limpo, se não for lixo, morada nem empresa do grupo;
+#   2. o nome mais comum para o mesmo NIF entre as faturas com texto válido;
+#   3. o domínio do remetente (faturaedp@edp.pt -> "EDP");
+#   4. emails internos (@vidor.pt) sem mais nada -> "(encaminhado internamente)".
+import re
+import unicodedata
+from collections import Counter
+
+ENCAMINHADO_INTERNAMENTE = "(encaminhado internamente)"
+DOMINIOS_INTERNOS = {"vidor.pt"}
+DOMINIOS_GENERICOS = {"gmail.com", "hotmail.com", "outlook.com", "outlook.pt", "sapo.pt", "live.com", "yahoo.com", "icloud.com"}
+# nomes de marca com grafia própria (o resto fica com a 1.ª letra maiúscula)
+NOMES_DOMINIO = {"edp": "EDP", "prio": "PRIO Energy", "galp": "Galp", "miio": "Miio", "meo": "MEO", "nos": "NOS",
+                 "aquamatrix": "Águas (Aquamatrix)", "claranet": "Claranet", "ageas": "Ageas", "via-verde": "Via Verde",
+                 "facebookmail": "Facebook"}
+_LIXO = re.compile(
+    r"^(do titular|payment method|documento|consultar|pro ?forma|referente|fatura|factura|nota de|recibo|"
+    r"rua |r\. |av\.|avenida|praça|praca|largo|travessa|estrada|nif|iban|total|data|morada)",
+    re.IGNORECASE,
+)
+_CODIGO_POSTAL = re.compile(r"\b\d{4}-\d{3}\b")
+_PREFIXOS = re.compile(r"^(referente a fa[c]?tura n[ºo°]?\s*\S+\s*\|\s*|da entidade:\s*)", re.IGNORECASE)
+# palavras genéricas que não identificam uma empresa do grupo
+_GENERICAS = {"LDA", "SA", "UNIPESSOAL", "SOCIEDADE", "INVESTIMENTOS", "IMOBILIARIOS", "IMOBILIARIA", "CONSTRUCOES",
+              "CONSTRUCAO", "GESTORA", "PARTICIPACOES", "SOCIAIS", "CIVIL", "INDUSTRIA", "NORTE", "CENTRO", "SUL",
+              "ADMINISTRACAO", "CONDOMINIOS", "TURISTICOS", "SERVICOS", "EMPRESA", "CAPITAL", "RISCO", "PREDIO",
+              "TRABALHO", "TEMPORARIO", "FORMACAO", "PROFISSIONAL"}
+
+
+def _maiusculas(texto: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", texto or "") if not unicodedata.combining(c)).upper()
+
+
+def palavras_do_grupo(empresas_grupo: list) -> set:
+    """A 1.ª palavra distintiva de cada empresa do grupo (HABISERVE,
+    PALAVRADICIONAL, VIDOR, CERRO...) - para não confundir o cliente com o
+    fornecedor. Só a primeira: as seguintes são muitas vezes apelidos
+    comuns ("CORREIA" de Felizardo Correia) que apanhariam fornecedores."""
+    palavras = set()
+    for nome in empresas_grupo:
+        distintivas = [p for p in re.findall(r"[A-Z]{5,}", _maiusculas(nome)) if p not in _GENERICAS]
+        if distintivas:
+            palavras.add(distintivas[0])
+    return palavras
+
+
+def limpar_fornecedor(texto: Optional[str], palavras_grupo: set) -> Optional[str]:
+    """O texto extraído, limpo - ou None se for lixo, morada ou o cliente."""
+    if not texto:
+        return None
+    t = _PREFIXOS.sub("", texto.strip())
+    t = t.split(" | ")[0].strip(" ,;-|")
+    if len(t) < 3 or _LIXO.match(t) or _CODIGO_POSTAL.search(t) or not re.search(r"[A-Za-zÀ-ÿ]{3,}", t):
+        return None
+    if set(re.findall(r"[A-Z]{5,}", _maiusculas(t))) & palavras_grupo:
+        return None  # é uma empresa do grupo: o cliente, não o fornecedor
+    return t
+
+
+def fornecedor_do_remetente(remetente: Optional[str]) -> Optional[str]:
+    if not remetente or "@" not in remetente:
+        return None
+    dominio = remetente.rsplit("@", 1)[1].strip().lower().rstrip(">")
+    if dominio in DOMINIOS_INTERNOS:
+        return ENCAMINHADO_INTERNAMENTE
+    if dominio in DOMINIOS_GENERICOS:
+        return None
+    partes = dominio.split(".")
+    # o nome da organização é o penúltimo bloco (hello.galp.com -> galp)
+    rotulo = partes[-2] if len(partes) >= 2 else partes[0]
+    return NOMES_DOMINIO.get(rotulo, rotulo.replace("-", " ").title())
+
+
+def _chaves_nif(nif: Optional[str]) -> list:
+    return re.findall(r"\d{9}", nif or "")
+
+
+def normalizar_fornecedores(faturas: list, todas: list, empresas_grupo: list) -> list:
+    """[(nome, fonte)] para cada fatura de `faturas`, com fonte "extraido" |
+    "nif" | "remetente" | None. `todas` (todas as faturas da BD) serve para
+    aprender o nome de cada NIF."""
+    palavras_grupo = palavras_do_grupo(empresas_grupo)
+    nomes_por_nif = {}
+    for f in todas:
+        nome = limpar_fornecedor(f.fornecedor, palavras_grupo)
+        if nome:
+            for nif in _chaves_nif(f.nif_fornecedor):
+                nomes_por_nif.setdefault(nif, Counter())[nome] += 1
+
+    resultado = []
+    for f in faturas:
+        nome = limpar_fornecedor(f.fornecedor, palavras_grupo)
+        if nome:
+            resultado.append((nome, "extraido"))
+            continue
+        do_nif = next((nomes_por_nif[n].most_common(1)[0][0] for n in _chaves_nif(f.nif_fornecedor) if n in nomes_por_nif), None)
+        if do_nif:
+            resultado.append((do_nif, "nif"))
+            continue
+        do_remetente = fornecedor_do_remetente(f.remetente)
+        resultado.append((do_remetente, "remetente" if do_remetente else None))
+    return resultado

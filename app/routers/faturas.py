@@ -29,7 +29,16 @@ def listar(
     limit: int = 200,
     db: Session = Depends(get_db),
 ):
-    return listar_faturas(db, dia, desde, ate, pesquisa, limit)
+    from app.db.models import FaturaRecebida
+    from app.services.faturas import normalizar_fornecedores
+    from app.services.reconciliador import listar_empresas
+
+    faturas = listar_faturas(db, dia, desde, ate, pesquisa, limit)
+    nomes = normalizar_fornecedores(faturas, db.query(FaturaRecebida).all(), listar_empresas(db))
+    return [
+        {**FaturaRecebidaOut.model_validate(f).model_dump(), "fornecedor_normalizado": nome, "fonte_fornecedor": fonte}
+        for f, (nome, fonte) in zip(faturas, nomes)
+    ]
 
 
 @router.get("/recebidas/{fatura_id}/pdf")

@@ -317,13 +317,17 @@ def faturas_recebidas_tool(
             pesquisa=pesquisa or None,
             limit=max(1, min(int(limite), 200)),
         )
+        from app.db.models import FaturaRecebida
+        from app.services.faturas import normalizar_fornecedores
+
+        nomes = normalizar_fornecedores(faturas, db.query(FaturaRecebida).all(), listar_empresas(db))
         return [
             {
-                "dia": f.dia.isoformat(), "hora": f.hora, "empresa": f.empresa, "fornecedor": f.fornecedor,
+                "dia": f.dia.isoformat(), "hora": f.hora, "empresa": f.empresa, "fornecedor": nome,
                 "nif_fornecedor": f.nif_fornecedor, "valor_fatura": f.valor_fatura, "assunto": f.assunto,
                 "tem_pdf": bool(f.pdf_relativo),
             }
-            for f in faturas
+            for f, (nome, _) in zip(faturas, nomes)
         ]
     finally:
         db.close()

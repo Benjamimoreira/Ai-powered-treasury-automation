@@ -1533,6 +1533,17 @@ with aba_faturas:
                 axis=1,
             )
 
+        # o fornecedor extraído do PDF/email vem muitas vezes vazio ou com lixo
+        # (moradas, "do titular IBAN", o próprio cliente) - a API devolve o
+        # melhor nome em fornecedor_normalizado (ver services/faturas.py)
+        SEM_FORNECEDOR = ("(encaminhado internamente)", "(desconhecido)")
+        if "fornecedor_normalizado" in df_faturas.columns:
+            df_faturas["fornecedor_original"] = df_faturas["fornecedor"]
+            df_faturas["fornecedor"] = df_faturas["fornecedor_normalizado"].fillna("(desconhecido)")
+            df_faturas["fonte_fornecedor"] = df_faturas["fonte_fornecedor"].map(
+                {"extraido": "documento", "nif": "NIF", "remetente": "email do remetente"}
+            ).fillna("—")
+
         with st.container(horizontal=True, vertical_alignment="bottom"):
             empresas_disponiveis = sorted(e for e in df_faturas["empresa"].dropna().unique() if e)
             empresa_filtro = st.selectbox(
@@ -1546,6 +1557,8 @@ with aba_faturas:
         if fornecedor_filtro:
             df_faturas = df_faturas[
                 df_faturas["fornecedor"].fillna("").str.contains(fornecedor_filtro, case=False, na=False)
+                | df_faturas.get("fornecedor_original", df_faturas["fornecedor"]).fillna("").str.contains(
+                    fornecedor_filtro, case=False, na=False)
             ]
         if valor_filtro:
             df_faturas = df_faturas[
@@ -1556,7 +1569,11 @@ with aba_faturas:
         with st.container(horizontal=True):
             st.metric("Faturas", len(df_faturas), border=True)
             st.metric("Empresas", df_faturas["empresa"].nunique(), border=True)
-            st.metric("Fornecedores", df_faturas["fornecedor"].nunique() if "fornecedor" in df_faturas else "—", border=True)
+            identificados = df_faturas[~df_faturas["fornecedor"].isin(SEM_FORNECEDOR)] if "fornecedor" in df_faturas else df_faturas
+            st.metric("Fornecedores", identificados["fornecedor"].nunique() if "fornecedor" in df_faturas else "—",
+                      f"{len(df_faturas) - len(identificados)} faturas sem fornecedor identificado"
+                      if len(df_faturas) > len(identificados) else None,
+                      delta_color="off", border=True)
             if "pdf" in df_faturas.columns:
                 st.metric("Com PDF", int(df_faturas["pdf"].notna().sum()), border=True)
             if "dia" in df_faturas.columns and not df_faturas.empty:
@@ -1565,9 +1582,9 @@ with aba_faturas:
         col_tabela_fat, col_top_fat = st.columns([3, 1])
         with col_tabela_fat, st.container(border=True):
             colunas = [
-                "dia", "hora", "empresa", "fornecedor", "nif_fornecedor",
+                "dia", "hora", "empresa", "fornecedor", "fonte_fornecedor", "nif_fornecedor",
                 "valor_fatura", "debito", "credito", "saldo",
-                "n_anexos_pdf", "pdf", "assunto", "remetente",
+                "n_anexos_pdf", "pdf", "assunto", "remetente", "fornecedor_original",
             ]
             colunas_existentes = [c for c in colunas if c in df_faturas.columns]
             st.markdown(f"**Faturas recebidas (faturas@vidor.pt)** · {len(df_faturas)}")
@@ -1580,6 +1597,11 @@ with aba_faturas:
                     hide_index=True,
                     height=520,
                     column_config={
+                        "fonte_fornecedor": st.column_config.TextColumn(
+                            "fornecedor vem de", help="documento (texto extraído do PDF/email), NIF (nome já conhecido "
+                                                      "para o mesmo NIF) ou email do remetente"),
+                        "fornecedor_original": st.column_config.TextColumn(
+                            "texto extraído", help="o que o recolher_faturas_recebidas.py extraiu, sem limpeza"),
                         "nif_fornecedor": st.column_config.TextColumn("NIF fornecedor"),
                         "valor_fatura": st.column_config.TextColumn("valor fatura"),
                         "n_anexos_pdf": st.column_config.NumberColumn("nº anexos PDF"),
@@ -1592,9 +1614,9 @@ with aba_faturas:
             )
         with col_top_fat, st.container(border=True):
             st.markdown("**Fornecedores mais frequentes**")
-            if "fornecedor" in df_faturas.columns and not df_faturas.empty:
+            if "fornecedor" in df_faturas.columns and not identificados.empty:
                 top_fornecedores = (
-                    df_faturas["fornecedor"].fillna("(sem fornecedor)").value_counts().head(10)
+                    identificados["fornecedor"].value_counts().head(10)
                     .rename_axis("fornecedor").reset_index(name="faturas")
                 )
                 st.altair_chart(
@@ -1603,11 +1625,17 @@ with aba_faturas:
                         x=alt.X("faturas:Q", title="Faturas", axis=alt.Axis(tickMinStep=1)),
                         color=alt.value(COR_RANKING_SALDO),
                         tooltip=["fornecedor:N", "faturas:Q"],
-                    ).properties(height=520),
+                    ).properties(height=480),
                     width="stretch",
                 )
+                sem = len(df_faturas) - len(identificados)
+                if sem:
+                    st.caption(
+                        f"{sem} fatura(s) sem fornecedor identificado - a maioria reencaminhada por um "
+                        "email interno (@vidor.pt) sem o nome no texto extraído."
+                    )
             else:
-                st.info("Sem dados.")
+                st.info("Sem fornecedores identificados.")
     elif faturas is not None:
         st.info("Ainda não há faturas recebidas registadas para este filtro.")
 

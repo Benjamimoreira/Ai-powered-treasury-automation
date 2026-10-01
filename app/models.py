@@ -280,6 +280,10 @@ class FaturaRecebidaOut(BaseModel):
     saldo: Optional[str] = None
     valor_fatura: Optional[str] = None
     pdf_relativo: Optional[str] = None
+    # o melhor nome de fornecedor (ver services/faturas.normalizar_fornecedores)
+    # e de onde veio: extraido | nif | remetente; `fornecedor` fica o original
+    fornecedor_normalizado: Optional[str] = None
+    fonte_fornecedor: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
