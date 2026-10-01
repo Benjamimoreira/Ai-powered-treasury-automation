@@ -95,30 +95,63 @@ ESTRATEGIAS = {
 }
 
 
+CAMPOS_PREVISAO = ("tokens_entrada", "tokens_saida", "latencia_s", "custo_usd", "modelo", "passos",
+                   "chamadas_llm", "decidido_por")
+
+
+def prever_caso(caso: dict, fornecedor: str, modelo: str = None, versao_prompt: str = VERSAO_PROMPT,
+                estrategia: str = "sugestao") -> dict:
+    """A previsão para um caso - sem ver a resposta esperada (é o "alvo" da
+    experiência no LangSmith). Uma falha conta como resposta inválida, não
+    pára a avaliação."""
+    ids = [c["id"] for c in caso["candidatos"]]
+    try:
+        bruto = ESTRATEGIAS[estrategia](caso, fornecedor, modelo, versao_prompt)
+        interpretado = interpretar_resposta(bruto["texto"], ids)
+        erro = None
+    except Exception as e:
+        bruto, interpretado, erro = {}, {"valida": False, "linha_id": None, "justificacao": None}, str(e)
+    return {"linha_id": interpretado["linha_id"], "valida": interpretado["valida"],
+            "justificacao": interpretado["justificacao"], "erro": erro,
+            **{k: bruto.get(k) for k in CAMPOS_PREVISAO}}
+
+
+def _resultado(caso: dict, previsao: dict) -> dict:
+    return {
+        "caso": caso["id"], "categoria": caso["categoria"], "esperado": caso["esperado"],
+        "obtido": previsao["linha_id"], "valida": previsao["valida"],
+        "certa": previsao["valida"] and previsao["linha_id"] == caso["esperado"],
+        "justificacao": previsao["justificacao"], "erro": previsao["erro"],
+        **{k: previsao.get(k) for k in CAMPOS_PREVISAO},
+    }
+
+
+def _relatorio(resultados: list, fornecedor, modelo, versao_prompt, estrategia) -> dict:
+    return {"config": {"fornecedor": fornecedor, "modelo": next((r["modelo"] for r in resultados if r["modelo"]), modelo),
+                       "versao_prompt": versao_prompt, "estrategia": estrategia, "n_casos": len(resultados)},
+            "metricas": metricas(resultados), "resultados": resultados}
+
+
 def avaliar(casos: list, fornecedor: str, modelo: str = None, versao_prompt: str = VERSAO_PROMPT,
             estrategia: str = "sugestao", pausa_s: float = 0.0) -> dict:
     resultados = []
     for caso in casos:
-        ids = [c["id"] for c in caso["candidatos"]]
-        try:
-            bruto = ESTRATEGIAS[estrategia](caso, fornecedor, modelo, versao_prompt)
-            interpretado = interpretar_resposta(bruto["texto"], ids)
-            erro = None
-        except Exception as e:  # uma falha num caso conta como errada, não pára a avaliação
-            bruto, interpretado, erro = {}, {"valida": False, "linha_id": None, "justificacao": None}, str(e)
-        resultados.append({
-            "caso": caso["id"], "categoria": caso["categoria"], "esperado": caso["esperado"],
-            "obtido": interpretado["linha_id"], "valida": interpretado["valida"],
-            "certa": interpretado["valida"] and interpretado["linha_id"] == caso["esperado"],
-            "justificacao": interpretado["justificacao"], "erro": erro,
-            **{k: bruto.get(k) for k in ("tokens_entrada", "tokens_saida", "latencia_s", "custo_usd", "modelo", "passos",
-                                          "chamadas_llm", "decidido_por")},
-        })
+        resultados.append(_resultado(caso, prever_caso(caso, fornecedor, modelo, versao_prompt, estrategia)))
         if pausa_s:
             time.sleep(pausa_s)
-    return {"config": {"fornecedor": fornecedor, "modelo": next((r["modelo"] for r in resultados if r["modelo"]), modelo),
-                       "versao_prompt": versao_prompt, "estrategia": estrategia, "n_casos": len(casos)},
-            "metricas": metricas(resultados), "resultados": resultados}
+    return _relatorio(resultados, fornecedor, modelo, versao_prompt, estrategia)
+
+
+def avaliar_no_langsmith(casos: list, caminho_conjunto: str, fornecedor: str, modelo: str = None,
+                         versao_prompt: str = VERSAO_PROMPT, estrategia: str = "sugestao") -> dict:
+    """Mesma avaliação, corrida como experiência no LangSmith (ver
+    app/evals/langsmith_experiencias.py) - mesmas métricas e mesmo limiar."""
+    from app.evals.langsmith_experiencias import correr
+
+    config = {"fornecedor": fornecedor, "modelo": modelo, "versao_prompt": versao_prompt, "estrategia": estrategia}
+    resultados = correr(casos, caminho_conjunto,
+                        lambda caso: prever_caso(caso, fornecedor, modelo, versao_prompt, estrategia), config)
+    return _relatorio(resultados, fornecedor, modelo, versao_prompt, estrategia)
 
 
 def _p95(valores: list) -> float:
@@ -185,13 +218,22 @@ def main(argv=None) -> int:
     parser.add_argument("--limiar", type=float, default=None, help="exatidão mínima (0-1); abaixo sai com código 1")
     parser.add_argument("--pausa", type=float, default=0.0, help="segundos entre casos (limites de pedidos)")
     parser.add_argument("--conjunto", default=CONJUNTO)
+    parser.add_argument("--langsmith", action="store_true",
+                        help="corre como experiência no LangSmith (precisa de LANGSMITH_API_KEY); "
+                             "se o LangSmith falhar, avalia localmente na mesma")
     args = parser.parse_args(argv)
 
     from app.services.llm_resolver import fornecedor_por_omissao
     fornecedor = args.fornecedor or fornecedor_por_omissao()
-    relatorio = avaliar(
-        carregar_casos(args.conjunto, args.max_casos), fornecedor, args.modelo, args.prompt, args.estrategia, args.pausa,
-    )
+    casos = carregar_casos(args.conjunto, args.max_casos)
+    relatorio = None
+    if args.langsmith:
+        try:
+            relatorio = avaliar_no_langsmith(casos, args.conjunto, fornecedor, args.modelo, args.prompt, args.estrategia)
+        except Exception as e:  # a porta de qualidade nunca depende do LangSmith estar disponível
+            print(f"  LangSmith indisponível ({e}) - a avaliar localmente.")
+    if relatorio is None:
+        relatorio = avaliar(casos, fornecedor, args.modelo, args.prompt, args.estrategia, args.pausa)
     relatorio["quando"] = datetime.now().isoformat(timespec="seconds")
 
     os.makedirs(PASTA_RESULTADOS, exist_ok=True)

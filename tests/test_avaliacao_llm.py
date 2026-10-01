@@ -298,3 +298,52 @@ def test_span_llm_envia_run_llm_com_tokens_para_o_langsmith(monkeypatch):
     assert run.run_type == "llm"
     assert run.metadata["ls_model_name"] == "openai/gpt-oss-20b" and run.metadata["caso"] == "caso_1"
     assert run.saida["usage_metadata"] == {"input_tokens": 300, "output_tokens": 20, "total_tokens": 320}
+
+
+# --- experiências no LangSmith ------------------------------------------------
+
+def test_sincronizar_dataset_so_acrescenta_os_casos_em_falta():
+    from types import SimpleNamespace
+
+    from app.evals.langsmith_experiencias import sincronizar_dataset
+
+    class ClienteFalso:
+        def __init__(self):
+            self.exemplos, self.existe = [], False
+
+        def has_dataset(self, dataset_name):
+            return self.existe
+
+        def create_dataset(self, nome, description=None):
+            self.existe = True
+
+        def list_examples(self, dataset_name):
+            return [SimpleNamespace(metadata=e["metadata"]) for e in self.exemplos]
+
+        def create_examples(self, dataset_name, examples):
+            self.exemplos.extend(examples)
+
+    cliente = ClienteFalso()
+    sincronizar_dataset(cliente, "ds", [CASO])
+    sincronizar_dataset(cliente, "ds", [CASO, {**CASO, "id": "caso_2"}])
+
+    assert [e["metadata"]["caso"] for e in cliente.exemplos] == ["caso_teste", "caso_2"]
+    # a resposta certa nunca vai no input que o modelo vê
+    assert "esperado" not in cliente.exemplos[0]["inputs"]["caso"]
+    assert cliente.exemplos[0]["outputs"] == {"esperado": 11, "categoria": "linha_correta"}
+
+
+def test_main_avalia_localmente_se_o_langsmith_falhar(monkeypatch, tmp_path):
+    conjunto = tmp_path / "conjunto.json"
+    conjunto.write_text(json.dumps({"versao": 2, "casos": [CASO]}), encoding="utf-8")
+    monkeypatch.setattr(avaliador, "PASTA_RESULTADOS", str(tmp_path / "resultados"))
+    monkeypatch.setattr(avaliador, "chamar_llm_detalhado", lambda *a, **k: _resposta('{"linha_id": 11}'))
+
+    def langsmith_em_baixo(*a, **k):
+        raise ConnectionError("sem rede")
+
+    monkeypatch.setattr(avaliador, "avaliar_no_langsmith", langsmith_em_baixo)
+
+    codigo = avaliador.main(["--langsmith", "--limiar", "0.8", "--conjunto", str(conjunto)])
+
+    assert codigo == 0  # avaliou localmente e passou o limiar

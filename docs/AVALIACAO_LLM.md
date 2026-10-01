@@ -97,3 +97,17 @@ Cada chamada ao LLM fica registada com prompt, resposta, tokens, latência e mod
 - no **LangSmith**, opcional: com `LANGSMITH_TRACING=true`, o grafo do agente aparece passo a passo, com as chamadas ao LLM lá dentro.
 
 Ver [`app/services/llm_tracing.py`](../app/services/llm_tracing.py).
+
+### Experiências no LangSmith
+
+`python -m app.evals.avaliar --langsmith` corre a mesma avaliação como uma **experiência** no LangSmith ([`app/evals/langsmith_experiencias.py`](../app/evals/langsmith_experiencias.py)):
+
+- **Dataset** `tesouraria-ambiguos-v2`: os 60 casos. Cada caso é o *input*, e a resposta esperada e a categoria ficam como *referência*, por isso o modelo nunca as vê. É sincronizado pelo id do caso: correr duas vezes não duplica, e uma nova versão do conjunto dá um dataset novo.
+- **Uma experiência por corrida** (`<estratégia>-<modelo>`), com três métricas por caso (`certa`, `resposta_valida`, `decidido_sem_llm`) e os traces do LLM e do agente dentro de cada caso. No LangSmith, *Datasets → tesouraria-ambiguos-v2 → Compare* põe as corridas lado a lado e deixa abrir cada caso falhado.
+- **A porta de qualidade do deploy também corre assim**, por isso cada deploy que mexe no LLM fica registado como uma experiência. Se o LangSmith não responder, a avaliação corre localmente e o limiar é verificado na mesma: a porta nunca depende de um serviço externo.
+
+Comparar dois modelos passa a ser correr os dois e abrir o *Compare*:
+```powershell
+python -m app.evals.avaliar --estrategia hibrida --langsmith
+python -m app.evals.avaliar --estrategia hibrida --langsmith --modelo qwen2.5:7b
+```

@@ -128,7 +128,9 @@ jobs:
           LIMIAR_EXATIDAO: "0.65"
         run: |
           curl -s -o nul http://localhost:11434/api/tags || (echo ERRO: o Ollama nao esta a correr nesta maquina & exit /b 1)
-          docker run --rm -e LLM_FORNECEDOR=ollama -e OLLAMA_URL=http://host.docker.internal:11434/v1 -e OLLAMA_MODEL_ID=qwen2.5:3b %IMAGE_PREFIX%/api:%IMAGE_TAG% python -m app.evals.avaliar --estrategia hibrida --limiar %LIMIAR_EXATIDAO%
+          rem --env-file: o LangSmith (LANGSMITH_*) - cada deploy fica como experiência,
+          rem com as métricas e os casos falhados; sem LangSmith avalia localmente na mesma
+          docker run --rm --env-file .env -e LLM_FORNECEDOR=ollama -e OLLAMA_URL=http://host.docker.internal:11434/v1 -e OLLAMA_MODEL_ID=qwen2.5:3b %IMAGE_PREFIX%/api:%IMAGE_TAG% python -m app.evals.avaliar --estrategia hibrida --langsmith --limiar %LIMIAR_EXATIDAO%
       - name: Reiniciar containers
         run: docker compose up -d --no-build --remove-orphans
       - name: Limpar imagens antigas
