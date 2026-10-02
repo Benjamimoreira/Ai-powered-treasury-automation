@@ -71,3 +71,23 @@ def test_importar_dia_do_mapa_falha_se_folha_nao_existir(tmp_path, db_session):
 
     with pytest.raises(KeyError):
         importar_dia_do_mapa(db_session, str(caminho), date(2026, 7, 22))
+
+
+@pytest.mark.parametrize("formula", ["=SUM(C5:C7)", "=SUBTOTAL(9,C5:C7)", "=subtotal(109,Tabela1[Valor])", "=+SUM(C5:C7)"])
+def test_encontrar_linha_totais_aceita_sum_e_subtotal(formula):
+    # folhas formatadas como tabela do Excel têm a linha de totais com
+    # SUBTOTAL em vez de SUM (folha "02" de out/2026 falhava a importação)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws["C5"] = 10
+    ws["C8"] = formula
+
+    assert encontrar_linha_totais(ws) == 8
+
+
+def test_encontrar_linha_totais_falha_sem_totais():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws["C5"] = "=G5+1"  # outras fórmulas não contam
+    with pytest.raises(RuntimeError):
+        encontrar_linha_totais(ws)

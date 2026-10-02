@@ -11,18 +11,27 @@ positivos. Os recebimentos mantêm o sinal positivo da folha. Isto permite
 a reconciliar_dia comparar previsto/pago diretamente com o valor bruto do
 extrato, sem ter de tratar pagamento e recebimento como casos à parte.
 """
+import re
+
 from app.db.models import LinhaMapa
 
 COL_RECEBIMENTOS = dict(desc="B", previsto="C", real="D", empresa="E", imputacao="F")
 COL_PAGAMENTOS = dict(desc="H", previsto="I", real="J", empresa="K", imputacao="L")
 
 
+# A linha de totais tanto pode ser =SUM(...) como =SUBTOTAL(9, ...): quando
+# a folha é formatada como tabela do Excel (Ctrl+T), a linha de totais da
+# tabela usa SUBTOTAL - visto na folha "02" de outubro/2026, que falhava a
+# importação com "Não encontrei a linha de totais".
+_FORMULA_TOTAIS = re.compile(r"^=\+?(SUM|SUBTOTAL|AGGREGATE)\(", re.IGNORECASE)
+
+
 def encontrar_linha_totais(ws):
     for row in ws.iter_rows(min_row=5):
         for cell in row:
-            if isinstance(cell.value, str) and cell.value.startswith("=SUM("):
+            if isinstance(cell.value, str) and _FORMULA_TOTAIS.match(cell.value.strip()):
                 return cell.row
-    raise RuntimeError("Não encontrei a linha de totais (fórmula =SUM) na folha.")
+    raise RuntimeError("Não encontrei a linha de totais (fórmula =SUM ou =SUBTOTAL) na folha.")
 
 
 def importar_linhas(db, ws, dia, cols, tipo, linha_totais, sinal):
