@@ -26,7 +26,7 @@ import api_client as api
 FUNCOES_PREVISAO_EM_CACHE = (
     "previsao_saldo", "avaliar_previsao", "previsao_saldo_total", "avaliar_previsao_saldo_total",
     "previsao_risco", "previsao_risco_ranking", "previsao_cashflow", "avaliar_previsao_cashflow",
-    "previsao_saldo_total_cashflow", "previsao_ancorada",
+    "previsao_saldo_total_cashflow", "previsao_ancorada", "previsao_risco_liquidez",
 )
 if not getattr(api, "_previsoes_em_cache", False):
     for _nome in FUNCOES_PREVISAO_EM_CACHE:
@@ -531,7 +531,7 @@ def _cartao_fluxos_proximos(fluxos: list, incluir_comercial: bool):
         )
 
 
-def _kpis_painel(fc: dict, horizonte: int, incluir_comercial: bool, risco, n_em_risco):
+def _kpis_painel(fc: dict, horizonte: int, incluir_comercial: bool, risco, n_em_risco, liquidez=None):
     central = fc["previsao"]
     serie_fim = (fc.get("previsao_com_comercial") if incluir_comercial else None) or central
     banda = fc.get("banda_incerteza")
@@ -568,14 +568,54 @@ def _kpis_painel(fc: dict, horizonte: int, incluir_comercial: bool, risco, n_em_
                 delta_color="inverse", border=True,
                 help="Crítico: o saldo cobre menos de 1 semana de despesa média; alerta: menos de 1 mês.",
             )
-        elif n_em_risco is not None:
+        if liquidez is not None:
+            # uma empresa: a probabilidade dela
+            p = liquidez.get("probabilidade_negativo")
             st.metric(
-                "Empresas em risco", f"{n_em_risco}", border=True,
-                help="Em zona crítica ou de alerta, hoje ou no horizonte escolhido.",
+                "Risco de liquidez", NIVEL_LIQUIDEZ_ROTULO.get(liquidez["nivel"], liquidez["nivel"]),
+                f"{p:.0%} de ficar a descoberto" if p is not None else None, delta_color="off", border=True,
+                help=AJUDA_LIQUIDEZ,
+            )
+        elif n_em_risco is not None:
+            # o grupo: quantas empresas em risco alto/moderado
+            st.metric(
+                "Empresas com risco de liquidez", f"{n_em_risco[0]}",
+                f"{n_em_risco[1]} em risco alto" if n_em_risco[1] else None, delta_color="inverse", border=True,
+                help=AJUDA_LIQUIDEZ,
             )
 
 
 ZONAS_ROTULO = {"critico": "🔴 Crítico", "alerta": "🟡 Alerta", "ok": "🟢 Saudável"}
+NIVEL_LIQUIDEZ_ROTULO = {
+    "alto": "🔴 Alto", "moderado": "🟡 Moderado", "baixo": "🟢 Baixo",
+    "sem leitura recente": "⚪ Sem leitura recente", "sem dados": "⚪ Sem dados",
+}
+AJUDA_LIQUIDEZ = (
+    "Probabilidade de o saldo ficar a descoberto (abaixo de -1 000 €) nalgum dia do horizonte, nas 1000 "
+    "trajetórias simuladas da previsão - SEM contar com mútuos/reforços entre empresas do grupo, ou seja, "
+    "se a empresa aguenta sozinha. Alto ≥ 50%, moderado ≥ 20%."
+)
+
+
+def _tabela_liquidez(linhas: list) -> pd.DataFrame:
+    return pd.DataFrame([{
+        "Empresa": r["empresa"],
+        "Risco": NIVEL_LIQUIDEZ_ROTULO.get(r["nivel"], r["nivel"]),
+        "Prob. de descoberto": r["probabilidade_negativo"],
+        "1.º dia provável": r["primeiro_dia_provavel"] or "",
+        "Saldo atual": r["saldo_atual"],
+        "Saldo previsto": r["saldo_previsto_fim"],
+        "Pior caso (fim)": r["saldo_pior_caso_fim"],
+    } for r in linhas])
+
+
+COLUNAS_TABELA_LIQUIDEZ = {
+    "Prob. de descoberto": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
+    "Saldo atual": st.column_config.NumberColumn(format="euro"),
+    "Saldo previsto": st.column_config.NumberColumn(format="euro"),
+    "Pior caso (fim)": st.column_config.NumberColumn(
+        format="euro", help="Percentil 10 das trajetórias no fim do horizonte, sem reforços intragrupo."),
+}
 COLUNAS_TABELA_RISCO = {
     "Saldo atual": st.column_config.NumberColumn(format="euro"),
     "Saldo previsto": st.column_config.NumberColumn(format="euro"),
@@ -832,12 +872,22 @@ with aba_forecast:
     except Exception as e:
         st.error(f"Erro a consultar o ranking de risco: {e}")
         ranking_fc = []
-    em_risco_fc = [r for r in ranking_fc if r["zona_atual"] != "ok" or r["zona_prevista"] != "ok"]
     risco_fc = next((r for r in ranking_fc if r["empresa"] == empresa_fc), None) if empresa_fc else None
+    try:
+        liquidez_fc = api.previsao_risco_liquidez(horizonte_fc)
+    except Exception as e:
+        st.warning(f"Risco de liquidez indisponível: {e}")
+        liquidez_fc = []
+    liquidez_em_risco = [r for r in liquidez_fc if r["nivel"] in ("alto", "moderado")]
+    liquidez_empresa = next((r for r in liquidez_fc if r["empresa"] == empresa_fc), None) if empresa_fc else None
 
     if fc:
         # --- KPIs
-        _kpis_painel(fc, horizonte_fc, incluir_comercial_fc, risco_fc, None if empresa_fc else len(em_risco_fc))
+        _kpis_painel(
+            fc, horizonte_fc, incluir_comercial_fc, risco_fc,
+            None if empresa_fc else (len(liquidez_em_risco), sum(1 for r in liquidez_em_risco if r["nivel"] == "alto")),
+            liquidez_empresa,
+        )
         if risco_fc and risco_fc["zona_prevista"] != risco_fc["zona_atual"] and risco_fc["dia_risco"]:
             st.warning(
                 f"⚠️ A previsão aponta para entrar em zona \"{risco_fc['zona_prevista']}\" "
@@ -883,22 +933,25 @@ with aba_forecast:
                 st.info("Sem movimentos suficientes para o cash-flow semanal.")
         with col_risco, st.container(border=True):
             if empresa_fc is None:
-                st.markdown(f"**Empresas em risco nos próximos {horizonte_fc} dias**")
-                lista_risco = em_risco_fc or ranking_fc
-                if not ranking_fc:
+                st.markdown(f"**Risco de liquidez nos próximos {horizonte_fc} dias**", help=AJUDA_LIQUIDEZ)
+                if not liquidez_fc:
                     st.info("Sem empresas com histórico de saldo suficiente.")
                 else:
-                    if not em_risco_fc:
-                        st.success("Nenhuma empresa em zona de alerta ou crítica - abaixo, todas.")
+                    if not liquidez_em_risco:
+                        st.success("Nenhuma empresa com risco alto ou moderado de ficar a descoberto.")
                     st.dataframe(
-                        _tabela_risco(lista_risco)[["Empresa", "Zona atual", "Zona prevista", "Saldo atual", "Saldo previsto"]],
-                        hide_index=True, width="stretch", height=330, column_config=COLUNAS_TABELA_RISCO,
+                        _tabela_liquidez(liquidez_fc),
+                        hide_index=True, width="stretch", height=330, column_config=COLUNAS_TABELA_LIQUIDEZ,
                         key="fc_tabela_risco", on_select=lambda: _abrir_empresa_do_ranking(
-                            "fc_tabela_risco", [r["empresa"] for r in lista_risco],
+                            "fc_tabela_risco", [r["empresa"] for r in liquidez_fc],
                         ),
                         selection_mode="single-row",
                     )
-                    st.caption("Clica numa linha para abrir essa empresa no painel.")
+                    st.caption(
+                        "Probabilidade de ficar abaixo de -1 000 € sem reforços entre empresas do grupo - "
+                        "risco alto quer dizer que a empresa depende de reforços para pagar o que costuma "
+                        "pagar. Clica numa linha para abrir a empresa."
+                    )
             else:
                 st.markdown("**Fluxo diário (movimentos)**")
                 try:

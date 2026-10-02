@@ -177,6 +177,12 @@ def previsao_ancorada(empresa: Optional[str] = None, dias: int = 30) -> dict:
     return r.json()
 
 
+def previsao_risco_liquidez(dias: int = 30) -> list:
+    r = requests.get(f"{API_BASE_URL}/previsao/risco-liquidez", params={"dias": dias}, timeout=300)
+    r.raise_for_status()
+    return r.json()
+
+
 def backtest_previsao_ancorada(empresa: Optional[str] = None, dias: int = 30, cortes: int = 20) -> dict:
     params = {"dias": dias, "cortes": cortes}
     if empresa:

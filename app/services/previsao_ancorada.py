@@ -61,6 +61,16 @@ from app.services.reconciliador import (
 )
 
 HORIZONTE_MAXIMO = 180
+# risco de liquidez: dia em que pelo menos 20% das trajetórias estão negativas
+LIMIAR_DIA_NEGATIVO = 0.2
+# só conta como negativo abaixo disto - uma comissão bancária de -13 € numa
+# empresa parada não é risco de liquidez
+DESCOBERTO_MATERIAL_EUR = 1000
+# sem leitura de saldo há mais do que isto, não se calcula risco (a Cerro
+# Grande tinha a última leitura em março e aparecia com risco "em abril")
+DIAS_LEITURA_RECENTE = 30
+# classificação da probabilidade de o saldo ficar negativo no horizonte
+NIVEIS_RISCO_LIQUIDEZ = ((0.5, "alto"), (0.2, "moderado"), (0.0, "baixo"))
 
 # ---------------------------------------------------------------------------
 # Empresa do índice comercial -> designação social dos extratos
@@ -224,7 +234,7 @@ def _cashflow_semanal(dias_futuros: list, receb_fixos, pag_fixos, desvios_diario
 
 def prever_saldo_ancorado(
     db: Session, empresa: Optional[str] = None, dias_futuro: int = 30, ate: date = None,
-    contexto: ContextoPrevisao = None, com_banda: bool = True,
+    contexto: ContextoPrevisao = None, com_banda: bool = True, excluir_intragrupo: Optional[bool] = None,
 ) -> dict:
     """Saldo previsto de `empresa` (None = grupo inteiro) nos próximos
     `dias_futuro` dias - ver docstring do módulo. `ate` corta o histórico
@@ -254,13 +264,15 @@ def prever_saldo_ancorado(
     central = saldo_partida + np.cumsum(receb_fixos - pag_fixos)
     com_comercial = central + np.cumsum(comercial)
 
-    banda = trajetorias = desvios = None
+    banda = trajetorias = desvios = risco_negativo = None
     historico_cf = []
     if com_banda:
         # no grupo, as transferências entre empresas anulam-se - fora da
         # banda e das barras semanais (numa empresa são caixa real dela)
         excluir = contexto.ids_conhecidos
-        if empresa is None:
+        # numa empresa, por omissão ficam (são caixa real dela); o risco de
+        # liquidez tira-os (excluir_intragrupo=True) - ver listar_risco_liquidez
+        if excluir_intragrupo if excluir_intragrupo is not None else empresa is None:
             movimentos = [m for m in db.query(MovimentoBancario).all() if ate is None or m.dia <= ate]
             excluir = excluir | ids_intragrupo(movimentos)
         historico_cf = _movimentos_por_dia(db, empresa, ate, excluir)
@@ -271,6 +283,22 @@ def prever_saldo_ancorado(
             desvios = (recebimentos - pagamentos) - media
             saldos = central + np.cumsum(desvios, axis=1)
             baixa, alta = np.percentile(saldos, PERCENTIS_BANDA, axis=0)
+            # risco de liquidez: em quantas trajetórias o saldo fica abaixo
+            # de -DESCOBERTO_MATERIAL_EUR nalgum dia, e o 1.º dia em que isso
+            # acontece em pelo menos LIMIAR_DIA_NEGATIVO delas. Aqui as
+            # trajetórias levam a TENDÊNCIA própria (sem tirar a média): numa
+            # empresa, gastar todos os meses mais do que recebe é exatamente o
+            # sinal de risco - a banda acima tira-a porque, no grupo, os
+            # extratos incompletos puxavam sempre para baixo.
+            com_tendencia = central + np.cumsum(recebimentos - pagamentos, axis=1)
+            negativo = com_tendencia < -DESCOBERTO_MATERIAL_EUR
+            fracao_por_dia = negativo.mean(axis=0)
+            dias_em_risco = np.nonzero(fracao_por_dia >= LIMIAR_DIA_NEGATIVO)[0]
+            risco_negativo = {
+                "probabilidade": float(negativo.any(axis=1).mean()),
+                "primeiro_dia": dias_futuros[int(dias_em_risco[0])].isoformat() if len(dias_em_risco) else None,
+                "saldo_pior_caso_fim": float(np.percentile(com_tendencia[:, -1], PERCENTIS_BANDA[0])),
+            }
             banda = {"baixa": _serie(dias_futuros, baixa), "alta": _serie(dias_futuros, alta)}
             ordem = np.argsort(saldos[:, -1])
             trajetorias = [_serie(dias_futuros, saldos[ordem[int(q * (N_TRAJETORIAS - 1))]]) for q in (0.2, 0.4, 0.6, 0.8)]
@@ -289,6 +317,7 @@ def prever_saldo_ancorado(
         # seria igual à central)
         "previsao_com_comercial": _serie(dias_futuros, com_comercial) if comercial.any() else None,
         "banda_incerteza": banda,
+        "risco_saldo_negativo": risco_negativo,
         "trajetorias_exemplo": trajetorias,
         "cashflow_semanal_previsto": _cashflow_semanal(dias_futuros, receb_fixos, pag_fixos, desvios),
         "fluxos_conhecidos_previstos": [{**f, "dia": f["dia"].isoformat()} for f in conhecidos],
@@ -349,3 +378,53 @@ def backtest_previsao_ancorada(
         "saldo_medio": _media("real"),
         "cobertura_banda": (sum(c["dentro_banda"] for c in com_banda) / len(com_banda)) if com_banda else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Risco de liquidez por empresa
+# ---------------------------------------------------------------------------
+
+
+def nivel_risco_liquidez(probabilidade: Optional[float]) -> str:
+    if probabilidade is None:
+        return "sem dados"
+    return next(nome for limite, nome in NIVEIS_RISCO_LIQUIDEZ if probabilidade >= limite)
+
+
+def listar_risco_liquidez(db: Session, dias_futuro: int = 30) -> list:
+    """Para cada empresa: probabilidade de o saldo ficar negativo nalgum dia
+    dos próximos `dias_futuro` dias (fração das trajetórias simuladas - as
+    mesmas da banda da previsão), o 1.º dia provável, o saldo previsto e o
+    pior caso provável (percentil 10) no fim. Da mais arriscada para a
+    menos. Diferente do "ranking de risco" (que compara o saldo de hoje com
+    a despesa média): aqui é a previsão a dizer se o dinheiro chega."""
+    contexto = carregar_contexto(db)
+    resultado, previsoes = [], {}
+    for empresa in listar_empresas(db):
+        try:
+            # sem mútuos/reforços entre empresas do grupo: são decisões de
+            # tesouraria, não acasos - o risco mede-se ANTES de os haver (a
+            # Vidor SGPS aparecia com -1,1M€ de pior caso por sortear mútuos)
+            previsoes[empresa] = prever_saldo_ancorado(db, empresa, dias_futuro, contexto=contexto,
+                                                       excluir_intragrupo=True)
+        except ValueError:
+            continue  # sem histórico de saldo suficiente
+    ultima_leitura = max((date.fromisoformat(r["dia_partida"]) for r in previsoes.values()), default=None)
+    for empresa, r in previsoes.items():
+        risco = r.get("risco_saldo_negativo") or {}
+        probabilidade = risco.get("probabilidade")
+        desatualizada = ultima_leitura and (ultima_leitura - date.fromisoformat(r["dia_partida"])).days > DIAS_LEITURA_RECENTE
+        if desatualizada:
+            risco, probabilidade = {}, None
+        resultado.append({
+            "empresa": empresa,
+            "saldo_atual": r["saldo_partida"],
+            "saldo_previsto_fim": r["previsao"][-1]["valor"],
+            "saldo_pior_caso_fim": risco.get("saldo_pior_caso_fim"),
+            "probabilidade_negativo": probabilidade,
+            "primeiro_dia_provavel": risco.get("primeiro_dia"),
+            "nivel": "sem leitura recente" if desatualizada else nivel_risco_liquidez(probabilidade),
+            "ultima_leitura": r["dia_partida"],
+        })
+    resultado.sort(key=lambda x: (-(x["probabilidade_negativo"] or 0), x["saldo_atual"]))
+    return resultado

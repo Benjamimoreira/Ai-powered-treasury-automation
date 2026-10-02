@@ -26,7 +26,7 @@ from app.services.previsao import (
     prever_saldo,
     prever_saldo_total_por_cashflow,
 )
-from app.services.previsao_ancorada import backtest_previsao_ancorada, prever_saldo_ancorado
+from app.services.previsao_ancorada import backtest_previsao_ancorada, listar_risco_liquidez, prever_saldo_ancorado
 from app.services.saldos import consultar_saldo as consultar_saldo_servico
 from app.services.saldos import (
     listar_saldos_atuais,
@@ -98,6 +98,14 @@ def previsao_ancorada(dias: int = 30, empresa: Optional[str] = None, db: Session
         return prever_saldo_ancorado(db, empresa, dias)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.get("/previsao/risco-liquidez")
+def previsao_risco_liquidez(dias: int = 30, db: Session = Depends(get_db)):
+    """Empresas por risco de liquidez: probabilidade de o saldo ficar
+    negativo nos próximos `dias` dias (trajetórias simuladas da previsão),
+    1.º dia provável e pior caso no fim - da mais arriscada para a menos."""
+    return listar_risco_liquidez(db, dias)
 
 
 @router.get("/previsao/ancorada-backtest")

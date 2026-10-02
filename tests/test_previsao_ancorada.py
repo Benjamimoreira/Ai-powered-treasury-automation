@@ -119,3 +119,41 @@ def test_backtest_compara_com_saldo_fica_igual(db_session, monkeypatch):
     # sem fluxos conhecidos, a previsão É o "fica igual"
     assert b["erro_medio_modelo"] == pytest.approx(b["erro_medio_sem_alteracao"], abs=1e-6)
 
+
+
+# --- risco de liquidez -----------------------------------------------------------
+
+def test_nivel_risco_liquidez():
+    from app.services.previsao_ancorada import nivel_risco_liquidez
+
+    assert [nivel_risco_liquidez(p) for p in (0.9, 0.5, 0.3, 0.05, None)] == [
+        "alto", "alto", "moderado", "baixo", "sem dados"]
+
+
+def test_risco_liquidez_distingue_empresa_que_queima_caixa_da_folgada(db_session, monkeypatch):
+    from app.services.previsao_ancorada import listar_risco_liquidez
+
+    monkeypatch.setattr("app.services.previsao_ancorada.recebimentos_comerciais_por_empresa", lambda db: [])
+    hoje = date(2026, 9, 30)
+    for empresa, saldo_final, pagamento in (("QUEIMA CAIXA,LDA", 500.0, -2_000.0), ("FOLGADA,LDA", 900_000.0, -50.0)):
+        for i in range(60):
+            dia = hoje - timedelta(days=59 - i)
+            if dia.weekday() < 5:
+                db_session.add(MovimentoBancario(dia=dia, empresa=empresa, descricao="FORNECEDOR",
+                                                 valor=pagamento, ficheiro_origem="t.xlsx"))
+            db_session.add(SaldoDiario(dia=dia, entidade=empresa, saldo_contabilistico=saldo_final,
+                                       saldo_disponivel=saldo_final))
+    # empresa sem leitura há meses: não se inventa risco
+    db_session.add_all([SaldoDiario(dia=date(2026, 3, d), entidade="PARADA,LDA", saldo_contabilistico=10.0,
+                                    saldo_disponivel=10.0) for d in range(1, 11)])
+    db_session.add(MovimentoBancario(dia=date(2026, 3, 2), empresa="PARADA,LDA", descricao="X", valor=-1.0,
+                                     ficheiro_origem="t.xlsx"))
+    db_session.commit()
+
+    por_empresa = {r["empresa"]: r for r in listar_risco_liquidez(db_session, 30)}
+
+    assert por_empresa["QUEIMA CAIXA,LDA"]["nivel"] == "alto"
+    assert por_empresa["QUEIMA CAIXA,LDA"]["primeiro_dia_provavel"] is not None
+    assert por_empresa["FOLGADA,LDA"]["nivel"] == "baixo"
+    assert por_empresa["PARADA,LDA"]["nivel"] == "sem leitura recente"
+    assert por_empresa["PARADA,LDA"]["probabilidade_negativo"] is None
