@@ -1,5 +1,14 @@
+import os
 import sys
 from pathlib import Path
+
+# Os testes nunca enviam traces: sem isto, o load_dotenv() da app lia o
+# LANGSMITH_TRACING=true do .env e cada pytest aparecia no LangSmith como
+# atividade real (LLM falso, erros simulados). Tem de ficar antes de
+# importar a app - o load_dotenv() não substitui variáveis já definidas.
+for _var in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2"):
+    os.environ[_var] = "false"
+os.environ["PHOENIX_COLLECTOR_ENDPOINT"] = ""
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

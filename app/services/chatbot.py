@@ -143,8 +143,40 @@ def acumular_resposta(eventos) -> dict:
     }
 
 
+def _passos_ferramentas(mensagens: list) -> list:
+    """[(nome, argumentos, resultado)] das ferramentas chamadas nas
+    mensagens de uma pergunta: os argumentos vêm dos tool_calls do
+    assistente, o resultado da mensagem role="tool" com o mesmo id."""
+    argumentos = {}
+    for m in mensagens:
+        m = dict(m)
+        for chamada in m.get("tool_calls") or []:
+            chamada = dict(chamada)
+            funcao = dict(chamada.get("function") or {})
+            argumentos[chamada.get("id")] = funcao.get("arguments")
+    passos = []
+    for m in mensagens:
+        m = dict(m)
+        if m.get("role") == "tool":
+            passos.append((m.get("name"), argumentos.get(m.get("tool_call_id")), str(m.get("content") or "")[:4000]))
+    return passos
+
+
 async def perguntar(agent: Agent, pergunta: str) -> dict:
     """Faz a pergunta ao agent (conversa acumulada em agent.messages) e
-    devolve a resposta final + as tools usadas."""
-    eventos = [evento async for evento in agent.run(pergunta)]
-    return acumular_resposta(eventos)
+    devolve a resposta final + as tools usadas. Cada pergunta fica no
+    LangSmith como um trace "assistente", com um passo por ferramenta MCP
+    (nome, argumentos e resultado) - o cliente do Agent não passa pelo
+    tracing de llm_tracing.span_llm."""
+    from app.services.llm_tracing import registar_passo, run_cadeia
+
+    inicio = len(agent.messages)
+    with run_cadeia("assistente", {"pergunta": pergunta},
+                    modelo=os.environ.get("OLLAMA_MODEL_ID", "qwen2.5:3b")) as run:
+        eventos = [evento async for evento in agent.run(pergunta)]
+        resultado = acumular_resposta(eventos)
+        for nome, argumentos, conteudo in _passos_ferramentas(agent.messages[inicio:]):
+            registar_passo(run, nome or "ferramenta", "tool", {"argumentos": argumentos}, {"resultado": conteudo})
+        if run is not None:
+            run.end(outputs=resultado)
+    return resultado

@@ -84,3 +84,24 @@ def test_criar_agent_usa_o_ollama_local(monkeypatch):
     assert capturado["base_url"] == "http://host.docker.internal:11434/v1"
     assert capturado["model"] == "qwen2.5:3b"
     assert capturado["servers"][0]["allowed_tools"] == chatbot.FERRAMENTAS_PERMITIDAS
+
+
+def test_passos_ferramentas_junta_argumentos_e_resultado():
+    mensagens = [
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "saldo_total_tool", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "name": "saldo_total_tool", "content": '{"entidades": 34}'},
+        {"role": "assistant", "content": "O saldo total é 233 203,52 €."},
+    ]
+
+    assert chatbot._passos_ferramentas(mensagens) == [("saldo_total_tool", "{}", '{"entidades": 34}')]
+
+
+def test_run_cadeia_nao_faz_nada_com_o_langsmith_desligado(monkeypatch):
+    from app.services.llm_tracing import registar_passo, run_cadeia
+
+    monkeypatch.setenv("LANGSMITH_TRACING", "false")
+    with run_cadeia("assistente", {"pergunta": "x"}) as run:
+        assert run is None
+        registar_passo(run, "ferramenta", "tool", {}, {})  # não pode falhar

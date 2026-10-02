@@ -164,3 +164,35 @@ def esvaziar():
             get_cached_client().flush()
         except Exception:
             pass
+
+
+@contextmanager
+def run_cadeia(nome: str, entradas: dict, **metadata):
+    """Um trace de "cadeia" no LangSmith (ex. uma pergunta ao Assistente),
+    para registar passos filhos à mão com registar_passo(). Devolve None se
+    o LangSmith estiver desligado - o chamador não tem de verificar."""
+    if not langsmith_ativo():
+        yield None
+        return
+    try:
+        from langsmith.run_helpers import trace
+    except ImportError:
+        yield None
+        return
+    with trace(nome, run_type="chain", inputs=entradas, metadata={k: v for k, v in metadata.items() if v is not None},
+               project_name=os.environ.get("LANGSMITH_PROJECT", "tesouraria")) as run:
+        yield run
+
+
+def registar_passo(run, nome: str, tipo: str, entradas: dict, saidas: dict):
+    """Um passo filho já terminado (ex. a chamada a uma ferramenta MCP) - o
+    cliente do Assistente não passa pelo nosso código a cada passo, por
+    isso os passos registam-se depois de acontecerem."""
+    if run is None:
+        return
+    try:
+        filho = run.create_child(name=nome, run_type=tipo, inputs=entradas)
+        filho.end(outputs=saidas)
+        filho.post()
+    except Exception:
+        pass  # o tracing nunca pode partir a resposta
