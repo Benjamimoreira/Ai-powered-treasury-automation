@@ -118,3 +118,20 @@ def test_chamada_em_texto_ignora_ferramentas_de_escrita_e_texto_normal():
     # a rede de segurança nunca pode executar o que o Assistente não pode
     assert chatbot.chamada_em_texto('{"name": "reconciliar_dia_tool", "arguments": {"dia": "2026-08-01"}}') is None
     assert chatbot.chamada_em_texto("O saldo total é 233 203,52 €.") is None
+
+
+def test_compactar_memoria_fica_com_sistema_e_ultimas_trocas_sem_ferramentas():
+    mensagens = [{"role": "system", "content": "instruções"}]
+    for i in range(5):
+        mensagens += [
+            {"role": "user", "content": f"pergunta {i}"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": f"c{i}", "function": {"name": "x"}}]},
+            {"role": "tool", "tool_call_id": f"c{i}", "name": "x", "content": "resultado enorme " * 500},
+            {"role": "assistant", "content": f"resposta {i}"},
+        ]
+
+    compacta = chatbot.compactar_memoria(mensagens)
+
+    assert compacta[0] == {"role": "system", "content": "instruções"}
+    assert [m["content"] for m in compacta[1:]] == ["pergunta 3", "resposta 3", "pergunta 4", "resposta 4"]
+    assert all(m["role"] != "tool" for m in compacta)

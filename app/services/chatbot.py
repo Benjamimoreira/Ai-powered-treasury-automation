@@ -195,6 +195,29 @@ async def _executar_chamada_em_texto(agent: Agent, nome: str, argumentos: dict) 
     return "\n".join(getattr(c, "text", "") for c in resultado.content)[:6000]
 
 
+# Memória da conversa: o Agent reenvia TODAS as mensagens a cada pergunta,
+# e com os resultados das ferramentas a conversa chegou a 5544 tokens - o
+# Ollama corta o excesso pelo início (onde estão as instruções e a descrição
+# das ferramentas) e cada ronda em CPU ficava em minutos. Antes de cada
+# pergunta fica só o prompt de sistema + as últimas trocas em texto.
+TROCAS_EM_MEMORIA = 2
+MAX_CARACTERES_POR_MENSAGEM = 600
+
+
+def compactar_memoria(mensagens: list) -> list:
+    """Prompt de sistema + as últimas TROCAS_EM_MEMORIA perguntas/respostas
+    (só texto, sem chamadas nem resultados de ferramentas, encurtadas)."""
+    if not mensagens:
+        return mensagens
+    sistema, resto = mensagens[0], mensagens[1:]
+    texto = []
+    for m in resto:
+        d = dict(m)
+        if d.get("role") in ("user", "assistant") and d.get("content") and not d.get("tool_calls"):
+            texto.append({"role": d["role"], "content": str(d["content"])[:MAX_CARACTERES_POR_MENSAGEM]})
+    return [sistema] + texto[-2 * TROCAS_EM_MEMORIA:]
+
+
 async def perguntar(agent: Agent, pergunta: str) -> dict:
     """Faz a pergunta ao agent (conversa acumulada em agent.messages) e
     devolve a resposta final + as tools usadas. Cada pergunta fica no
@@ -203,6 +226,7 @@ async def perguntar(agent: Agent, pergunta: str) -> dict:
     tracing de llm_tracing.span_llm."""
     from app.services.llm_tracing import registar_passo, run_cadeia
 
+    agent.messages[:] = compactar_memoria(agent.messages)
     inicio = len(agent.messages)
     with run_cadeia("assistente", {"pergunta": pergunta},
                     modelo=os.environ.get("OLLAMA_MODEL_ID", "qwen2.5:3b")) as run:
