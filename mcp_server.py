@@ -334,6 +334,43 @@ def faturas_recebidas_tool(
 
 
 @mcp.tool()
+def movimentos_empresa_tool(empresa: str, desde: str, ate: str) -> dict:
+    """Movimentos bancários de UMA empresa num período (desde/ate em
+    AAAA-MM-DD): total recebido, total pago, líquido, nº de movimentos e os
+    10 maiores. Responde a "quanto pagou/recebeu a empresa X em agosto".
+    O nome pode ser abreviado ("J. Pinto", "Habiserve Invest."); se servir
+    a várias empresas, devolve as candidatas para escolher."""
+    from app.services.previsao_ancorada import _nome_abreviado_corresponde
+    from app.services.reconciliador import chave_empresa, listar_movimentos_da_empresa
+
+    db = SessionLocal()
+    try:
+        empresas = listar_empresas(db)
+        exatas = [e for e in empresas if chave_empresa(e) == chave_empresa(empresa)]
+        candidatas = exatas or [e for e in empresas if _nome_abreviado_corresponde(empresa, e)]
+        if not candidatas:
+            return {"erro": f"Nenhuma empresa corresponde a '{empresa}'.", "empresas": empresas}
+        if len(candidatas) > 1:
+            # nunca escolher em silêncio ("Habiserve" são 4 empresas)
+            return {"erro": f"'{empresa}' corresponde a várias empresas - pergunta qual.", "candidatas": candidatas}
+        nome = candidatas[0]
+        inicio, fim = date.fromisoformat(desde), date.fromisoformat(ate)
+        movimentos = [m for m in listar_movimentos_da_empresa(db, nome) if inicio <= date.fromisoformat(m["dia"]) <= fim]
+        recebido = sum(m["valor"] for m in movimentos if m["valor"] > 0)
+        pago = -sum(m["valor"] for m in movimentos if m["valor"] < 0)
+        return {
+            "empresa": nome, "desde": desde, "ate": ate, "n_movimentos": len(movimentos),
+            "total_recebido": round(recebido, 2), "total_pago": round(pago, 2), "liquido": round(recebido - pago, 2),
+            "maiores_movimentos": sorted(
+                ({"dia": m["dia"], "descricao": m["descricao"], "valor": round(m["valor"], 2)} for m in movimentos),
+                key=lambda m: -abs(m["valor"]),
+            )[:10],
+        }
+    finally:
+        db.close()
+
+
+@mcp.tool()
 def anomalias_do_dia_tool(dia: str) -> list:
     """Lista os movimentos bancários de um dia (formato AAAA-MM-DD)
     cujo valor foge do padrão habitual da própria empresa (deteção via

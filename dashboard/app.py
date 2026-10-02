@@ -1970,7 +1970,7 @@ with aba_assistente:
             st.write(pergunta)
 
         with st.chat_message("assistant"):
-            with st.spinner("A pensar..."):
+            with st.spinner("A pensar... (o modelo local pode demorar até 3 minutos)"):
                 try:
                     resultado = api.perguntar_chat(pergunta)
                     resposta = resultado["resposta"]

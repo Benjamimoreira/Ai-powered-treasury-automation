@@ -62,7 +62,7 @@ def test_ferramentas_permitidas_inclui_as_tools_de_leitura_esperadas():
         "consultar_saldo_tool", "movimentos_do_dia_tool", "auditoria_dia_tool",
         "listar_ambiguos_tool", "saldo_total_tool", "listar_saldos_tool",
         "listar_empresas_tool", "previsao_saldo_tool", "avaliar_previsao_tool",
-        "ranking_risco_tool", "estado_scripts_tool", "faturas_recebidas_tool",
+        "ranking_risco_tool", "estado_scripts_tool", "faturas_recebidas_tool", "movimentos_empresa_tool",
         "anomalias_do_dia_tool",
     }
     assert set(chatbot.FERRAMENTAS_PERMITIDAS) == esperadas
@@ -105,3 +105,16 @@ def test_run_cadeia_nao_faz_nada_com_o_langsmith_desligado(monkeypatch):
     with run_cadeia("assistente", {"pergunta": "x"}) as run:
         assert run is None
         registar_passo(run, "ferramenta", "tool", {}, {})  # não pode falhar
+
+
+def test_chamada_em_texto_reconhece_ferramenta_permitida():
+    resposta = ('</tool_call>\n{"name": "movimentos_empresa_tool", "arguments": '
+                '{"empresa": "J. Pinto", "desde": "2026-08-01", "ate": "2026-08-31"}}\n</tool_call>')
+    assert chatbot.chamada_em_texto(resposta) == (
+        "movimentos_empresa_tool", {"empresa": "J. Pinto", "desde": "2026-08-01", "ate": "2026-08-31"})
+
+
+def test_chamada_em_texto_ignora_ferramentas_de_escrita_e_texto_normal():
+    # a rede de segurança nunca pode executar o que o Assistente não pode
+    assert chatbot.chamada_em_texto('{"name": "reconciliar_dia_tool", "arguments": {"dia": "2026-08-01"}}') is None
+    assert chatbot.chamada_em_texto("O saldo total é 233 203,52 €.") is None

@@ -209,3 +209,23 @@ def test_anomalias_do_dia_tool(db_session, session_factory, monkeypatch):
     assert len(resultado) == 1
     assert resultado[0]["descricao"] == "MUITO FORA DO PADRAO"
     assert resultado[0]["dia"] == DIA_STR
+
+
+def test_movimentos_empresa_tool_aceita_nome_abreviado_e_soma_o_periodo(db_session, session_factory, monkeypatch):
+    monkeypatch.setattr(mcp_server, "SessionLocal", session_factory)
+    for dia, valor in ((date(2026, 8, 3), -500.0), (date(2026, 8, 20), 1200.0), (date(2026, 9, 1), -99.0)):
+        db_session.add(MovimentoBancario(dia=dia, empresa="J PINTO CONSTRUCOES,LDA", descricao="X", valor=valor,
+                                         ficheiro_origem="x.xlsx"))
+    db_session.add(MovimentoBancario(dia=date(2026, 8, 5), empresa="HABISERVE CONSTRUCOES NORTE,LDA", descricao="Y",
+                                     valor=-10.0, ficheiro_origem="x.xlsx"))
+    db_session.add(MovimentoBancario(dia=date(2026, 8, 5), empresa="HABISERVE CONSTRUCOES SUL,LDA", descricao="Z",
+                                     valor=-10.0, ficheiro_origem="x.xlsx"))
+    db_session.commit()
+
+    r = mcp_server.movimentos_empresa_tool("J. Pinto", "2026-08-01", "2026-08-31")
+
+    assert r["empresa"] == "J PINTO CONSTRUCOES,LDA"
+    assert (r["n_movimentos"], r["total_pago"], r["total_recebido"], r["liquido"]) == (2, 500.0, 1200.0, 700.0)
+    # nome que serve a várias empresas: devolve as candidatas, não escolhe
+    ambiguo = mcp_server.movimentos_empresa_tool("Habiserve", "2026-08-01", "2026-08-31")
+    assert len(ambiguo["candidatas"]) == 2

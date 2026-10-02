@@ -227,7 +227,9 @@ def avaliar_previsao_cashflow(empresa: Optional[str] = None, dias_teste: int = 5
 
 
 def perguntar_chat(pergunta: str) -> dict:
-    r = requests.post(f"{API_BASE_URL}/chat", json={"pergunta": pergunta}, timeout=120)
+    # o modelo local em CPU leva 1-3 min por pergunta (2+ rondas com
+    # ferramentas) - com 120 s a dashboard desistia antes da resposta
+    r = requests.post(f"{API_BASE_URL}/chat", json={"pergunta": pergunta}, timeout=300)
     r.raise_for_status()
     return r.json()
 

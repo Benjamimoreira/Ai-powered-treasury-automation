@@ -9,7 +9,9 @@ tool-calling, e nenhum dado sai da máquina.
 Só tools de leitura são permitidas (FERRAMENTAS_PERMITIDAS): o chatbot
 nunca reconcilia nem resolve nada sozinho, isso continua a ser feito
 manualmente pelo utilizador nas outras abas da dashboard."""
+import json
 import os
+import re
 import sys
 
 from huggingface_hub import Agent
@@ -49,6 +51,7 @@ FERRAMENTAS_PERMITIDAS = [
     "ranking_risco_tool",
     "estado_scripts_tool",
     "faturas_recebidas_tool",
+    "movimentos_empresa_tool",
     "anomalias_do_dia_tool",
 ]
 
@@ -162,6 +165,36 @@ def _passos_ferramentas(mensagens: list) -> list:
     return passos
 
 
+# Os modelos pequenos (qwen2.5:3b) às vezes escrevem a chamada à ferramenta
+# como TEXTO na resposta ('</tool_call>{"name": ..., "arguments": {...}}') em
+# vez de a pedir no formato próprio - a ferramenta e os argumentos estão
+# certos, mas ninguém a executa. Visto em out/2026 com "Quanto pagou a J.
+# Pinto em agosto?".
+_CHAMADA_EM_TEXTO = re.compile(
+    r'\{\s*"name"\s*:\s*"(?P<nome>[A-Za-z_]+)"\s*,\s*"arguments"\s*:\s*(?P<args>\{.*?\})\s*\}', re.DOTALL,
+)
+
+
+def chamada_em_texto(resposta: str):
+    """(nome, argumentos) se a resposta for uma chamada a uma ferramenta
+    PERMITIDA escrita como texto; senão None."""
+    m = _CHAMADA_EM_TEXTO.search(resposta or "")
+    if not m or m.group("nome") not in FERRAMENTAS_PERMITIDAS:
+        return None
+    try:
+        return m.group("nome"), json.loads(m.group("args"))
+    except json.JSONDecodeError:
+        return None
+
+
+async def _executar_chamada_em_texto(agent: Agent, nome: str, argumentos: dict) -> str:
+    sessao = agent.sessions.get(nome)
+    if sessao is None:
+        raise RuntimeError(f"Ferramenta {nome} não está disponível.")
+    resultado = await sessao.call_tool(nome, argumentos)
+    return "\n".join(getattr(c, "text", "") for c in resultado.content)[:6000]
+
+
 async def perguntar(agent: Agent, pergunta: str) -> dict:
     """Faz a pergunta ao agent (conversa acumulada em agent.messages) e
     devolve a resposta final + as tools usadas. Cada pergunta fica no
@@ -177,6 +210,21 @@ async def perguntar(agent: Agent, pergunta: str) -> dict:
         resultado = acumular_resposta(eventos)
         for nome, argumentos, conteudo in _passos_ferramentas(agent.messages[inicio:]):
             registar_passo(run, nome or "ferramenta", "tool", {"argumentos": argumentos}, {"resultado": conteudo})
+
+        chamada = None if resultado["ferramentas_usadas"] else chamada_em_texto(resultado["resposta"])
+        if chamada:
+            # rede de segurança: executar a ferramenta (só leitura, da lista
+            # permitida) e pedir a resposta final com o resultado
+            nome, argumentos = chamada
+            conteudo = await _executar_chamada_em_texto(agent, nome, argumentos)
+            registar_passo(run, nome, "tool", {"argumentos": argumentos, "recuperado_de_texto": True},
+                           {"resultado": conteudo})
+            eventos = [evento async for evento in agent.run(
+                f"Resultado da ferramenta {nome}: {conteudo}\n\nCom estes dados, responde à pergunta anterior."
+            )]
+            seguinte = acumular_resposta(eventos)
+            resultado = {"resposta": seguinte["resposta"],
+                         "ferramentas_usadas": [nome] + seguinte["ferramentas_usadas"]}
         if run is not None:
             run.end(outputs=resultado)
     return resultado
