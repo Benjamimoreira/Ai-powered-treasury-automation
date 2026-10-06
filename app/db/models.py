@@ -174,6 +174,43 @@ class InteracaoAssistente(Base):
     feedback = Column(Integer, nullable=True)  # 1 = 👍, 0 = 👎, None = sem feedback
     feedback_em = Column(DateTime, nullable=True)
     trace_id = Column(String, nullable=True)  # trace no Phoenix (32 hex), para o link a partir da dashboard
+    numeros_nao_verificados = Column(JSON, nullable=True)  # guardrail_numeros.py
+
+
+class AvaliacaoOnline(Base):
+    """Resultado de um avaliador das avaliações online (app/evals/
+    avaliacao_online.py) sobre uma resposta do Assistente - o mesmo vai para
+    o Phoenix como anotação do trace; aqui serve para a fila "para rever"
+    da dashboard (uma resposta chumbada pelo juiz entra na fila)."""
+    __tablename__ = "avaliacoes_online"
+
+    id = Column(Integer, primary_key=True)
+    criado_em = Column(DateTime, default=_utcnow_naive, nullable=False)
+    trace_id = Column(String, nullable=False, index=True)
+    avaliador = Column(String, nullable=False)  # fundamentacao | relevancia | nli
+    label = Column(String, nullable=True)
+    score = Column(Float, nullable=True)
+    explicacao = Column(String, nullable=True)
+    modelo = Column(String, nullable=True)
+
+
+class AnotacaoAssistente(Base):
+    """Anotação humana de uma resposta do Assistente (fila "para rever" em
+    Monitorização > Qualidade da IA): label, score 0-1, notas e, quando a
+    resposta estava errada, a resposta esperada. As que têm resposta
+    esperada são promovidas ao golden dataset do Assistente
+    (app/evals/promover_golden.py) - é o que fecha o ciclo."""
+    __tablename__ = "anotacoes_assistente"
+
+    id = Column(Integer, primary_key=True)
+    interacao_id = Column(Integer, ForeignKey("interacoes_assistente.id"), nullable=False, index=True)
+    criado_em = Column(DateTime, default=_utcnow_naive, nullable=False)
+    autor = Column(String, nullable=True)
+    label = Column(String, nullable=False)  # correta | incorreta | alucinada | incompleta
+    score = Column(Float, nullable=True)
+    notas = Column(String, nullable=True)
+    resposta_esperada = Column(String, nullable=True)
+    promovida_em = Column(DateTime, nullable=True)
 
 
 class EventoScript(Base):

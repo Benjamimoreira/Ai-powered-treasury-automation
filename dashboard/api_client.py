@@ -252,6 +252,29 @@ def metricas_ia(dias: int = 30) -> dict:
     return r.json()
 
 
+def listar_para_rever(limit: int = 50) -> list:
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/ia/para-rever", params={"limit": limit}, timeout=30)
+    r.raise_for_status()
+    return r.json()["interacoes"]
+
+
+def anotar_interacao(interacao_id: int, label: str, score: Optional[float] = None, notas: Optional[str] = None,
+                     resposta_esperada: Optional[str] = None) -> dict:
+    r = requests.post(
+        f"{API_BASE_URL}/monitorizacao/ia/interacoes/{interacao_id}/anotacao",
+        json={"label": label, "score": score, "notas": notas or None, "resposta_esperada": resposta_esperada or None},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def calibracao_juiz() -> dict:
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/ia/calibracao", timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
 def reiniciar_chat() -> dict:
     r = requests.post(f"{API_BASE_URL}/chat/reset")
     r.raise_for_status()

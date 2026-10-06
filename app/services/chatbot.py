@@ -225,8 +225,15 @@ async def perguntar(agent: Agent, pergunta: str, rastreio: dict = None) -> dict:
     ferramenta MCP (nome, argumentos e resultado) - o cliente do Agent não
     passa pelo tracing de llm_tracing.span_llm. Se `rastreio` for dado,
     recebe logo no início o trace_id do Phoenix - também quando a pergunta
-    acaba em erro, para a interação gravada apontar para o trace."""
+    acaba em erro, para a interação gravada apontar para o trace.
+
+    No fim corre o guardrail de números (guardrail_numeros.py): os valores
+    da resposta que não aparecem nos resultados das ferramentas vão em
+    "numeros_nao_verificados", para a dashboard avisar, e ficam como
+    anotação (CODE) no trace do Phoenix."""
+    from app.services.guardrail_numeros import verificar
     from app.services.llm_tracing import registar_passo, run_cadeia
+    from app.services.phoenix_cliente import anotar_trace
 
     agent.messages[:] = compactar_memoria(agent.messages)
     inicio = len(agent.messages)
@@ -236,8 +243,10 @@ async def perguntar(agent: Agent, pergunta: str, rastreio: dict = None) -> dict:
             rastreio["trace_id"] = run.trace_id
         eventos = [evento async for evento in agent.run(pergunta)]
         resultado = acumular_resposta(eventos)
+        resultados_ferramentas = []
         for nome, argumentos, conteudo in _passos_ferramentas(agent.messages[inicio:]):
             registar_passo(run, nome or "ferramenta", "tool", {"argumentos": argumentos}, {"resultado": conteudo})
+            resultados_ferramentas.append(conteudo)
 
         chamada = None if resultado["ferramentas_usadas"] else chamada_em_texto(resultado["resposta"])
         if chamada:
@@ -245,6 +254,7 @@ async def perguntar(agent: Agent, pergunta: str, rastreio: dict = None) -> dict:
             # permitida) e pedir a resposta final com o resultado
             nome, argumentos = chamada
             conteudo = await _executar_chamada_em_texto(agent, nome, argumentos)
+            resultados_ferramentas.append(conteudo)
             registar_passo(run, nome, "tool", {"argumentos": argumentos, "recuperado_de_texto": True},
                            {"resultado": conteudo})
             eventos = [evento async for evento in agent.run(
@@ -253,6 +263,18 @@ async def perguntar(agent: Agent, pergunta: str, rastreio: dict = None) -> dict:
             seguinte = acumular_resposta(eventos)
             resultado = {"resposta": seguinte["resposta"],
                          "ferramentas_usadas": [nome] + seguinte["ferramentas_usadas"]}
+
+        verificacao = verificar(resultado["resposta"], resultados_ferramentas)
+        resultado["numeros_nao_verificados"] = verificacao["nao_verificados"]
         if run is not None:
             run.terminar(resultado)
+            total = verificacao["verificados"] + len(verificacao["nao_verificados"])
+            if total:
+                anotar_trace(
+                    run.trace_id, "guardrail_numeros", "CODE",
+                    label="ok" if not verificacao["nao_verificados"] else "números não verificados",
+                    score=verificacao["verificados"] / total,
+                    explicacao=("Não aparecem nos resultados das ferramentas: "
+                                + ", ".join(verificacao["nao_verificados"])) if verificacao["nao_verificados"] else None,
+                )
     return resultado

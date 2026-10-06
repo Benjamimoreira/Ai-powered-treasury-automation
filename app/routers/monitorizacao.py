@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.services.monitorizacao import correr_script, listar_eventos, listar_logs, listar_scripts, registar_evento, registar_execucao
-from app.services.monitorizacao_ia import metricas_ia
+from app.services.monitorizacao_ia import anotar_interacao, calibracao_juiz, listar_para_rever, metricas_ia
 
 router = APIRouter(prefix="/monitorizacao", tags=["monitorizacao"])
 
@@ -80,3 +80,38 @@ def metricas_qualidade_ia(dias: int = 30, db: Session = Depends(get_db)):
     rejeitadas, decididas por regras vs LLM, resolvidas sem sugestão) - ver
     app/services/monitorizacao_ia.py."""
     return metricas_ia(db, dias=dias)
+
+
+class AnotacaoRequest(BaseModel):
+    label: str = Field(..., description="correta|incorreta|alucinada|incompleta")
+    score: Optional[float] = Field(None, ge=0, le=1)
+    notas: Optional[str] = None
+    resposta_esperada: Optional[str] = None
+    autor: Optional[str] = None
+
+
+@router.get("/ia/para-rever")
+def fila_para_rever(limit: int = 50, db: Session = Depends(get_db)):
+    """Respostas do Assistente a rever por uma pessoa: 👎, números não
+    verificados, ou chumbadas pelo juiz das avaliações online."""
+    return {"interacoes": listar_para_rever(db, limite=limit)}
+
+
+@router.post("/ia/interacoes/{interacao_id}/anotacao")
+def anotar(interacao_id: int, payload: AnotacaoRequest, db: Session = Depends(get_db)):
+    """Anotação humana de uma resposta (também vai para o trace no Phoenix).
+    Com resposta_esperada, a resposta entra no golden dataset do Assistente
+    na próxima corrida de app/evals/promover_golden.py."""
+    try:
+        return anotar_interacao(db, interacao_id, payload.label, payload.score, payload.notas,
+                                payload.resposta_esperada, payload.autor)
+    except ValueError as exc:
+        status = 404 if "não encontrada" in str(exc) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+@router.get("/ia/calibracao")
+def calibracao(db: Session = Depends(get_db)):
+    """Concordância (e kappa de Cohen) entre o juiz das avaliações online e
+    as pessoas (anotações, ou 👍/👎) - quanto vale o juiz."""
+    return calibracao_juiz(db)

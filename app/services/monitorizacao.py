@@ -44,6 +44,13 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
         "hora_execucao": "08:55, 12:55, 14:15, 16:20, 18:35",
         "ficheiro": "atualizar_mapa_saldos.py",
     },
+    "avaliacao_online": {
+        "descricao": "Avaliação online das respostas do Assistente (juiz LLM, anotações no Phoenix)",
+        "hora_execucao": "10:00, 14:00, 18:00",
+        # sem "ficheiro": não corre na pasta "tesouraria preenchimento" (é
+        # python -m app.evals.avaliacao_online --horas 4, neste projeto),
+        # por isso o botão "Correr" da dashboard não se aplica
+    },
     "enviar_mapa_smtp": {
         "descricao": "Envio diário do Mapa de Pagamentos e Recebimentos por email",
         "hora_execucao": "16:30",

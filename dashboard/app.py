@@ -1630,6 +1630,10 @@ with aba_monitorizacao:
                         help="Respostas dadas sem chamar nenhuma ferramenta - candidatas a resposta inventada.",
                     )
                     st.metric(
+                        "Números não verificados", m_ass["com_numeros_nao_verificados"], border=True,
+                        help="Respostas com valores que não aparecem nos resultados das ferramentas (guardrail de números).",
+                    )
+                    st.metric(
                         "Tempo de resposta", f"{m_ass['duracao_media_s']:.0f} s" if m_ass["duracao_media_s"] else "—",
                         f"p95 {m_ass['duracao_p95_s']:.0f} s" if m_ass["duracao_p95_s"] else None,
                         delta_color="off", border=True,
@@ -1672,6 +1676,80 @@ with aba_monitorizacao:
                                 _link_trace(item)
                     else:
                         st.caption("Nenhuma neste período.")
+
+                if m_ass["respostas_nao_verificadas"]:
+                    with st.expander(f"Respostas com números não verificados ({m_ass['com_numeros_nao_verificados']})"):
+                        for item in m_ass["respostas_nao_verificadas"]:
+                            _linha_log(item["criado_em"], item["pergunta"], "por verificar",
+                                       f"{item['resposta'] or '—'}\n\nNão verificados: {', '.join(item['numeros_nao_verificados'])}",
+                                       COR_AMBIGUOS)
+                            _link_trace(item)
+
+            with st.container(border=True):
+                st.markdown("**Para rever**")
+                st.caption(
+                    "Respostas com 👎, com números não verificados ou chumbadas pelo juiz das avaliações online. "
+                    "Uma anotação com a resposta esperada entra no golden dataset do Assistente "
+                    "(python -m app.evals.promover_golden) e passa a ser um caso de teste."
+                )
+                try:
+                    para_rever = api.listar_para_rever(limit=20)
+                except Exception as e:
+                    para_rever = []
+                    st.warning(f"Não foi possível carregar a fila de revisão: {e}")
+                if not para_rever:
+                    st.caption("Nada para rever.")
+                for item in para_rever:
+                    with st.expander(f"{item['criado_em']} · {item['pergunta'][:90]}"):
+                        st.markdown(f"**Resposta:** {item['resposta'] or '—'}")
+                        st.caption("Motivo: " + " · ".join(item["motivos"]))
+                        _link_trace(item)
+                        with st.form(key=f"form_anotacao_{item['id']}"):
+                            label = st.segmented_control(
+                                "Avaliação", ["correta", "incorreta", "alucinada", "incompleta"],
+                                default="incorreta", key=f"label_anotacao_{item['id']}",
+                            )
+                            score = st.slider("Score", 0.0, 1.0, 0.0, 0.1, key=f"score_anotacao_{item['id']}")
+                            esperada = st.text_area("Resposta esperada (vai para o golden dataset)",
+                                                    key=f"esperada_anotacao_{item['id']}")
+                            notas = st.text_input("Notas", key=f"notas_anotacao_{item['id']}")
+                            if st.form_submit_button("Guardar anotação"):
+                                try:
+                                    api.anotar_interacao(item["id"], label or "incorreta", score, notas, esperada)
+                                    st.success("Anotação guardada.")
+                                except Exception as e:
+                                    st.error(f"Não foi possível guardar: {e}")
+
+            with st.container(border=True):
+                st.markdown("**Calibração do juiz**")
+                try:
+                    calibracao = api.calibracao_juiz()
+                except Exception as e:
+                    calibracao = None
+                    st.warning(f"Não foi possível carregar a calibração: {e}")
+                if calibracao is not None:
+                    st.caption(
+                        "Concordância entre o juiz das avaliações online e as pessoas (anotações ou 👍/👎), nas "
+                        f"respostas que têm os dois. Com menos de {calibracao['min_pares']} pares, os scores do juiz "
+                        "são só indicativos. Kappa: 0 = concordância de acaso, acima de 0,6 = boa."
+                    )
+                    linhas_calibracao = [
+                        {"avaliador": nome, "pares": v["pares"], "concordância": v["concordancia"], "kappa": v["kappa"],
+                         "apanha respostas más": v["apanha_mas"], "falsos alarmes": v["matriz"]["falso_alarme"],
+                         "deixou passar": v["matriz"]["deixou_passar"],
+                         "estado": "calibrado" if v["calibrado"] else "por calibrar"}
+                        for nome, v in calibracao["avaliadores"].items()
+                    ]
+                    if linhas_calibracao:
+                        st.dataframe(
+                            pd.DataFrame(linhas_calibracao), hide_index=True, width="stretch",
+                            column_config={
+                                "concordância": st.column_config.NumberColumn(format="percent"),
+                                "apanha respostas más": st.column_config.NumberColumn(format="percent"),
+                            },
+                        )
+                    else:
+                        st.caption("O juiz ainda não avaliou nenhuma resposta.")
 
             with st.container(border=True):
                 st.markdown("**Sugestões para casos ambíguos**")
@@ -2154,6 +2232,20 @@ with aba_analise_extratos:
                 "acessível nesta máquina)."
             )
 
+def _rodape_resposta(mensagem: dict):
+    """Por baixo de cada resposta do Assistente: as ferramentas consultadas,
+    o aviso do guardrail de números (valores que não vieram de nenhuma
+    ferramenta - ver app/services/guardrail_numeros.py) e o 👍/👎."""
+    if mensagem.get("ferramentas_usadas"):
+        st.caption("🔧 consultou: " + ", ".join(mensagem["ferramentas_usadas"]))
+    if mensagem.get("numeros_nao_verificados"):
+        st.warning(
+            "⚠ Estes valores não aparecem nos dados que o assistente consultou - confirma antes de os usar: "
+            + ", ".join(mensagem["numeros_nao_verificados"])
+        )
+    _feedback_resposta(mensagem)
+
+
 def _feedback_resposta(mensagem: dict):
     """👍/👎 por baixo de cada resposta do Assistente - vai para
     interacoes_assistente e alimenta Monitorização > Qualidade da IA."""
@@ -2197,9 +2289,7 @@ with aba_assistente:
     for mensagem in st.session_state["chat_mensagens"]:
         with st.chat_message(mensagem["role"]):
             st.write(mensagem["content"])
-            if mensagem.get("ferramentas_usadas"):
-                st.caption("🔧 consultou: " + ", ".join(mensagem["ferramentas_usadas"]))
-            _feedback_resposta(mensagem)
+            _rodape_resposta(mensagem)
 
     pergunta = st.chat_input("Pergunta sobre os dados da tesouraria...")
     if pergunta:
@@ -2214,17 +2304,18 @@ with aba_assistente:
                     resposta = resultado["resposta"]
                     ferramentas = resultado.get("ferramentas_usadas", [])
                     interacao_id = resultado.get("id")
+                    nao_verificados = resultado.get("numeros_nao_verificados", [])
                 except Exception as e:
                     resposta = f"Erro a contactar o assistente: {e}"
                     ferramentas = []
                     interacao_id = None
+                    nao_verificados = []
             st.write(resposta)
-            if ferramentas:
-                st.caption("🔧 consultou: " + ", ".join(ferramentas))
             mensagem_nova = {
                 "role": "assistant", "content": resposta, "ferramentas_usadas": ferramentas, "id": interacao_id,
+                "numeros_nao_verificados": nao_verificados,
             }
-            _feedback_resposta(mensagem_nova)
+            _rodape_resposta(mensagem_nova)
 
         st.session_state["chat_mensagens"].append(mensagem_nova)
 

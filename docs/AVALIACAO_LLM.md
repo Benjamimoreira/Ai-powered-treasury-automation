@@ -111,3 +111,40 @@ Comparar dois modelos passa a ser correr os dois e abrir o *Compare*:
 python -m app.evals.avaliar --estrategia hibrida --langsmith
 python -m app.evals.avaliar --estrategia hibrida --langsmith --modelo qwen2.5:7b
 ```
+
+## Avaliação em produção (o Assistente)
+
+A avaliação offline acima mede os casos ambíguos antes do deploy. As respostas do Assistente são avaliadas também depois, em produção, em três camadas, cada uma no sítio onde funciona melhor. Os resultados ficam no **Phoenix** como anotações de cada trace, e na base de dados para a dashboard (*Monitorização → Qualidade da IA*).
+
+| Camada | Quando | O que faz | Onde |
+|---|---|---|---|
+| **Guardrail de números** | Em cada resposta, antes de a pessoa a ver | Cada valor da resposta tem de aparecer nos resultados das ferramentas, com a precisão com que foi escrito ("233 203,52 €" ao cêntimo, "233 mil €" a ±500 €). Os que não aparecem são mostrados num aviso por baixo da resposta | [`guardrail_numeros.py`](../app/services/guardrail_numeros.py) · anotação `guardrail_numeros` (CODE) |
+| **Feedback humano** | Quando a pessoa clica | 👍/👎 em cada resposta | anotação `feedback_utilizador` (HUMAN) |
+| **Avaliações online** | Às 10:00, 14:00 e 18:00, sobre as 4 h anteriores (até 20 conversas) | LLM as a judge com dois templates: `fundamentacao` (a resposta é suportada pelos dados? - o template de *hallucination* do Phoenix) e `relevancia` (responde à pergunta?). Opcional: `nli`, um classificador multilingue pequeno (mDeBERTa) que não depende de nenhum LLM | [`avaliacao_online.py`](../app/evals/avaliacao_online.py) · anotações LLM/CODE |
+
+**O juiz é um modelo maior do que o avaliado** (`qwen2.5:7b` a julgar o `qwen2.5:3b`, configurável em `AVALIACAO_JUIZ_MODELO`): um modelo a julgar as próprias respostas é um juiz enviesado. Antes de confiar nos números do juiz, compará-los com as anotações humanas no Phoenix - a concordância entre os dois é o que diz quanto o juiz vale.
+
+### Fechar o ciclo
+
+1. Uma resposta com 👎, com números não verificados ou chumbada pelo juiz entra na fila **Para rever** (*Monitorização → Qualidade da IA*).
+2. Uma pessoa anota-a: avaliação (correta, incorreta, alucinada, incompleta), score de 0 a 1, notas e, se estava errada, a **resposta esperada**. A anotação vai também para o trace no Phoenix (`anotacao_humana`).
+3. [`promover_golden.py`](../app/evals/promover_golden.py) passa as anotações com resposta esperada para o golden dataset do Assistente ([`evals/assistente.json`](../evals/assistente.json) e o dataset `tesouraria-assistente` no Phoenix). Cada caso leva os resultados das ferramentas desse momento, tirados do trace, e é pseudonimizado como o conjunto dos ambíguos. Rever o diff antes do commit.
+4. [`avaliar_assistente.py`](../app/evals/avaliar_assistente.py) repete cada caso em *replay* (o modelo recebe os dados gravados e a pergunta) e mede as respostas certas (juiz contra a resposta esperada) e os números não verificados. Com `--limiar`, serve de porta de qualidade, como a dos ambíguos.
+
+### Como correr
+
+Em produção, os jobs correm **dentro do container da API**, onde estão o Postgres, o Phoenix (`http://phoenix:6006`) e o Ollama:
+
+```powershell
+# avaliações online - agendar no Agendador de Tarefas às 10:00, 14:00 e 18:00
+docker exec ai-powered-treasury-automation-api-1 python -m app.evals.avaliacao_online --horas 4
+
+# promover as anotações ao golden dataset e trazê-lo para o repositório
+docker exec ai-powered-treasury-automation-api-1 python -m app.evals.promover_golden
+docker cp ai-powered-treasury-automation-api-1:/app/evals/assistente.json evals/assistente.json
+
+# avaliar o Assistente contra o golden dataset
+docker exec ai-powered-treasury-automation-api-1 python -m app.evals.avaliar_assistente --limiar 0.7
+```
+
+A corrida das avaliações online fica registada como o script `avaliacao_online`, por isso a Monitorização mostra se correu, se falhou ou se está atrasada.

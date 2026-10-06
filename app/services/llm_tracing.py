@@ -66,6 +66,15 @@ def _obter_tracer():
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
     trace.set_tracer_provider(provider)
     _tracer = trace.get_tracer("app.services.llm")
+    try:
+        # o grafo do agente (LangGraph) também no Phoenix, nó a nó - antes
+        # só aparecia no LangSmith; as chamadas ao LLM lá dentro (span_llm)
+        # ficam aninhadas no nó que as fez
+        from openinference.instrumentation.langchain import LangChainInstrumentor
+
+        LangChainInstrumentor().instrument(tracer_provider=provider)
+    except ImportError:
+        pass
     return _tracer
 
 

@@ -84,6 +84,7 @@ async def chat(pedido: ChatRequest, request: Request, db: Session = Depends(get_
     interacao_id = registar_interacao(
         db, pedido.pergunta, resposta=resultado["resposta"], ferramentas_usadas=resultado["ferramentas_usadas"],
         duracao_segundos=time.perf_counter() - inicio, modelo=modelo, trace_id=rastreio.get("trace_id"),
+        numeros_nao_verificados=resultado.get("numeros_nao_verificados"),
     )
     return {**resultado, "id": interacao_id}
 

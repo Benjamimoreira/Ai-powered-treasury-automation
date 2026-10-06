@@ -18,6 +18,9 @@ COPY mcp_server.py .
 # conjunto de avaliação do LLM - a porta de qualidade do deploy corre-o
 # dentro da imagem nova (ver .github/workflows/ci.yml)
 COPY evals/ambiguos.json evals/ambiguos.json
+# golden dataset do Assistente (respostas anotadas - ver app/evals/promover_golden.py);
+# o promover_golden corre dentro do container e acrescenta-lhe casos
+COPY evals/assistente.json evals/assistente.json
 
 EXPOSE 8000
 EXPOSE 8501
