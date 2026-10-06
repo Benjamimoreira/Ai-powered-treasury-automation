@@ -531,6 +531,35 @@ def _cartao_fluxos_proximos(fluxos: list, incluir_comercial: bool):
         )
 
 
+def _tempo_de_vida(ritmo):
+    """(valor, delta) do KPI "Tempo de vida" - ver previsao_ancorada.ritmo_atual."""
+    if not ritmo:
+        return "—", None
+    vida, por_dia = ritmo["tempo_de_vida"], ritmo["liquido_diario"]
+    if vida["dias"] == 0:
+        return "esgotado", "saldo já abaixo de −1 000 €"
+    if vida["dias"] is None:
+        return "sem fim à vista", f"{por_dia:+,.0f} €/dia"
+    if vida["dias"] > 730:
+        return "mais de 2 anos", f"{por_dia:+,.0f} €/dia"
+    return f"{vida['dias']} dias", f"até {pd.to_datetime(vida['dia']):%d/%m/%Y} · {por_dia:+,.0f} €/dia"
+
+
+def _explicar_ritmo(ritmo) -> str:
+    """Uma frase com de onde vem a linha "ao ritmo dos últimos 90 dias"."""
+    if not ritmo:
+        return "Menos de 90 dias de histórico de saldo - sem linha ao ritmo atual."
+    desde = f"{pd.to_datetime(ritmo['desde']):%d/%m}"
+    if ritmo["fonte"] == "movimentos":
+        return (f"Ao ritmo dos últimos {ritmo['janela_dias']} dias (desde {desde}): recebeu "
+                f"{ritmo['recebimentos']:,.0f} € e pagou {ritmo['pagamentos']:,.0f} € - "
+                f"{ritmo['liquido_diario']:+,.0f} €/dia, em linha reta a partir de hoje.")
+    return (f"Ao ritmo dos últimos {ritmo['janela_dias']} dias (desde {desde}): os extratos não explicam a variação "
+            f"do saldo (movimentos {ritmo['liquido_movimentos']:+,.0f} € contra saldo {ritmo['variacao_saldo']:+,.0f} € - "
+            f"faltam movimentos nos extratos), por isso o ritmo usa a variação real do saldo: "
+            f"{ritmo['liquido_diario']:+,.0f} €/dia.")
+
+
 def _kpis_painel(fc: dict, horizonte: int, incluir_comercial: bool, risco):
     """Desenha os KPIs e devolve um espaço reservado para o KPI do risco de
     liquidez - esse demora ~20 s a calcular para as 31 empresas e é
@@ -554,6 +583,13 @@ def _kpis_painel(fc: dict, horizonte: int, incluir_comercial: bool, risco):
             f"{serie_fim[-1]['valor'] - saldo_atual:+,.0f} €", border=True,
             chart_data=[p["valor"] for p in serie_fim], chart_type="line",
             help="Com recebimentos do comercial, se o interruptor estiver ligado.",
+        )
+        vida_valor, vida_delta = _tempo_de_vida(fc.get("ritmo_atual"))
+        st.metric(
+            "Tempo de vida", vida_valor, vida_delta, delta_color="off", border=True,
+            help="Quantos dias o saldo aguenta, se os próximos dias forem como os últimos 90 (recebimentos − "
+                 "pagamentos, ou a variação real do saldo quando os extratos não a explicam), até ficar abaixo "
+                 "de −1 000 € - o mesmo limite do risco de liquidez. Linha laranja no gráfico.",
         )
         st.metric(
             "Intervalo provável (80%)",
@@ -657,7 +693,13 @@ def _tabela_risco(linhas: list) -> pd.DataFrame:
 
 
 SERIE_HISTORICO_FC = "Saldo real"
-SERIE_MEDIA_FC = "Previsão"
+# a série central só soma o que já se sabe (rendas, recorrentes, Mapa com
+# data futura) - "Previsão" fazia parecer que era o saldo esperado, e por
+# isso a linha depois de "Hoje" (quase plana, aos degraus) confundia
+SERIE_MEDIA_FC = "Só fluxos já conhecidos"
+SERIE_RITMO_FC = "Ao ritmo dos últimos 90 dias"
+# 2.º slot categórico validado (o 1.º, azul, é o saldo real)
+COR_RITMO_FC = "#eb6834"
 SERIE_TRAJETORIA_FC = "Trajetória possível"
 SERIE_INTERVALO_FC = "Intervalo provável (80%)"
 COR_TRAJETORIA_FC = "#9aa3ad"
@@ -673,10 +715,13 @@ def _regra_hoje(dia_iso: str):
     return regra + texto
 
 
-def grafico_saldo_forecast(historico_pontos, previsao_por_modelo, banda, trajetorias, y_titulo="Saldo total (EUR)"):
+def grafico_saldo_forecast(historico_pontos, previsao_por_modelo, banda, trajetorias, y_titulo="Saldo total (EUR)",
+                           ritmo=None, dia_esgota=None):
     """Saldo real + previsão, com UMA legenda para tudo o que está no
-    gráfico (real, média, trajetórias, intervalo e - com "Mostrar modelos
-    individuais" - cada modelo), cores distintas e a linha "Hoje"."""
+    gráfico (real, fluxos conhecidos, ritmo atual, trajetórias, intervalo),
+    cores distintas e a linha "Hoje". `ritmo` é a reta "ao ritmo dos últimos
+    90 dias" e `dia_esgota` o dia em que ela passa abaixo do limite de
+    descoberto (marcado se cair dentro do horizonte)."""
     ultimo = historico_pontos[-1] if historico_pontos else None
     ligar = [ultimo] if ultimo else []
 
@@ -689,16 +734,25 @@ def grafico_saldo_forecast(historico_pontos, previsao_por_modelo, banda, trajeto
     for modelo, pontos in previsao_por_modelo.items():
         nome = SERIE_MEDIA_FC if modelo == "ensemble" else NOMES_MODELO.get(modelo, modelo)
         linhas.extend({"dia": p["dia"], "valor": p["valor"], "serie": nome, "grupo": modelo} for p in ligar + list(pontos))
+    if ritmo:
+        linhas.extend({"dia": p["dia"], "valor": p["valor"], "serie": SERIE_RITMO_FC, "grupo": "ritmo"}
+                      for p in ligar + list(ritmo))
     df = pd.DataFrame(linhas)
 
+    # a linha "só fluxos já conhecidos" é referência (cinzenta, fina) - a
+    # laranja ao lado ficava indistinguível do rosa/vermelho anterior
     cores = {
         SERIE_HISTORICO_FC: CORES_PREVISAO["Histórico"],
-        SERIE_MEDIA_FC: CORES_PREVISAO["Ensemble (ponderado)"],
+        SERIE_RITMO_FC: COR_RITMO_FC,
+        SERIE_MEDIA_FC: COR_REFERENCIA_PLANO,
         SERIE_TRAJETORIA_FC: COR_TRAJETORIA_FC,
     }
     for serie in df["serie"].unique():
         if serie not in cores:
             cores[serie] = CORES_PREVISAO.get(serie, COR_REFERENCIA_PLANO)
+    # só as séries desenhadas vão para a legenda (sem trajetórias, não há
+    # "Trajetória possível")
+    cores = {s: c for s, c in cores.items() if s in set(df["serie"])}
     escala = alt.Scale(domain=list(cores), range=list(cores.values()))
     # linhas com símbolo de traço (não círculo) e opacidade total na
     # legenda; o intervalo tem legenda própria, com símbolo de área - senão
@@ -709,13 +763,13 @@ def grafico_saldo_forecast(historico_pontos, previsao_por_modelo, banda, trajeto
         symbolType="stroke", symbolStrokeWidth=3, symbolOpacity=1, symbolSize=300,
     )
     selecao = alt.selection_point(fields=["serie"], bind="legend")
-    escala_intervalo = alt.Scale(domain=[SERIE_INTERVALO_FC], range=[CORES_PREVISAO["Ensemble (ponderado)"]])
+    escala_intervalo = alt.Scale(domain=[SERIE_INTERVALO_FC], range=[COR_REFERENCIA_PLANO])
     legenda_intervalo = alt.Legend(
         title=None, orient="top", direction="horizontal", symbolType="square", symbolOpacity=0.3, symbolSize=200,
     )
 
-    espessura = {SERIE_HISTORICO_FC: 2.5, SERIE_MEDIA_FC: 3, SERIE_TRAJETORIA_FC: 1}
-    tracejado = {SERIE_MEDIA_FC: [6, 3]}
+    espessura = {SERIE_HISTORICO_FC: 2.5, SERIE_RITMO_FC: 3, SERIE_MEDIA_FC: 1.5, SERIE_TRAJETORIA_FC: 1}
+    tracejado = {SERIE_MEDIA_FC: [6, 3], SERIE_RITMO_FC: [6, 3]}
     df["espessura"] = df["serie"].map(lambda s: espessura.get(s, 1.5))
     df["tracejado"] = df["serie"].map(lambda s: "sim" if s in tracejado or s not in espessura else "nao")
 
@@ -751,6 +805,14 @@ def grafico_saldo_forecast(historico_pontos, previsao_por_modelo, banda, trajeto
     ).add_params(selecao))
     if ultimo:
         camadas.append(_regra_hoje(ultimo["dia"]))
+    fim_horizonte = max((p["dia"] for p in (ritmo or [])), default=None)
+    if dia_esgota and fim_horizonte and dia_esgota <= fim_horizonte:
+        df_esgota = pd.DataFrame({"dia": [dia_esgota], "rotulo": [f"Esgota-se ~{pd.to_datetime(dia_esgota):%d/%m}"]})
+        camadas.append(alt.Chart(df_esgota).mark_rule(color=COR_ERRO, strokeDash=[4, 3], strokeWidth=1.5).encode(x="dia:T"))
+        # em baixo, para não colidir com o rótulo "Hoje" quando o dia está perto
+        camadas.append(alt.Chart(df_esgota).mark_text(
+            align="left", dx=4, dy=-8, fontSize=11, fontWeight="bold", color=COR_ERRO,
+        ).encode(x="dia:T", y=alt.value(360), text="rotulo:N"))
     camadas.append(
         alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color=COR_ERRO, strokeWidth=1, opacity=0.5).encode(y="y:Q")
     )
@@ -912,6 +974,11 @@ def _painel_forecast():
         with col_grafico, st.container(border=True):
             with st.container(horizontal=True, vertical_alignment="center"):
                 st.markdown(f"**Saldo real e previsto · {entidade_fc}**")
+                mostrar_intervalo = st.toggle(
+                    "Mostrar intervalo provável", value=False, key="fc_intervalo",
+                    help="A faixa onde caem 80% das 1000 simulações à volta dos fluxos já conhecidos. Desligada "
+                         "por omissão: no grupo vai de -1,8 M€ a +1,8 M€ e esmagava as linhas.",
+                )
                 mostrar_trajetorias = st.toggle(
                     "Mostrar trajetórias possíveis", value=False, key="fc_trajetorias",
                     help="4 das 1000 simulações (linhas cinzentas), para ver como o saldo pode oscilar dia a dia.",
@@ -919,16 +986,20 @@ def _painel_forecast():
             series_fc = {"ensemble": fc["previsao"]}
             if incluir_comercial_fc and fc.get("previsao_com_comercial"):
                 series_fc["com_comercial"] = fc["previsao_com_comercial"]
+            ritmo_fc = fc.get("ritmo_atual")
             st.altair_chart(
                 grafico_saldo_forecast(
-                    fc["historico"][-90:], series_fc, fc.get("banda_incerteza"),
+                    fc["historico"][-90:], series_fc, fc.get("banda_incerteza") if mostrar_intervalo else None,
                     fc.get("trajetorias_exemplo") if mostrar_trajetorias else None, "Saldo (EUR)",
+                    ritmo=ritmo_fc["previsao"] if ritmo_fc else None,
+                    dia_esgota=ritmo_fc["tempo_de_vida"]["dia"] if ritmo_fc else None,
                 ),
                 width="stretch",
             )
             st.caption(
-                "Saldo real à esquerda de \"Hoje\"; à direita, a previsão (saldo + fluxos já "
-                "conhecidos) e a faixa onde caem 80% das simulações. Clica na legenda para destacar uma série."
+                "Depois de \"Hoje\": a laranja, o saldo se os próximos dias forem como os últimos 90; "
+                "a cinzento, só o que já se sabe (rendas, recorrentes, Mapa com data futura). "
+                + _explicar_ritmo(ritmo_fc)
             )
         with col_fluxos:
             _cartao_fluxos_proximos(fc.get("fluxos_conhecidos_previstos") or [], incluir_comercial_fc)

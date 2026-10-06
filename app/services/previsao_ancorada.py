@@ -232,6 +232,67 @@ def _cashflow_semanal(dias_futuros: list, receb_fixos, pag_fixos, desvios_diario
     return resultado
 
 
+JANELA_RITMO_DIAS = 90
+# os movimentos "explicam" a variação do saldo se a diferença não passar de
+# 20% (ou 5 000 €, o que for maior) - no grupo faltam entradas nos extratos
+# (ex. abril: saldo +718 k€, movimentos +133 k€) e a diferença é ~70%
+TOLERANCIA_COBERTURA = 0.2
+TOLERANCIA_COBERTURA_MIN_EUR = 5000
+
+
+def ritmo_atual(db: Session, empresa: Optional[str], historico: list, dias_futuros: list,
+                ate: date = None, janela_dias: int = JANELA_RITMO_DIAS) -> Optional[dict]:
+    """Saldo "ao ritmo atual": se os próximos dias forem como os últimos
+    `janela_dias`, a que ritmo o saldo desce (ou sobe) e quando chega a
+    -DESCOBERTO_MATERIAL_EUR - o tempo de vida.
+
+    O ritmo vem dos recebimentos e pagamentos dos extratos nesse período,
+    verificados contra a variação real do saldo: quando os movimentos não a
+    explicam (faltam entradas nos extratos - é o caso do grupo), usa-se a
+    variação do saldo, e `fonte` diz qual foi usada. É uma reta - a mesma
+    em qualquer horizonte - e não soma os fluxos conhecidos, que já estão
+    nos últimos 90 dias (rendas, recorrentes)."""
+    partida = historico[-1]
+    inicio = next((h for h in reversed(historico) if h.dia <= partida.dia - timedelta(days=janela_dias)), None)
+    if inicio is None:
+        return None
+    dias = (partida.dia - inicio.dia).days
+    variacao_saldo = float(partida.saldo_contabilistico - inicio.saldo_contabilistico)
+
+    excluir = set()
+    if empresa is None:  # no grupo, as transferências entre empresas anulam-se
+        excluir = ids_intragrupo([m for m in db.query(MovimentoBancario).all() if ate is None or m.dia <= ate])
+    janela = [s for s in _movimentos_por_dia(db, empresa, ate, excluir) if inicio.dia < s["dia"] <= partida.dia]
+    recebimentos = float(sum(s["recebimentos"] for s in janela))
+    pagamentos = float(sum(s["pagamentos"] for s in janela))
+    liquido_movimentos = recebimentos - pagamentos
+
+    diferenca = abs(liquido_movimentos - variacao_saldo)
+    tolerancia = max(TOLERANCIA_COBERTURA_MIN_EUR,
+                     TOLERANCIA_COBERTURA * max(abs(liquido_movimentos), abs(variacao_saldo)))
+    fonte = "movimentos" if janela and diferenca <= tolerancia else "saldo"
+    liquido_diario = (liquido_movimentos if fonte == "movimentos" else variacao_saldo) / dias
+
+    saldo = float(partida.saldo_contabilistico)
+    linha = [saldo + liquido_diario * (i + 1) for i in range(len(dias_futuros))]
+    limite = -DESCOBERTO_MATERIAL_EUR
+    if saldo <= limite:
+        vida = {"dias": 0, "dia": partida.dia.isoformat()}
+    elif liquido_diario < 0:
+        n = int((saldo - limite) // -liquido_diario) + 1  # 1.º dia abaixo do limite
+        vida = {"dias": n, "dia": (partida.dia + timedelta(days=n)).isoformat()}
+    else:
+        vida = {"dias": None, "dia": None}  # recebe mais do que paga: não se esgota a este ritmo
+    return {
+        "janela_dias": dias, "desde": inicio.dia.isoformat(),
+        "recebimentos": recebimentos, "pagamentos": pagamentos, "liquido_movimentos": liquido_movimentos,
+        "variacao_saldo": variacao_saldo, "fonte": fonte, "liquido_diario": liquido_diario,
+        "previsao": _serie(dias_futuros, linha),
+        "tempo_de_vida": {**vida, "limite_eur": limite, "alem_do_horizonte": vida["dias"] is not None
+                          and vida["dias"] > len(dias_futuros)},
+    }
+
+
 def prever_saldo_ancorado(
     db: Session, empresa: Optional[str] = None, dias_futuro: int = 30, ate: date = None,
     contexto: ContextoPrevisao = None, com_banda: bool = True, excluir_intragrupo: Optional[bool] = None,
@@ -319,6 +380,7 @@ def prever_saldo_ancorado(
         "banda_incerteza": banda,
         "risco_saldo_negativo": risco_negativo,
         "trajetorias_exemplo": trajetorias,
+        "ritmo_atual": ritmo_atual(db, empresa, historico, dias_futuros, ate) if com_banda else None,
         "cashflow_semanal_previsto": _cashflow_semanal(dias_futuros, receb_fixos, pag_fixos, desvios),
         "fluxos_conhecidos_previstos": [{**f, "dia": f["dia"].isoformat()} for f in conhecidos],
     }
