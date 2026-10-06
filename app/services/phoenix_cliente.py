@@ -13,12 +13,18 @@ http://phoenix:6006) ou, sem ele, de PHOENIX_COLLECTOR_ENDPOINT sem o
 tracing, o Phoenix nunca pode partir a app."""
 import logging
 import os
+import threading
+import time
 from typing import Any, Dict, List, Optional
 
 import httpx
 
 logger = logging.getLogger(__name__)
 TIMEOUT_S = 10
+# um trace acabado de criar só chega ao Phoenix quando o BatchSpanProcessor
+# o exporta (até ~5 s depois) - até lá, anotá-lo dá 404
+TENTATIVAS_TRACE_NOVO = 6
+ESPERA_TRACE_NOVO_S = 2
 
 
 def url_base() -> Optional[str]:
@@ -35,9 +41,14 @@ def nome_projeto() -> str:
 
 def anotar_trace(trace_id: Optional[str], nome: str, tipo: str, *, label: Optional[str] = None,
                  score: Optional[float] = None, explicacao: Optional[str] = None,
-                 metadata: Optional[Dict[str, Any]] = None) -> bool:
+                 metadata: Optional[Dict[str, Any]] = None, trace_novo: bool = False) -> bool:
     """Grava (ou atualiza - o identificador é fixo por nome) uma anotação
-    num trace. tipo = HUMAN | CODE | LLM. Devolve False se não conseguiu."""
+    num trace. tipo = HUMAN | CODE | LLM. Devolve False se não conseguiu.
+
+    trace_novo=True para um trace que ainda pode não ter chegado ao Phoenix
+    (ex. o guardrail, no fim da própria resposta): a anotação vai numa
+    thread de fundo que repete enquanto o Phoenix responder 404, para não
+    atrasar a resposta ao utilizador; devolve True (posta em fila)."""
     base = url_base()
     if not base or not trace_id:
         return False
@@ -46,13 +57,27 @@ def anotar_trace(trace_id: Optional[str], nome: str, tipo: str, *, label: Option
         "result": {"label": label, "score": score, "explanation": explicacao},
         "metadata": metadata or {},
     }]}
-    try:
-        resposta = httpx.post(f"{base}/v1/trace_annotations", params={"sync": "true"}, json=corpo, timeout=TIMEOUT_S)
-        resposta.raise_for_status()
+    if trace_novo:
+        threading.Thread(target=_enviar_anotacao, args=(base, trace_id, corpo, TENTATIVAS_TRACE_NOVO),
+                         daemon=True).start()
         return True
-    except Exception:
-        logger.warning("não consegui anotar o trace %s no Phoenix", trace_id, exc_info=True)
-        return False
+    return _enviar_anotacao(base, trace_id, corpo, 1)
+
+
+def _enviar_anotacao(base: str, trace_id: str, corpo: dict, tentativas: int) -> bool:
+    for tentativa in range(tentativas):
+        try:
+            resposta = httpx.post(f"{base}/v1/trace_annotations", params={"sync": "true"}, json=corpo,
+                                  timeout=TIMEOUT_S)
+            if resposta.status_code == 404 and tentativa < tentativas - 1:
+                time.sleep(ESPERA_TRACE_NOVO_S)  # o trace ainda não foi exportado
+                continue
+            resposta.raise_for_status()
+            return True
+        except Exception:
+            if tentativa == tentativas - 1:
+                logger.warning("não consegui anotar o trace %s no Phoenix", trace_id, exc_info=True)
+    return False
 
 
 def listar_spans(desde_iso: str, ate_iso: Optional[str] = None, limite: int = 1000) -> List[Dict[str, Any]]:

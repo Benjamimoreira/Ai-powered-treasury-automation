@@ -133,3 +133,28 @@ def test_calibracao_do_juiz_compara_com_anotacoes_e_feedback(client, db_session)
     assert fund["kappa"] == 0.0  # metade certa é o que se teria por acaso
     assert fund["apanha_mas"] == 0.5
     assert fund["calibrado"] is False
+
+
+def test_anotar_trace_novo_repete_enquanto_o_phoenix_nao_tem_o_trace(monkeypatch):
+    from app.services import phoenix_cliente
+
+    respostas = [404, 404, 200]
+    pedidos = []
+
+    class Resposta:
+        def __init__(self, status):
+            self.status_code = status
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(self.status_code)
+
+    def post(url, **kwargs):
+        pedidos.append(url)
+        return Resposta(respostas.pop(0))
+
+    monkeypatch.setattr(phoenix_cliente.httpx, "post", post)
+    monkeypatch.setattr(phoenix_cliente.time, "sleep", lambda s: None)
+
+    assert phoenix_cliente._enviar_anotacao("http://phoenix", "t1", {"data": []}, tentativas=6) is True
+    assert len(pedidos) == 3

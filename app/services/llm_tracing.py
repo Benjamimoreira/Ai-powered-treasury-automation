@@ -30,6 +30,7 @@ from contextlib import ExitStack, contextmanager
 PRECOS_POR_MILHAO = {}
 
 _tracer = None
+_provider = None
 _iniciado = False
 
 
@@ -42,8 +43,15 @@ def langsmith_ativo() -> bool:
     return os.environ.get("LANGSMITH_TRACING", "").lower() == "true" and bool(os.environ.get("LANGSMITH_API_KEY"))
 
 
+def iniciar_tracing():
+    """Liga o tracing já, em vez de na primeira chamada ao LLM - a
+    instrumentação do LangGraph só apanha os grafos que arrancam depois de
+    ligada (chamado no arranque da API e antes de o agente correr)."""
+    _obter_tracer()
+
+
 def _obter_tracer():
-    global _tracer, _iniciado
+    global _tracer, _provider, _iniciado
     if _iniciado:
         return _tracer
     _iniciado = True
@@ -51,7 +59,6 @@ def _obter_tracer():
     if not endpoint:
         return None
     try:
-        from opentelemetry import trace
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
@@ -64,8 +71,13 @@ def _obter_tracer():
         "openinference.project.name": os.environ.get("PHOENIX_PROJECT_NAME", "tesouraria"),
     }))
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
-    trace.set_tracer_provider(provider)
-    _tracer = trace.get_tracer("app.services.llm")
+    # provider próprio, NÃO o global (trace.set_tracer_provider): o FastAPI
+    # emite spans para o provider global em cada pedido, e o projeto do
+    # Phoenix enchia-se de "POST /monitorizacao/..." no meio dos traces dos
+    # LLMs. Os spans filhos encontram o pai pelo contexto (contextvars),
+    # que não depende do provider global.
+    _provider = provider
+    _tracer = provider.get_tracer("app.services.llm")
     try:
         # o grafo do agente (LangGraph) também no Phoenix, nó a nó - antes
         # só aparecia no LangSmith; as chamadas ao LLM lá dentro (span_llm)
@@ -78,11 +90,29 @@ def _obter_tracer():
     return _tracer
 
 
+def _contexto_do_no_langgraph():
+    """Contexto para o span de uma chamada ao LLM feita dentro de um nó do
+    agente (LangGraph): a instrumentação do LangChain cria o span do nó mas
+    não o põe como span corrente do OpenTelemetry, e sem isto a chamada ao
+    LLM ficava num trace à parte em vez de dentro do nó. None = o contexto
+    corrente (o caso normal, fora do agente)."""
+    try:
+        from opentelemetry import trace
+        from openinference.instrumentation.langchain import get_current_span
+
+        if trace.get_current_span().get_span_context().is_valid:
+            return None
+        no = get_current_span()
+        return trace.set_span_in_context(no) if no is not None else None
+    except Exception:
+        return None
+
+
 def _abrir_span_phoenix(pilha: ExitStack, nome, fornecedor, modelo, mensagens, atributos):
     tracer = _obter_tracer()
     if tracer is None:
         return None
-    span = pilha.enter_context(tracer.start_as_current_span(nome))
+    span = pilha.enter_context(tracer.start_as_current_span(nome, context=_contexto_do_no_langgraph()))
     span.set_attribute("openinference.span.kind", "LLM")
     span.set_attribute("llm.provider", fornecedor)
     span.set_attribute("llm.model_name", modelo)
@@ -156,10 +186,9 @@ def esvaziar():
     """Envia o que está em fila antes de o processo terminar - os dois
     destinos enviam em segundo plano, e um script curto (ex. a avaliação)
     podia acabar antes de os traces saírem."""
-    if _tracer is not None:
+    if _provider is not None:
         try:
-            from opentelemetry import trace
-            trace.get_tracer_provider().force_flush()
+            _provider.force_flush()
         except Exception:
             pass
     if langsmith_ativo():

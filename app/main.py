@@ -26,6 +26,9 @@ async def lifespan(app: FastAPI):
     garantimos que o Agent é fechado corretamente no shutdown, se
     alguma vez chegou a ser criado."""
     Base.metadata.create_all(bind=engine)
+    from app.services.llm_tracing import iniciar_tracing
+
+    iniciar_tracing()
     app.state.agent = None
     app.state.agent_lock = asyncio.Lock()
     yield

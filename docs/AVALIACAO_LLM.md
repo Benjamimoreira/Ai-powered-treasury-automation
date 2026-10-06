@@ -43,8 +43,11 @@ Cada corrida grava um relatório em `evals/resultados/`.
 | Só LLM, prompt v2 | **Ollama `qwen2.5:3b`** (local) | 30,0 % | 14,6 % | 91,7 % | 60 | 21,6 s |
 | **Regras + LLM** (produção) | **Ollama `qwen2.5:3b`** (local) | **71,7 %** | 68,8 % | 83,3 % | **26** | 15,2 s |
 | Agente (LangGraph) + regras | Ollama `qwen2.5:3b` (local) | 70,0 % | **77,1 %** | 41,7 % | 31 | 22,5 s (p95 85 s) |
+| Regras + LLM, modelo maior (06/10/2026) | Ollama `qwen2.5:7b` (local) | 66,7 % | 75,0 % | 33,3 % | 27 | 35,1 s** (p95 85 s) |
 
 \* Medido na versão 1 do conjunto, antes da correção dos iscos. A corrida da Groq na versão 2 foi interrompida quando a Groq foi retirada.
+
+\*\* Medido com o CPU partilhado com outros processos; a latência isolada deve ser um pouco menor. A exatidão não depende disso (temperatura 0).
 
 Só com as regras (sem LLM): decidem **33 dos 60 casos (55 %), com 33 certos**. Contra **distratores reais** (955 pares, com todas as outras linhas da mesma empresa nesse dia como candidatas), decidem **36 % dos casos, com 99,7 % de precisão** (339 em 340).
 
@@ -80,6 +83,8 @@ ollama pull qwen2.5:7b
 python -m app.evals.avaliar --estrategia hibrida --modelo qwen2.5:7b
 ```
 O vLLM ficou de fora porque precisa de uma GPU NVIDIA.
+
+**Medido em 06/10/2026: o `qwen2.5:7b` não compensa nas sugestões.** Exatidão de 66,7 % contra 71,7 % do `qwen2.5:3b`, com mais do dobro da latência. Encontra mais linhas certas (75 % contra 69 %), mas arrisca mais: em 8 dos 12 casos "nenhuma serve" escolhe uma linha (33 % contra 83 %). Como uma sugestão de linha errada é pior do que "não sei", **as sugestões ficam com o 3b**. O 7b fica como juiz das avaliações online do Assistente: julgar uma resposta é outra tarefa, e o juiz deve ser maior do que o modelo avaliado. A calibração contra as anotações humanas vai dizer se é um bom juiz.
 
 ## Porta de qualidade no deploy
 

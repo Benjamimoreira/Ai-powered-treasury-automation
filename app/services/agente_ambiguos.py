@@ -312,6 +312,9 @@ def investigar(contexto: ContextoCaso, fornecedor: str = None, modelo: str = Non
     """`usar_regras=False` salta as regras e vai sempre ao LLM (só para a
     avaliação comparar as duas abordagens)."""
     global _GRAFO
+    from app.services.llm_tracing import iniciar_tracing
+
+    iniciar_tracing()  # antes do grafo: a instrumentação do LangGraph só apanha o que arranca depois
     if _GRAFO is None:
         _GRAFO = construir_grafo()
     estado = _GRAFO.invoke({"contexto": contexto, "fornecedor": fornecedor, "modelo": modelo, "usar_regras": usar_regras},

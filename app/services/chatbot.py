@@ -276,5 +276,6 @@ async def perguntar(agent: Agent, pergunta: str, rastreio: dict = None) -> dict:
                     score=verificacao["verificados"] / total,
                     explicacao=("Não aparecem nos resultados das ferramentas: "
                                 + ", ".join(verificacao["nao_verificados"])) if verificacao["nao_verificados"] else None,
+                    trace_novo=True,
                 )
     return resultado
