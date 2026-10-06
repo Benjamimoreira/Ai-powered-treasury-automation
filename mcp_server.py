@@ -32,6 +32,13 @@ from app.db.models import CasoAmbiguo
 mcp = FastMCP("tesouraria")
 
 
+def _arredondar(valor, casas: int = 2):
+    """Os resultados vão para o contexto do modelo do Assistente (4 096
+    tokens, com ~2 200 já ocupados pelo prompt e pelas ferramentas): cada
+    casa decimal a mais é espaço a menos para os dados."""
+    return round(valor, casas) if isinstance(valor, (int, float)) else valor
+
+
 @mcp.tool()
 def reconciliar_dia_tool(dia: str) -> dict:
     """Corre a reconciliação de um dia (formato AAAA-MM-DD): tenta casar
@@ -91,8 +98,8 @@ def consultar_saldo_tool(empresa: str, dia: Optional[str] = None) -> list:
             {
                 "dia": s.dia.isoformat(),
                 "entidade": s.entidade,
-                "saldo_contabilistico": s.saldo_contabilistico,
-                "saldo_disponivel": s.saldo_disponivel,
+                "saldo_contabilistico": _arredondar(s.saldo_contabilistico),
+                "saldo_disponivel": _arredondar(s.saldo_disponivel),
             }
             for s in resultados
         ]
@@ -185,7 +192,7 @@ def listar_saldos_tool() -> list:
         db.close()
 
 
-MAX_FLUXOS_MCP = 25
+MAX_FLUXOS_MCP = 10  # 25 com descrições inteiras davam ~1 700 tokens só nesta ferramenta
 
 
 def _fim_de_cada_semana(serie: list) -> list:
@@ -239,7 +246,8 @@ def previsao_saldo_tool(empresa: Optional[str] = None, dias: int = 30) -> dict:
             # centenas de linhas e não cabe no contexto do Assistente
             "maiores_fluxos_conhecidos": sorted(
                 (
-                    {k: f[k] for k in ("dia", "valor", "fonte", "empresa", "descricao")}
+                    {"dia": f["dia"], "valor": round(f["valor"], 2), "fonte": f["fonte"], "empresa": f["empresa"],
+                     "descricao": (f["descricao"] or "")[:60]}
                     for f in sorted(fluxos, key=lambda f: -abs(f["valor"]))[:MAX_FLUXOS_MCP]
                 ),
                 key=lambda f: f["dia"],
@@ -272,18 +280,33 @@ def avaliar_previsao_tool(empresa: Optional[str] = None, dias: int = 30) -> dict
 
 
 @mcp.tool()
-def ranking_risco_tool(dias: int = 30) -> list:
-    """Todas as empresas por risco de liquidez (crítico primeiro): zona
-    atual e prevista a `dias` dias, saldo atual e previsto, ritmo de caixa
-    dos últimos 30 dias e autonomia. Crítico = o saldo cobre menos de 1
-    semana de despesa média; alerta = menos de 1 mês. Demora ~40 s."""
+def ranking_risco_tool(dias: int = 30, so_em_risco: bool = True) -> dict:
+    """Empresas por risco de liquidez (crítico primeiro): zona atual e
+    prevista a `dias` dias, saldo atual e previsto e dias de autonomia.
+    Crítico = o saldo cobre menos de 1 semana de despesa média; alerta =
+    menos de 1 mês. Por omissão só as empresas em crítico/alerta (e quantas
+    estão bem); `so_em_risco=False` para todas. Demora ~20 s."""
     db = SessionLocal()
     try:
-        campos = (
-            "empresa", "zona_atual", "zona_prevista", "dia_risco", "saldo_atual", "saldo_previsto_fim",
-            "taxa_diaria_liquida", "dias_autonomia_tendencia", "dias_autonomia_despesa",
-        )
-        return [{c: r[c] for c in campos} for r in listar_ranking_risco(db, dias)]
+        # sem a taxa diária nem a autonomia pela tendência, e arredondado: as
+        # 31 empresas com todos os campos davam ~4 000 tokens, mais do que o
+        # contexto do modelo do Assistente (4 096) deixa livre - o Ollama
+        # cortava as instruções e a resposta saía errada e lenta (06/10/2026)
+        ranking = listar_ranking_risco(db, dias)
+        em_risco = [r for r in ranking if not so_em_risco or (r["zona_atual"], r["zona_prevista"]) != ("ok", "ok")]
+        return {
+            "dias": dias,
+            "empresas": [
+                {
+                    "empresa": r["empresa"], "zona_atual": r["zona_atual"], "zona_prevista": r["zona_prevista"],
+                    "dia_risco": r["dia_risco"], "saldo_atual": _arredondar(r["saldo_atual"]),
+                    "saldo_previsto_fim": _arredondar(r["saldo_previsto_fim"]),
+                    "dias_autonomia": _arredondar(r["dias_autonomia_despesa"], 0),
+                }
+                for r in em_risco
+            ],
+            "empresas_sem_risco": len(ranking) - len(em_risco),
+        }
     finally:
         db.close()
 
@@ -302,12 +325,12 @@ def estado_scripts_tool() -> list:
 
 @mcp.tool()
 def faturas_recebidas_tool(
-    pesquisa: Optional[str] = None, desde: Optional[str] = None, ate: Optional[str] = None, limite: int = 50,
+    pesquisa: Optional[str] = None, desde: Optional[str] = None, ate: Optional[str] = None, limite: int = 15,
 ) -> list:
     """Faturas recebidas em faturas@vidor.pt. `pesquisa` procura em empresa,
     fornecedor, NIF, assunto, remetente ou valor, em qualquer dia; `desde`/
     `ate` (AAAA-MM-DD) limitam o período. Mais recentes primeiro, no
-    máximo `limite` (até 200)."""
+    máximo `limite` (por omissão 15, até 200)."""
     db = SessionLocal()
     try:
         faturas = listar_faturas(
@@ -323,8 +346,10 @@ def faturas_recebidas_tool(
         nomes = normalizar_fornecedores(faturas, db.query(FaturaRecebida).all(), listar_empresas(db))
         return [
             {
-                "dia": f.dia.isoformat(), "hora": f.hora, "empresa": f.empresa, "fornecedor": nome,
-                "nif_fornecedor": f.nif_fornecedor, "valor_fatura": f.valor_fatura, "assunto": f.assunto,
+                # sem a hora e com o assunto encurtado: 50 faturas completas
+                # davam ~4 000 tokens, mais do que cabe no contexto do Assistente
+                "dia": f.dia.isoformat(), "empresa": f.empresa, "fornecedor": nome,
+                "nif_fornecedor": f.nif_fornecedor, "valor_fatura": f.valor_fatura, "assunto": (f.assunto or "")[:80],
                 "tem_pdf": bool(f.pdf_relativo),
             }
             for f, (nome, _) in zip(faturas, nomes)

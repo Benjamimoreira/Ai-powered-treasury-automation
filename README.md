@@ -114,6 +114,10 @@ pip install -r requirements.txt
 copy .env.example .env
 # edita o .env: ONEDRIVE_RAIZ; o LLM é local - instalar o Ollama
 # (ollama.com) e descarregar o modelo: ollama pull qwen2.5:3b
+# e subir o contexto do Ollama para 8192 tokens (variável de ambiente do
+# utilizador OLLAMA_CONTEXT_LENGTH=8192, depois reiniciar o Ollama): com os
+# 4096 por omissão, o prompt do Assistente (~2 200 tokens) mais o resultado de
+# uma ferramenta grande passava o limite e o Ollama cortava as instruções
 
 python scripts\criar_tabelas.py
 uvicorn app.main:app --reload
