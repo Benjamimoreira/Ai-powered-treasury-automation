@@ -166,33 +166,84 @@ def esvaziar():
             pass
 
 
+class _Cadeia:
+    """Uma cadeia em curso nos destinos ligados: um span CHAIN no Phoenix
+    e/ou um run "chain" no LangSmith."""
+
+    def __init__(self, span, run_langsmith):
+        self._span, self._run = span, run_langsmith
+
+    @property
+    def trace_id(self):
+        """Id do trace no Phoenix (32 hex), para guardar junto da resposta e
+        ligar a dashboard ao trace (PHOENIX_URL_PUBLICA/redirects/traces/<id>).
+        None se o Phoenix estiver desligado."""
+        if self._span is None:
+            return None
+        return format(self._span.get_span_context().trace_id, "032x")
+
+    def terminar(self, saidas: dict):
+        if self._span is not None:
+            self._span.set_attribute("output.value", json.dumps(saidas, ensure_ascii=False, default=str))
+            self._span.set_attribute("output.mime_type", "application/json")
+        if self._run is not None:
+            self._run.end(outputs=saidas)
+
+
 @contextmanager
 def run_cadeia(nome: str, entradas: dict, **metadata):
-    """Um trace de "cadeia" no LangSmith (ex. uma pergunta ao Assistente),
-    para registar passos filhos à mão com registar_passo(). Devolve None se
-    o LangSmith estiver desligado - o chamador não tem de verificar."""
-    if not langsmith_ativo():
-        yield None
-        return
-    try:
-        from langsmith.run_helpers import trace
-    except ImportError:
-        yield None
-        return
-    with trace(nome, run_type="chain", inputs=entradas, metadata={k: v for k, v in metadata.items() if v is not None},
-               project_name=os.environ.get("LANGSMITH_PROJECT", "tesouraria")) as run:
-        yield run
+    """Um trace de "cadeia" (ex. uma pergunta ao Assistente) no Phoenix e/ou
+    no LangSmith, para registar passos filhos à mão com registar_passo().
+    Devolve None se os dois estiverem desligados - o chamador não tem de
+    verificar."""
+    metadata = {k: v for k, v in metadata.items() if v is not None}
+    with ExitStack() as pilha:
+        span = None
+        tracer = _obter_tracer()
+        if tracer is not None:
+            span = pilha.enter_context(tracer.start_as_current_span(nome))
+            span.set_attribute("openinference.span.kind", "CHAIN")
+            span.set_attribute("input.value", json.dumps(entradas, ensure_ascii=False, default=str))
+            span.set_attribute("input.mime_type", "application/json")
+            for chave, valor in metadata.items():
+                span.set_attribute(f"tesouraria.{chave}", valor)
+
+        run = None
+        if langsmith_ativo():
+            try:
+                from langsmith.run_helpers import trace
+            except ImportError:
+                trace = None
+            if trace is not None:
+                run = pilha.enter_context(trace(
+                    nome, run_type="chain", inputs=entradas, metadata=metadata,
+                    project_name=os.environ.get("LANGSMITH_PROJECT", "tesouraria"),
+                ))
+
+        yield _Cadeia(span, run) if (span is not None or run is not None) else None
 
 
-def registar_passo(run, nome: str, tipo: str, entradas: dict, saidas: dict):
+def registar_passo(cadeia, nome: str, tipo: str, entradas: dict, saidas: dict):
     """Um passo filho já terminado (ex. a chamada a uma ferramenta MCP) - o
     cliente do Assistente não passa pelo nosso código a cada passo, por
-    isso os passos registam-se depois de acontecerem."""
-    if run is None:
+    isso os passos registam-se depois de acontecerem (no Phoenix ficam
+    com a duração do registo, não a real)."""
+    if cadeia is None:
         return
-    try:
-        filho = run.create_child(name=nome, run_type=tipo, inputs=entradas)
-        filho.end(outputs=saidas)
-        filho.post()
-    except Exception:
-        pass  # o tracing nunca pode partir a resposta
+    if cadeia._span is not None:
+        try:
+            with _tracer.start_as_current_span(nome) as filho:
+                filho.set_attribute("openinference.span.kind", tipo.upper())
+                if tipo == "tool":
+                    filho.set_attribute("tool.name", nome)
+                filho.set_attribute("input.value", json.dumps(entradas, ensure_ascii=False, default=str))
+                filho.set_attribute("output.value", json.dumps(saidas, ensure_ascii=False, default=str))
+        except Exception:
+            pass  # o tracing nunca pode partir a resposta
+    if cadeia._run is not None:
+        try:
+            filho = cadeia._run.create_child(name=nome, run_type=tipo, inputs=entradas)
+            filho.end(outputs=saidas)
+            filho.post()
+        except Exception:
+            pass

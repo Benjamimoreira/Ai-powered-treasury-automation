@@ -155,6 +155,27 @@ class ExecucaoScript(Base):
     timestamp = Column(DateTime, default=_utcnow_naive, nullable=False, index=True)
 
 
+class InteracaoAssistente(Base):
+    """Uma pergunta feita ao Assistente da dashboard (POST /chat): resposta,
+    ferramentas consultadas, se terminou em erro (Ollama em baixo/ocupado)
+    e o feedback 👍/👎 de quem perguntou - a base das métricas de qualidade
+    da IA no separador Monitorização (GET /monitorizacao/ia)."""
+    __tablename__ = "interacoes_assistente"
+
+    id = Column(Integer, primary_key=True)
+    criado_em = Column(DateTime, default=_utcnow_naive, nullable=False, index=True)
+    pergunta = Column(String, nullable=False)
+    resposta = Column(String, nullable=True)
+    ferramentas_usadas = Column(JSON, nullable=True)
+    status = Column(String, nullable=False)  # ok|erro
+    erro = Column(String, nullable=True)
+    duracao_segundos = Column(Float, nullable=True)
+    modelo = Column(String, nullable=True)
+    feedback = Column(Integer, nullable=True)  # 1 = 👍, 0 = 👎, None = sem feedback
+    feedback_em = Column(DateTime, nullable=True)
+    trace_id = Column(String, nullable=True)  # trace no Phoenix (32 hex), para o link a partir da dashboard
+
+
 class EventoScript(Base):
     """Um evento de log reportado em tempo real, a meio de uma corrida
     ainda a decorrer (ex.: um [ERRO] apanhado no dia 12 de 26 a processar)

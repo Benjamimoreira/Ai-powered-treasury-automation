@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.services.monitorizacao import correr_script, listar_eventos, listar_logs, listar_scripts, registar_evento, registar_execucao
+from app.services.monitorizacao_ia import metricas_ia
 
 router = APIRouter(prefix="/monitorizacao", tags=["monitorizacao"])
 
@@ -70,3 +71,12 @@ def registar_evento_script(script: str, payload: EventoScriptRequest, db: Sessio
 @router.get("/eventos")
 def listar_monitorizacao_eventos(limit: int = 50, script: Optional[str] = None, db: Session = Depends(get_db)):
     return {"eventos": listar_eventos(db, limit=limit, script=script)}
+
+
+@router.get("/ia")
+def metricas_qualidade_ia(dias: int = 30, db: Session = Depends(get_db)):
+    """Qualidade da IA em produção nos últimos `dias`: Assistente (perguntas,
+    erros, 👍/👎, tempos) e sugestões para casos ambíguos (aceites vs
+    rejeitadas, decididas por regras vs LLM, resolvidas sem sugestão) - ver
+    app/services/monitorizacao_ia.py."""
+    return metricas_ia(db, dias=dias)

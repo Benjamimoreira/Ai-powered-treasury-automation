@@ -240,6 +240,18 @@ def perguntar_chat(pergunta: str) -> dict:
     return r.json()
 
 
+def enviar_feedback_chat(interacao_id: int, util: bool) -> dict:
+    r = requests.post(f"{API_BASE_URL}/chat/{interacao_id}/feedback", json={"util": util}, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+def metricas_ia(dias: int = 30) -> dict:
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/ia", params={"dias": dias}, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
 def reiniciar_chat() -> dict:
     r = requests.post(f"{API_BASE_URL}/chat/reset")
     r.raise_for_status()

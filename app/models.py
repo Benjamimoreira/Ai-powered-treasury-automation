@@ -295,3 +295,4 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     resposta: str
     ferramentas_usadas: List[str]
+    id: Optional[int] = None  # interacoes_assistente.id, para o 👍/👎

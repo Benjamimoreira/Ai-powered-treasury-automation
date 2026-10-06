@@ -218,18 +218,22 @@ def compactar_memoria(mensagens: list) -> list:
     return [sistema] + texto[-2 * TROCAS_EM_MEMORIA:]
 
 
-async def perguntar(agent: Agent, pergunta: str) -> dict:
+async def perguntar(agent: Agent, pergunta: str, rastreio: dict = None) -> dict:
     """Faz a pergunta ao agent (conversa acumulada em agent.messages) e
     devolve a resposta final + as tools usadas. Cada pergunta fica no
-    LangSmith como um trace "assistente", com um passo por ferramenta MCP
-    (nome, argumentos e resultado) - o cliente do Agent não passa pelo
-    tracing de llm_tracing.span_llm."""
+    Phoenix/LangSmith como um trace "assistente", com um passo por
+    ferramenta MCP (nome, argumentos e resultado) - o cliente do Agent não
+    passa pelo tracing de llm_tracing.span_llm. Se `rastreio` for dado,
+    recebe logo no início o trace_id do Phoenix - também quando a pergunta
+    acaba em erro, para a interação gravada apontar para o trace."""
     from app.services.llm_tracing import registar_passo, run_cadeia
 
     agent.messages[:] = compactar_memoria(agent.messages)
     inicio = len(agent.messages)
     with run_cadeia("assistente", {"pergunta": pergunta},
                     modelo=os.environ.get("OLLAMA_MODEL_ID", "qwen2.5:3b")) as run:
+        if rastreio is not None and run is not None:
+            rastreio["trace_id"] = run.trace_id
         eventos = [evento async for evento in agent.run(pergunta)]
         resultado = acumular_resposta(eventos)
         for nome, argumentos, conteudo in _passos_ferramentas(agent.messages[inicio:]):
@@ -250,5 +254,5 @@ async def perguntar(agent: Agent, pergunta: str) -> dict:
             resultado = {"resposta": seguinte["resposta"],
                          "ferramentas_usadas": [nome] + seguinte["ferramentas_usadas"]}
         if run is not None:
-            run.end(outputs=resultado)
+            run.terminar(resultado)
     return resultado

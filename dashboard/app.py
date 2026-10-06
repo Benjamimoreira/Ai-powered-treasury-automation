@@ -1371,8 +1371,8 @@ with aba_monitorizacao:
         else:
             st.info("Sem dados de execução dos scripts.")
 
-    sep_tempo_real, sep_logs, sep_script, sep_auditoria = st.tabs(
-        ["⚡ Erros em tempo real", "📜 Histórico de logs", "🔎 Detalhe por script", "🧾 Auditoria"]
+    sep_tempo_real, sep_logs, sep_script, sep_auditoria, sep_ia = st.tabs(
+        ["⚡ Erros em tempo real", "📜 Histórico de logs", "🔎 Detalhe por script", "🧾 Auditoria", "🤖 Qualidade da IA"]
     )
 
     with sep_tempo_real:
@@ -1579,6 +1579,130 @@ with aba_monitorizacao:
                     st.info("Ainda não há nenhuma auditoria registada - usa 'Auditar' ou 'Auditoria geral' acima.")
             except Exception as e:
                 st.warning(f"Não foi possível carregar o histórico de auditorias: {e}")
+
+    with sep_ia:
+        st.caption(
+            "Qualidade da IA em produção, a partir do feedback que já existe: 👍/👎 e erros das perguntas ao "
+            "Assistente, e sugestões para casos ambíguos aceites ou rejeitadas por quem resolveu o caso."
+        )
+        dias_ia = st.segmented_control(
+            "Período", [7, 30, 90], default=30, format_func=lambda d: f"{d} dias", key="dias_metricas_ia",
+        ) or 30
+        try:
+            metricas = api.metricas_ia(dias_ia)
+        except Exception as e:
+            st.warning(f"Não foi possível carregar as métricas da IA: {e}")
+        else:
+            m_ass, m_amb = metricas["assistente"], metricas["ambiguos"]
+            phoenix_url = (metricas.get("phoenix_url") or "").rstrip("/")
+
+            def _pct(valor):
+                return f"{100 * valor:.0f}%" if valor is not None else "—"
+
+            def _link_trace(item):
+                if phoenix_url and item.get("trace_id"):
+                    st.markdown(f"<div style='margin:-4px 0 10px 4px;font-size:0.85em;'>"
+                                f"<a href='{escape(phoenix_url)}/redirects/traces/{escape(item['trace_id'])}' "
+                                f"target='_blank'>ver trace no Phoenix ↗</a></div>", unsafe_allow_html=True)
+
+            if phoenix_url:
+                st.link_button("Abrir o Phoenix ↗", phoenix_url,
+                               help="Traces de cada chamada ao LLM: prompt, ferramentas, resultados, tokens e tempos.")
+            else:
+                st.caption("Define PHOENIX_URL_PUBLICA no .env para ligar estas métricas aos traces no Phoenix.")
+
+            with st.container(border=True):
+                st.markdown("**Assistente**")
+                with st.container(horizontal=True):
+                    st.metric("Perguntas", m_ass["perguntas"], border=True)
+                    st.metric(
+                        "Terminadas em erro", _pct(m_ass["taxa_erro"]),
+                        f"{m_ass['erros']} conversa(s)" if m_ass["erros"] else None, delta_color="inverse", border=True,
+                        help="Ollama em baixo, ocupado ou sem resposta - a pessoa ficou sem resposta.",
+                    )
+                    st.metric(
+                        "Satisfação (👍)", _pct(m_ass["taxa_satisfacao"]),
+                        f"{m_ass['feedback_positivo']} 👍 · {m_ass['feedback_negativo']} 👎", delta_color="off", border=True,
+                        help=f"Só conta as respostas avaliadas ({_pct(m_ass['taxa_com_feedback'])} das perguntas).",
+                    )
+                    st.metric(
+                        "Sem consultar dados", m_ass["sem_ferramentas"], border=True,
+                        help="Respostas dadas sem chamar nenhuma ferramenta - candidatas a resposta inventada.",
+                    )
+                    st.metric(
+                        "Tempo de resposta", f"{m_ass['duracao_media_s']:.0f} s" if m_ass["duracao_media_s"] else "—",
+                        f"p95 {m_ass['duracao_p95_s']:.0f} s" if m_ass["duracao_p95_s"] else None,
+                        delta_color="off", border=True,
+                    )
+
+                if m_ass["por_dia"]:
+                    df_uso = pd.DataFrame(m_ass["por_dia"])
+                    df_uso["dia"] = pd.to_datetime(df_uso["dia"])
+                    df_uso["Respondidas"] = df_uso["perguntas"] - df_uso["erros"]
+                    df_uso["Com erro"] = df_uso["erros"]
+                    df_uso = df_uso.melt(id_vars=["dia"], value_vars=["Respondidas", "Com erro"], var_name="estado", value_name="n")
+                    cores_uso = {"Respondidas": COR_CASADOS, "Com erro": COR_ERRO}
+                    st.altair_chart(
+                        alt.Chart(df_uso).mark_bar(size=12).encode(
+                            x=alt.X("dia:T", title=None, axis=alt.Axis(format="%d/%m", labelAngle=-45)),
+                            y=alt.Y("n:Q", title="perguntas", axis=alt.Axis(tickMinStep=1)),
+                            color=alt.Color("estado:N", scale=alt.Scale(domain=list(cores_uso), range=list(cores_uso.values())),
+                                            legend=alt.Legend(title=None, orient="top")),
+                            tooltip=[alt.Tooltip("dia:T", format="%d/%m"), "estado:N", "n:Q"],
+                        ).properties(height=220),
+                        width="stretch",
+                    )
+
+                col_neg, col_err = st.columns(2)
+                with col_neg:
+                    st.markdown(f"**Respostas com 👎** ({m_ass['feedback_negativo']})")
+                    if m_ass["respostas_negativas"]:
+                        with st.container(height=320):
+                            for item in m_ass["respostas_negativas"]:
+                                _linha_log(item["criado_em"], item["pergunta"], "👎", item["resposta"] or "—", COR_AMBIGUOS)
+                                _link_trace(item)
+                    else:
+                        st.caption("Nenhuma neste período.")
+                with col_err:
+                    st.markdown(f"**Conversas terminadas em erro** ({m_ass['erros']})")
+                    if m_ass["erros_recentes"]:
+                        with st.container(height=320):
+                            for item in m_ass["erros_recentes"]:
+                                _linha_log(item["criado_em"], item["pergunta"], "erro", item["erro"] or "—", COR_ERRO)
+                                _link_trace(item)
+                    else:
+                        st.caption("Nenhuma neste período.")
+
+            with st.container(border=True):
+                st.markdown("**Sugestões para casos ambíguos**")
+                with st.container(horizontal=True):
+                    st.metric("Casos", m_amb["casos"], f"{m_amb['pendentes']} pendente(s)" if m_amb["pendentes"] else None,
+                              delta_color="off", border=True)
+                    st.metric(
+                        "Sugestões aceites", _pct(m_amb["taxa_aceitacao"]),
+                        f"{m_amb['aceites']} aceites · {m_amb['rejeitadas']} rejeitadas", delta_color="off", border=True,
+                        help="Casos resolvidos em que a decisão humana foi igual à sugestão.",
+                    )
+                    st.metric(
+                        "Decididas sem LLM", _pct(m_amb["taxa_sem_llm"]),
+                        f"{m_amb['sugestoes_por_regras']} regras · {m_amb['sugestoes_por_llm']} LLM", delta_color="off", border=True,
+                        help="Sugestões dadas pelas regras (triagem pelo texto/histórico), sem chamar o modelo.",
+                    )
+                    st.metric(
+                        "Resolvidos sem sugestão", _pct(m_amb["taxa_passados_a_humano"]),
+                        f"{m_amb['resolvidos_sem_sugestao']} caso(s)" if m_amb["resolvidos_sem_sugestao"] else None,
+                        delta_color="inverse", border=True,
+                        help="Casos que alguém resolveu sem ter nenhuma sugestão utilizável - passados a humano.",
+                    )
+                    st.metric(
+                        "Respostas inválidas do LLM", m_amb["respostas_invalidas_llm"], border=True,
+                        help="O modelo não devolveu JSON válido - a sugestão perdeu-se.",
+                    )
+                st.caption(
+                    f"Aceitação por origem: regras {_pct(m_amb['taxa_aceitacao_regras'])} · "
+                    f"LLM {_pct(m_amb['taxa_aceitacao_llm'])} · {m_amb['dossiers']} dossier(s) do agente preparados. "
+                    "Período pelo dia do movimento."
+                )
 
 with aba_faturas:
     # --- filtros
@@ -2030,6 +2154,20 @@ with aba_analise_extratos:
                 "acessível nesta máquina)."
             )
 
+def _feedback_resposta(mensagem: dict):
+    """👍/👎 por baixo de cada resposta do Assistente - vai para
+    interacoes_assistente e alimenta Monitorização > Qualidade da IA."""
+    if mensagem.get("role") != "assistant" or not mensagem.get("id"):
+        return
+    valor = st.feedback("thumbs", key=f"feedback_chat_{mensagem['id']}")
+    if valor is not None and valor != mensagem.get("feedback"):
+        try:
+            api.enviar_feedback_chat(mensagem["id"], util=bool(valor))
+            mensagem["feedback"] = valor
+        except Exception as e:
+            st.caption(f"Não foi possível guardar o feedback: {e}")
+
+
 with aba_assistente:
     with st.container(border=True, horizontal=True, vertical_alignment="center"):
         # transparência (AI Act, art. 50.º): quem conversa tem de saber que é
@@ -2061,6 +2199,7 @@ with aba_assistente:
             st.write(mensagem["content"])
             if mensagem.get("ferramentas_usadas"):
                 st.caption("🔧 consultou: " + ", ".join(mensagem["ferramentas_usadas"]))
+            _feedback_resposta(mensagem)
 
     pergunta = st.chat_input("Pergunta sobre os dados da tesouraria...")
     if pergunta:
@@ -2074,16 +2213,20 @@ with aba_assistente:
                     resultado = api.perguntar_chat(pergunta)
                     resposta = resultado["resposta"]
                     ferramentas = resultado.get("ferramentas_usadas", [])
+                    interacao_id = resultado.get("id")
                 except Exception as e:
                     resposta = f"Erro a contactar o assistente: {e}"
                     ferramentas = []
+                    interacao_id = None
             st.write(resposta)
             if ferramentas:
                 st.caption("🔧 consultou: " + ", ".join(ferramentas))
+            mensagem_nova = {
+                "role": "assistant", "content": resposta, "ferramentas_usadas": ferramentas, "id": interacao_id,
+            }
+            _feedback_resposta(mensagem_nova)
 
-        st.session_state["chat_mensagens"].append({
-            "role": "assistant", "content": resposta, "ferramentas_usadas": ferramentas,
-        })
+        st.session_state["chat_mensagens"].append(mensagem_nova)
 
 # Rodapé corporativo - fecha visualmente com o cabeçalho (mesma barra
 # escura, mesmo traço vermelho fino), assinala que é uma ferramenta

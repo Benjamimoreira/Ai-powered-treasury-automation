@@ -33,6 +33,8 @@ services:
       COMERCIAL_INDICE_PATH: /comercial/${COMERCIAL_INDICE_NOME}
       # tracing das chamadas ao LLM (latência, tokens, custo) - ver serviço phoenix
       PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
+      # o mesmo Phoenix visto do browser, para os links da dashboard aos traces
+      PHOENIX_URL_PUBLICA: ${PHOENIX_URL_PUBLICA:-http://localhost:6006}
       # LLM local: o Ollama corre no Windows, fora do Docker; o Docker Desktop
       # encaminha host.docker.internal para o 127.0.0.1 do anfitrião (não é
       # preciso abrir o Ollama à rede). Nenhum dado sai da máquina.
