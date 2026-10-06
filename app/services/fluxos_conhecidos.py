@@ -41,6 +41,12 @@ PREFIXOS_TRF = ("TRF ", "TFI ")
 PALAVRAS_LIGACAO = {"DA", "DE", "DO", "DAS", "DOS", "E"}
 TITULOS = {"DR", "DRA", "ENG", "ENGA", "ARQ", "SR", "SRA"}
 TOLERANCIA_RENDA = 0.01
+# O recebimento tem de ser um número inteiro de rendas, com esta folga
+# relativa: a atualização anual (~2-3%) entra nos pagamentos antes de entrar
+# no Mapa de Rendas. Com 1% (a folga antiga), a renda de 13 377,75 € da
+# Sorte de Principiante, paga desde agosto de 2026 a 13 758,98 € (+2,85%),
+# deixou de ser reconhecida - e a previsão contava-a duas vezes.
+TOLERANCIA_ATUALIZACAO_RENDA = 0.05
 
 # Siglas usadas no Mapa de Rendas (coluna Empresa) -> palavras que têm de
 # aparecer na designação social dos extratos. Só para confirmar que a renda
@@ -176,7 +182,7 @@ def contrato_do_movimento(descricao: str, valor: float, empresa: str, contratos:
     if not contrato.renda:
         return None
     meses = valor / contrato.renda
-    if round(meses) < 1 or abs(meses - round(meses)) > 0.01:
+    if round(meses) < 1 or abs(meses - round(meses)) > TOLERANCIA_ATUALIZACAO_RENDA * round(meses):
         return None
     return contrato
 
@@ -243,11 +249,15 @@ def detetar_fluxos(movimentos: list, ate: date, contratos: list) -> tuple:
                 por_contrato.setdefault(id(c), (c, []))[1].append(m)
     dias_todas_rendas = [m.dia.day for _, ms in por_contrato.values() for m in ms]
     for c, ms in por_contrato.values():
+        ms.sort(key=lambda m: m.dia)
+        # o valor que está de facto a entrar (o último pagamento, por mês) -
+        # o do Mapa de Rendas pode ainda não ter a atualização anual
+        ultimo = ms[-1]
         fluxos.append(FluxoRecorrente(
             chave=("renda", c.empresa, c.cliente, c.espaco, c.fracao),
-            empresa=ms[-1].empresa,
+            empresa=ultimo.empresa,
             descricao=f"Renda {c.espaco} - Fração {c.fracao} ({c.cliente})",
-            valor_mensal=c.renda,
+            valor_mensal=round(ultimo.valor / round(ultimo.valor / c.renda), 2),
             dia_mes=_dia_tipico([m.dia.day for m in ms] or dias_todas_rendas),
             fonte="renda",
         ))

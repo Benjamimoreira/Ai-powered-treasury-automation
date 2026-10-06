@@ -83,3 +83,22 @@ def test_fluxo_mensal_cai_no_dia_util_seguinte_ao_fim_de_semana():
     dias = [date(2026, 10, d) for d in range(1, 32)]
     por_dia = fluxos_nos_dias(fluxos, dias)
     assert list(por_dia) == [date(2026, 10, 5)]
+
+
+def test_renda_atualizada_ainda_nao_refletida_no_mapa_conta():
+    # Sorte de Principiante: 13 377,75 € no Mapa de Rendas, paga a 13 758,98 € desde ago/2026 (+2,85%)
+    contratos = [_contrato("Sorte de Principiante", 13377.75)]
+    assert contrato_do_movimento("TRF SORTE PRINCIPIANT", 13758.98, "J PINTO", contratos) is contratos[0]
+    # uma parcela (2 110,15 €) não é um número inteiro de rendas
+    assert contrato_do_movimento("TRF SORTE PRINCIPIANT", 2110.15, "J PINTO", contratos) is None
+
+
+def test_renda_prevista_usa_o_ultimo_valor_pago():
+    contratos = [_contrato("Sorte de Principiante", 13377.75)]
+    movs = [Mov(1, date(2026, 7, 8), "J PINTO", "TRF SORTE PRINCIPIANT", 13457.53),
+            Mov(2, date(2026, 8, 10), "J PINTO", "TRF SORTE PRINCIPIANT", 13758.98),
+            Mov(3, date(2026, 9, 8), "J PINTO", "TRF SORTE PRINCIPIANT", 13758.98)]
+    fluxos, ids = detetar_fluxos(movs, date(2026, 9, 30), contratos)
+    (renda,) = [f for f in fluxos if f.fonte == "renda"]
+    assert renda.valor_mensal == 13758.98
+    assert ids == {1, 2, 3}
