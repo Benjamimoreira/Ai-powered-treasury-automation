@@ -284,38 +284,58 @@ def ritmo_atual(db: Session, empresa: Optional[str], historico: list, dias_futur
     fonte = "movimentos" if janela and diferenca <= tolerancia else "saldo"
     resto_diario = (liquido_resto if fonte == "movimentos" else variacao_saldo - conhecidos_no_periodo) / dias
 
-    # os fluxos conhecidos do próximo ano, dia a dia (sem o comercial, como a previsão central)
+    # os fluxos conhecidos do próximo ano, dia a dia; o comercial à parte
     dias_ano = [partida.dia + timedelta(days=k) for k in range(1, max(DIAS_TEMPO_DE_VIDA, len(dias_futuros)) + 1)]
     indice = {d: k for k, d in enumerate(dias_ano)}
-    conhecidos_dia = np.zeros(len(dias_ano))
+    conhecidos_dia, comercial_dia = np.zeros(len(dias_ano)), np.zeros(len(dias_ano))
     for f in fluxos_conhecidos_no_horizonte(contexto, dias_ano, empresa):
-        if f["fonte"] != "comercial":
-            conhecidos_dia[indice[f["dia"]]] += f["valor"]
+        (comercial_dia if f["fonte"] == "comercial" else conhecidos_dia)[indice[f["dia"]]] += f["valor"]
     saldo = float(partida.saldo_contabilistico)
-    linha = saldo + np.cumsum(conhecidos_dia + resto_diario)
-    liquido_diario_medio = float((linha[-1] - saldo) / len(dias_ano))
-
     limite = -DESCOBERTO_MATERIAL_EUR
-    abaixo = np.nonzero(linha < limite)[0]
-    if saldo <= limite:
-        vida = {"dias": 0, "dia": partida.dia.isoformat()}
-    elif len(abaixo):
-        n = int(abaixo[0]) + 1
-        vida = {"dias": n, "dia": dias_ano[n - 1].isoformat()}
-    elif liquido_diario_medio < 0:  # para lá de 1 ano: em linha reta com a média desse ano
-        n = len(dias_ano) + int((linha[-1] - limite) // -liquido_diario_medio) + 1
-        vida = {"dias": n, "dia": (partida.dia + timedelta(days=n)).isoformat()}
-    else:
-        vida = {"dias": None, "dia": None}  # recebe mais do que paga: não se esgota a este ritmo
+
+    def vida_e_serie(diario):
+        linha = saldo + np.cumsum(diario)
+        medio = float((linha[-1] - saldo) / len(dias_ano))
+        abaixo = np.nonzero(linha < limite)[0]
+        if saldo <= limite:
+            vida = {"dias": 0, "dia": partida.dia.isoformat()}
+        elif len(abaixo):
+            n = int(abaixo[0]) + 1
+            vida = {"dias": n, "dia": dias_ano[n - 1].isoformat()}
+        elif medio < 0:  # para lá de 1 ano: em linha reta com a média desse ano
+            n = len(dias_ano) + int((linha[-1] - limite) // -medio) + 1
+            vida = {"dias": n, "dia": (partida.dia + timedelta(days=n)).isoformat()}
+        else:
+            vida = {"dias": None, "dia": None}  # recebe mais do que paga: não se esgota a este ritmo
+        vida.update(limite_eur=limite, alem_do_horizonte=vida["dias"] is not None and vida["dias"] > len(dias_futuros))
+        return _serie(dias_futuros, linha[:len(dias_futuros)]), vida, medio
+
+    previsao, vida, medio = vida_e_serie(conhecidos_dia + resto_diario)
+
+    # cenário "só vendas do índice": as vendas (CPCV/escrituras recebidos no
+    # Mapa) saem do ritmo e entram só as marcadas no índice comercial, nas
+    # datas marcadas - pôr o índice por cima do ritmo contava as vendas duas
+    # vezes (no grupo, out/2026: 1 040 k€ de vendas nos últimos 90 dias)
+    from app.services.vendas import vendas_recebidas
+
+    vendas = vendas_recebidas(db, empresa, inicio.dia, partida.dia)
+    resto_sem_vendas = resto_diario - vendas / dias
+    previsao_indice, vida_indice, medio_indice = vida_e_serie(conhecidos_dia + resto_sem_vendas + comercial_dia)
     return {
         "janela_dias": dias, "desde": inicio.dia.isoformat(),
         "recebimentos": recebimentos, "pagamentos": pagamentos, "liquido_movimentos": liquido_movimentos,
         "variacao_saldo": variacao_saldo, "fonte": fonte,
         "conhecidos_no_periodo": conhecidos_no_periodo, "resto_diario": resto_diario,
-        "liquido_diario": liquido_diario_medio,
-        "previsao": _serie(dias_futuros, linha[:len(dias_futuros)]),
-        "tempo_de_vida": {**vida, "limite_eur": limite, "alem_do_horizonte": vida["dias"] is not None
-                          and vida["dias"] > len(dias_futuros)},
+        "liquido_diario": medio,
+        "previsao": previsao,
+        "tempo_de_vida": vida,
+        "so_vendas_do_indice": {
+            "vendas_no_periodo": vendas, "resto_sem_vendas_diario": resto_sem_vendas,
+            "comercial_no_horizonte": float(comercial_dia[:len(dias_futuros)].sum()),
+            "liquido_diario": medio_indice,
+            "previsao": previsao_indice,
+            "tempo_de_vida": vida_indice,
+        },
     }
 
 

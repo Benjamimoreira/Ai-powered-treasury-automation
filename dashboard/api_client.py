@@ -391,6 +391,16 @@ def listar_cpcv_escrituras(dia_inicio: Optional[str] = None, dia_fim: Optional[s
     return r.json().get("linhas", [])
 
 
+def negocios_comerciais(empresa: Optional[str] = None, dia_inicio: Optional[str] = None,
+                        dia_fim: Optional[str] = None) -> dict:
+    """Negócios do índice comercial com a agenda (sinal, reforços, escritura),
+    o recebido segundo o Mapa, o que falta, um resumo e as vendas por mês."""
+    params = {k: v for k, v in {"empresa": empresa, "dia_inicio": dia_inicio, "dia_fim": dia_fim}.items() if v}
+    r = requests.get(f"{API_BASE_URL}/comercial/negocios", params=params, timeout=60)
+    r.raise_for_status()
+    return r.json()
+
+
 def espaco_fracao_por_ref() -> dict:
     r = requests.get(f"{API_BASE_URL}/comercial/espaco-fracao-por-ref")
     r.raise_for_status()

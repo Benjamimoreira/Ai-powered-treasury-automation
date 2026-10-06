@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from types import SimpleNamespace
 
 from app.services import previsao_ancorada as pa
+from app.services import vendas
 
 HOJE = date(2026, 10, 6)
 DIAS_FUTUROS = [HOJE + timedelta(days=i) for i in range(1, 31)]
@@ -16,7 +17,7 @@ def _historico(saldo_inicio: float, saldo_hoje: float) -> list:
 
 
 def _cenario(monkeypatch, recebimentos: float, pagamentos: float, renda_passada: float = 0.0,
-             fluxos_futuros: list = ()):
+             fluxos_futuros: list = (), vendas_no_periodo: float = 0.0):
     """Movimentos dos últimos 90 dias (a renda passada à parte, com o id de
     fluxo conhecido) e os fluxos conhecidos previstos."""
     dia = HOJE - timedelta(days=10)
@@ -28,6 +29,7 @@ def _cenario(monkeypatch, recebimentos: float, pagamentos: float, renda_passada:
 
     monkeypatch.setattr(pa, "_movimentos_por_dia", movimentos_por_dia)
     monkeypatch.setattr(pa, "fluxos_conhecidos_no_horizonte", lambda contexto, dias, empresa: list(fluxos_futuros))
+    monkeypatch.setattr(vendas, "vendas_recebidas", lambda db, empresa, depois_de, ate: vendas_no_periodo)
     return SimpleNamespace(ids_conhecidos={ID_RENDA})
 
 
@@ -89,3 +91,21 @@ def test_sem_historico_de_90_dias_nao_ha_ritmo(monkeypatch):
     curto = [SimpleNamespace(dia=HOJE - timedelta(days=30), saldo_contabilistico=1),
              SimpleNamespace(dia=HOJE, saldo_contabilistico=1)]
     assert pa.ritmo_atual(None, "EMPRESA X", curto, DIAS_FUTUROS, contexto) is None
+
+
+def test_cenario_so_vendas_do_indice_tira_as_vendas_do_ritmo(monkeypatch):
+    # 90 dias: recebeu 9 000 de vendas + 9 000 de outros, pagou 27 000 -> resto -100 €/dia, sem vendas -200 €/dia;
+    # o índice tem um reforço de sinal de 4 000 € ao dia 5
+    reforco = {"dia": HOJE + timedelta(days=5), "valor": 4_000.0, "fonte": "comercial"}
+    contexto = _cenario(monkeypatch, 18_000, 27_000, fluxos_futuros=[reforco], vendas_no_periodo=9_000)
+    r = pa.ritmo_atual(None, "EMPRESA X", _historico(19_000, 10_000), DIAS_FUTUROS, contexto)
+
+    assert r["resto_diario"] == -100
+    assert r["previsao"][4]["valor"] == 10_000 - 500  # ao ritmo atual o comercial não entra (já está no ritmo)
+    indice = r["so_vendas_do_indice"]
+    assert indice["resto_sem_vendas_diario"] == -200
+    assert indice["previsao"][3]["valor"] == 10_000 - 800
+    assert indice["previsao"][4]["valor"] == 10_000 - 1_000 + 4_000  # o reforço entra no dia marcado
+    assert indice["comercial_no_horizonte"] == 4_000
+    # 14 000 € a -200 €/dia: abaixo de -1 000 € ao dia 76 (75 dias -> -1 000 €, ainda não abaixo)
+    assert indice["tempo_de_vida"]["dias"] == 76

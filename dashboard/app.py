@@ -572,6 +572,15 @@ def _explicar_ritmo(ritmo, fluxos_previstos: list, dias_horizonte: int) -> str:
     return texto
 
 
+def _explicar_indice(indice, ritmo) -> str:
+    """Frase do cenário "só vendas do índice" (linha roxa)."""
+    n = ritmo["janela_dias"]
+    return (f" A roxo: o mesmo sem as vendas dos últimos {n} dias ({indice['vendas_no_periodo']:,.0f} € de CPCV/"
+            f"escrituras, {indice['vendas_no_periodo'] / n:,.0f} €/dia), com só as vendas marcadas no índice comercial "
+            f"nas datas marcadas ({indice['comercial_no_horizonte']:,.0f} € neste horizonte) - quanto tempo dura o "
+            f"dinheiro se não se assinar mais nenhum negócio.")
+
+
 def _kpis_painel(fc: dict, horizonte: int, incluir_comercial: bool, risco):
     """Desenha os KPIs e devolve um espaço reservado para o KPI do risco de
     liquidez - esse demora ~20 s a calcular para as 31 empresas e é
@@ -597,12 +606,22 @@ def _kpis_painel(fc: dict, horizonte: int, incluir_comercial: bool, risco):
             help="Com recebimentos do comercial, se o interruptor estiver ligado.",
         )
         vida_valor, vida_delta = _tempo_de_vida(fc.get("ritmo_atual"))
+        indice = (fc.get("ritmo_atual") or {}).get("so_vendas_do_indice") if incluir_comercial else None
         st.metric(
             "Tempo de vida", vida_valor, vida_delta, delta_color="off", border=True,
             help="Quantos dias até o saldo ficar abaixo de −1 000 € (o mesmo limite do risco de liquidez), "
                  "seguindo a linha laranja: os fluxos já conhecidos da previsão mais o resto dos recebimentos e "
                  "pagamentos ao ritmo dos últimos 90 dias. Calculado a 1 ano, por isso não depende do horizonte.",
         )
+        if indice:
+            vida_indice_valor, vida_indice_delta = _tempo_de_vida(indice)
+            st.metric(
+                "Tempo de vida · só vendas do índice", vida_indice_valor, vida_indice_delta, delta_color="off",
+                border=True,
+                help="O mesmo, mas sem as vendas (CPCV/escrituras) dos últimos 90 dias no ritmo e com só os "
+                     "sinais, reforços e escrituras marcados no índice comercial, nas datas marcadas - quanto "
+                     "tempo dura o dinheiro se não se assinar mais nenhum negócio. Linha roxa no gráfico.",
+            )
         st.metric(
             "Intervalo provável (80%)",
             f"{banda['baixa'][-1]['valor'] / 1000:,.0f}k – {banda['alta'][-1]['valor'] / 1000:,.0f}k €" if banda else "—",
@@ -710,8 +729,11 @@ SERIE_HISTORICO_FC = "Saldo real"
 # isso a linha depois de "Hoje" (quase plana, aos degraus) confundia
 SERIE_MEDIA_FC = "Só fluxos já conhecidos"
 SERIE_RITMO_FC = "Previsão ao ritmo atual"
+SERIE_INDICE_FC = "Só vendas do índice"
 # 2.º slot categórico validado (o 1.º, azul, é o saldo real)
 COR_RITMO_FC = "#eb6834"
+# slot categórico validado (o do Gradient Boosting, que não aparece no Forecast)
+COR_INDICE_FC = "#4a3aa7"
 SERIE_TRAJETORIA_FC = "Trajetória possível"
 SERIE_INTERVALO_FC = "Intervalo provável (80%)"
 COR_TRAJETORIA_FC = "#9aa3ad"
@@ -728,12 +750,13 @@ def _regra_hoje(dia_iso: str):
 
 
 def grafico_saldo_forecast(historico_pontos, previsao_por_modelo, banda, trajetorias, y_titulo="Saldo total (EUR)",
-                           ritmo=None, dia_esgota=None):
+                           ritmo=None, dia_esgota=None, ritmo_indice=None, dia_esgota_indice=None):
     """Saldo real + previsão, com UMA legenda para tudo o que está no
     gráfico (real, fluxos conhecidos, ritmo atual, trajetórias, intervalo),
     cores distintas e a linha "Hoje". `ritmo` é a reta "ao ritmo dos últimos
     90 dias" e `dia_esgota` o dia em que ela passa abaixo do limite de
-    descoberto (marcado se cair dentro do horizonte)."""
+    descoberto (marcado se cair dentro do horizonte). `ritmo_indice` /
+    `dia_esgota_indice`: o cenário "só vendas do índice" comercial."""
     ultimo = historico_pontos[-1] if historico_pontos else None
     ligar = [ultimo] if ultimo else []
 
@@ -749,6 +772,9 @@ def grafico_saldo_forecast(historico_pontos, previsao_por_modelo, banda, trajeto
     if ritmo:
         linhas.extend({"dia": p["dia"], "valor": p["valor"], "serie": SERIE_RITMO_FC, "grupo": "ritmo"}
                       for p in ligar + list(ritmo))
+    if ritmo_indice:
+        linhas.extend({"dia": p["dia"], "valor": p["valor"], "serie": SERIE_INDICE_FC, "grupo": "indice"}
+                      for p in ligar + list(ritmo_indice))
     df = pd.DataFrame(linhas)
 
     # a linha "só fluxos já conhecidos" é referência (cinzenta, fina) - a
@@ -756,6 +782,7 @@ def grafico_saldo_forecast(historico_pontos, previsao_por_modelo, banda, trajeto
     cores = {
         SERIE_HISTORICO_FC: CORES_PREVISAO["Histórico"],
         SERIE_RITMO_FC: COR_RITMO_FC,
+        SERIE_INDICE_FC: COR_INDICE_FC,
         SERIE_MEDIA_FC: COR_REFERENCIA_PLANO,
         SERIE_TRAJETORIA_FC: COR_TRAJETORIA_FC,
     }
@@ -780,8 +807,9 @@ def grafico_saldo_forecast(historico_pontos, previsao_por_modelo, banda, trajeto
         title=None, orient="top", direction="horizontal", symbolType="square", symbolOpacity=0.3, symbolSize=200,
     )
 
-    espessura = {SERIE_HISTORICO_FC: 2.5, SERIE_RITMO_FC: 3, SERIE_MEDIA_FC: 1.5, SERIE_TRAJETORIA_FC: 1}
-    tracejado = {SERIE_MEDIA_FC: [6, 3], SERIE_RITMO_FC: [6, 3]}
+    espessura = {SERIE_HISTORICO_FC: 2.5, SERIE_RITMO_FC: 3, SERIE_INDICE_FC: 3, SERIE_MEDIA_FC: 1.5,
+                 SERIE_TRAJETORIA_FC: 1}
+    tracejado = {SERIE_MEDIA_FC: [6, 3], SERIE_RITMO_FC: [6, 3], SERIE_INDICE_FC: [6, 3]}
     df["espessura"] = df["serie"].map(lambda s: espessura.get(s, 1.5))
     df["tracejado"] = df["serie"].map(lambda s: "sim" if s in tracejado or s not in espessura else "nao")
 
@@ -817,13 +845,16 @@ def grafico_saldo_forecast(historico_pontos, previsao_por_modelo, banda, trajeto
     ).add_params(selecao))
     if ultimo:
         camadas.append(_regra_hoje(ultimo["dia"]))
-    fim_horizonte = max((p["dia"] for p in (ritmo or [])), default=None)
-    if dia_esgota and fim_horizonte and dia_esgota <= fim_horizonte:
-        df_esgota = pd.DataFrame({"dia": [dia_esgota], "rotulo": [f"Esgota-se ~{pd.to_datetime(dia_esgota):%d/%m}"]})
-        camadas.append(alt.Chart(df_esgota).mark_rule(color=COR_ERRO, strokeDash=[4, 3], strokeWidth=1.5).encode(x="dia:T"))
+    fim_horizonte = max((p["dia"] for p in (ritmo or ritmo_indice or [])), default=None)
+    marcas = [(dia_esgota, "Esgota-se", COR_RITMO_FC, -8), (dia_esgota_indice, "Só índice: esgota-se", COR_INDICE_FC, -24)]
+    for dia, texto, cor, dy in marcas:
+        if not (dia and fim_horizonte and dia <= fim_horizonte):
+            continue
+        df_esgota = pd.DataFrame({"dia": [dia], "rotulo": [f"{texto} ~{pd.to_datetime(dia):%d/%m}"]})
+        camadas.append(alt.Chart(df_esgota).mark_rule(color=cor, strokeDash=[4, 3], strokeWidth=1.5).encode(x="dia:T"))
         # em baixo, para não colidir com o rótulo "Hoje" quando o dia está perto
         camadas.append(alt.Chart(df_esgota).mark_text(
-            align="left", dx=4, dy=-8, fontSize=11, fontWeight="bold", color=COR_ERRO,
+            align="left", dx=4, dy=dy, fontSize=11, fontWeight="bold", color=cor,
         ).encode(x="dia:T", y=alt.value(360), text="rotulo:N"))
     camadas.append(
         alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color=COR_ERRO, strokeWidth=1, opacity=0.5).encode(y="y:Q")
@@ -995,22 +1026,28 @@ def _painel_forecast():
                     "Mostrar trajetórias possíveis", value=False, key="fc_trajetorias",
                     help="4 das 1000 simulações (linhas cinzentas), para ver como o saldo pode oscilar dia a dia.",
                 )
+            # com o comercial ligado, o cenário "só vendas do índice" substitui a
+            # antiga linha "central + comercial" (o índice somado por cima da
+            # central não é um cenário coerente, e eram 4 linhas depois de Hoje)
             series_fc = {"ensemble": fc["previsao"]}
-            if incluir_comercial_fc and fc.get("previsao_com_comercial"):
-                series_fc["com_comercial"] = fc["previsao_com_comercial"]
             ritmo_fc = fc.get("ritmo_atual")
+            indice_fc = (ritmo_fc or {}).get("so_vendas_do_indice") if incluir_comercial_fc else None
             st.altair_chart(
                 grafico_saldo_forecast(
                     fc["historico"][-90:], series_fc, fc.get("banda_incerteza") if mostrar_intervalo else None,
                     fc.get("trajetorias_exemplo") if mostrar_trajetorias else None, "Saldo (EUR)",
                     ritmo=ritmo_fc["previsao"] if ritmo_fc else None,
                     dia_esgota=ritmo_fc["tempo_de_vida"]["dia"] if ritmo_fc else None,
+                    ritmo_indice=indice_fc["previsao"] if indice_fc else None,
+                    dia_esgota_indice=indice_fc["tempo_de_vida"]["dia"] if indice_fc else None,
                 ),
                 width="stretch",
             )
             st.caption(
                 "Depois de \"Hoje\", a cinzento: só o que já se sabe (rendas, recorrentes, Mapa com data futura). "
                 + _explicar_ritmo(ritmo_fc, fc.get("fluxos_conhecidos_previstos") or [], len(fc["previsao"]))
+                + (_explicar_indice(indice_fc, ritmo_fc) if indice_fc else
+                   " Liga \"Com recebimentos do comercial\" para ver o cenário só com as vendas marcadas no índice.")
             )
         with col_fluxos:
             _cartao_fluxos_proximos(fc.get("fluxos_conhecidos_previstos") or [], incluir_comercial_fc)
@@ -2163,6 +2200,106 @@ with aba_saldos:
             else:
                 st.info("Sem histórico para esta empresa.")
 
+ESTADOS_NEGOCIO = {"concluído": "✅ concluído", "em dia": "🟢 em dia", "por confirmar": "⚠️ por confirmar"}
+ESTADOS_PAGAMENTO = {
+    "recebido": "✅ recebido (Mapa)", "recebido (índice)": "✅ recebido (índice)",
+    "por confirmar": "⚠️ por confirmar", "agendado": "🗓 agendado",
+}
+SERIES_VENDAS_MES = {"Recebido (Mapa)": CORES_PREVISAO["Histórico"], "Agendado (índice)": COR_RITMO_FC}
+
+
+def _secao_vendas_indice(empresa, periodo: dict):
+    """Vendas do índice do Departamento Comercial em detalhe: cada negócio
+    com a agenda (sinal, reforços, escritura), o que já entrou segundo o
+    Mapa, o que falta e o próximo pagamento - ver app/services/vendas.py."""
+    with st.container(horizontal=True, vertical_alignment="center"):
+        st.caption(
+            "Do Índice do Departamento Comercial, cruzado com o Mapa: cada pagamento da agenda casa com um "
+            "recebimento com a mesma Ref. na descrição, de valor e data parecidos. \"Por confirmar\" = a data "
+            "já passou e não há entrada identificada - pode estar em atraso ou ter entrado numa linha sem a Ref."
+        )
+        so_periodo = st.toggle("Só negócios com datas no período", value=False, key="vendas_so_periodo")
+    try:
+        dados = api.negocios_comerciais(empresa, **(periodo if so_periodo else {}))
+    except Exception as e:
+        st.error(f"Erro a consultar o índice comercial: {e}")
+        return
+    negocios, resumo = dados["negocios"], dados["resumo"]
+    if not negocios:
+        st.info("Sem negócios no índice comercial para este filtro (ou o índice não está acessível nesta máquina).")
+        return
+
+    with st.container(horizontal=True):
+        st.metric("Negócios", resumo["negocios"], border=True)
+        st.metric("Valor dos negócios", f"{resumo['valor_proposto']:,.0f} €", border=True)
+        st.metric("Recebido", f"{resumo['recebido']:,.0f} €", border=True,
+                  help="Pagamentos da agenda casados com o Mapa, mais o sinal que o índice regista como recebido.")
+        st.metric("Por receber", f"{resumo['por_receber']:,.0f} €", border=True)
+        st.metric("Por confirmar", f"{resumo['por_confirmar']:,.0f} €",
+                  f"{resumo['n_por_confirmar']} negócio(s)" if resumo["n_por_confirmar"] else None,
+                  delta_color="off", border=True,
+                  help="Reforços/escrituras com data já passada sem entrada identificada no Mapa.")
+        st.metric("Agendado · 30 dias", f"{resumo['proximos_30_dias']:,.0f} €", border=True,
+                  help="Sinais, reforços e escrituras marcados no índice para os próximos 30 dias.")
+
+    if dados.get("por_mes"):
+        df_mes = pd.DataFrame(dados["por_mes"])
+        df_mes["mes"] = pd.to_datetime(df_mes["mes"] + "-01")
+        st.altair_chart(
+            alt.Chart(df_mes).mark_bar(size=22, cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
+                x=alt.X("yearmonth(mes):T", title=None, axis=alt.Axis(format="%m/%Y", labelAngle=-45)),
+                y=alt.Y("valor:Q", title="EUR por mês", axis=alt.Axis(format=",.0f")),
+                color=alt.Color("serie:N", scale=alt.Scale(domain=list(SERIES_VENDAS_MES),
+                                                           range=list(SERIES_VENDAS_MES.values())),
+                                legend=alt.Legend(title=None, orient="top")),
+                tooltip=[alt.Tooltip("yearmonth(mes):T", title="Mês", format="%m/%Y"), "serie:N",
+                         alt.Tooltip("valor:Q", title="Valor", format=",.0f")],
+            ).properties(height=240, title="Vendas por mês: recebidas (Mapa) e agendadas (índice)"),
+            width="stretch",
+        )
+
+    def _proximo(n):
+        p = n["proximo_pagamento"]
+        return f"{p['tipo']} · {pd.to_datetime(p['dia']):%d/%m/%Y} · {p['valor']:,.0f} €" if p else "—"
+
+    df_neg = pd.DataFrame([{
+        "Estado": ESTADOS_NEGOCIO.get(n["estado"], n["estado"]), "Ref.": n["ref"],
+        "Empreendimento": n["empreendimento"], "Fração": n["fracao"], "Cliente": n["cliente"],
+        "Empresa": n["empresa"], "Valor do negócio": n["valor_proposto"],
+        "Data CPCV": pd.to_datetime(n["data_cpcv"]) if n["data_cpcv"] else None,
+        "Recebido": n["recebido"], "Por receber": n["por_receber"], "Por confirmar": n["por_confirmar"],
+        "Próximo pagamento": _proximo(n),
+    } for n in negocios])
+    selecao = st.dataframe(
+        df_neg, width="stretch", hide_index=True, key="tabela_vendas_indice",
+        on_select="rerun", selection_mode="single-row",
+        column_config={
+            **{c: st.column_config.NumberColumn(format="euro")
+               for c in ("Valor do negócio", "Recebido", "Por receber", "Por confirmar")},
+            "Data CPCV": st.column_config.DateColumn(format="DD/MM/YYYY"),
+        },
+    )
+    linhas_sel = selecao.selection.rows if selecao else []
+    if not linhas_sel:
+        st.caption("Clica numa linha para ver a agenda de pagamentos desse negócio.")
+        return
+    n = negocios[linhas_sel[0]]
+    st.markdown(f"**Agenda · {n['ref']} · {n['empreendimento'] or ''} {n['fracao'] or ''} · {n['cliente'] or ''}**")
+    st.dataframe(
+        pd.DataFrame([{
+            "Pagamento": p["tipo"], "Data marcada": pd.to_datetime(p["dia"]), "Valor": p["valor"],
+            "Estado": ESTADOS_PAGAMENTO.get(p["estado"], p["estado"]),
+            "Recebido em": pd.to_datetime(p["recebido_em"]) if p.get("recebido_em") else None,
+        } for p in n["pagamentos"]]),
+        width="stretch", hide_index=True,
+        column_config={
+            "Valor": st.column_config.NumberColumn(format="euro"),
+            "Data marcada": st.column_config.DateColumn(format="DD/MM/YYYY"),
+            "Recebido em": st.column_config.DateColumn(format="DD/MM/YYYY"),
+        },
+    )
+
+
 with aba_analise_extratos:
     try:
         empresas_extratos = api.listar_empresas()
@@ -2233,7 +2370,7 @@ with aba_analise_extratos:
 
     sep_receb, sep_pag, sep_cpcv_mapa, sep_cpcv_indice = st.tabs([
         f"Recebimentos ({len(linhas_receb)})", f"Pagamentos ({len(linhas_pag)})",
-        f"CPCVs / Escrituras - Mapa ({len(linhas_cpcv_escritura)})", "CPCVs - Índice comercial",
+        f"CPCVs / Escrituras - Mapa ({len(linhas_cpcv_escritura)})", "Vendas - Índice comercial",
     ])
     with sep_receb:
         tabela_extratos_colorida(linhas_receb, cores_receb, "Sem recebimentos registados no período.")
@@ -2283,36 +2420,7 @@ with aba_analise_extratos:
             st.info("Sem CPCVs/Escrituras recebidos registados no período.")
 
     with sep_cpcv_indice:
-        st.caption(
-            "Do Índice do Departamento Comercial (SharePoint): referência, empreendimento e "
-            "cliente do negócio, por data do CPCV - todas as empresas (ver COMERCIAL_INDICE_PATH)."
-        )
-        try:
-            cpcv_escrituras = api.listar_cpcv_escrituras(**periodo_extratos)
-        except Exception as e:
-            st.error(f"Erro a consultar o índice comercial: {e}")
-            cpcv_escrituras = []
-
-        if cpcv_escrituras:
-            df_cpcv_comercial = pd.DataFrame(cpcv_escrituras)[[
-                "ref", "empreendimento", "fracao", "cliente", "valor_proposto", "valor_recebido", "data_cpcv",
-            ]].rename(columns={
-                "ref": "Ref.", "empreendimento": "Espaço Físico", "fracao": "Fração", "cliente": "Cliente",
-                "valor_proposto": "Valor proposto", "valor_recebido": "Valor recebido",
-                "data_cpcv": "Data CPCV",
-            })
-            st.dataframe(
-                df_cpcv_comercial, width="stretch", hide_index=True,
-                column_config={
-                    "Valor proposto": st.column_config.NumberColumn(format="euro"),
-                    "Valor recebido": st.column_config.NumberColumn(format="euro"),
-                },
-            )
-        else:
-            st.info(
-                "Sem CPCVs/Escrituras no período (ou o índice comercial não está "
-                "acessível nesta máquina)."
-            )
+        _secao_vendas_indice(empresa_extratos, periodo_extratos)
 
 def _rodape_resposta(mensagem: dict):
     """Por baixo de cada resposta do Assistente: as ferramentas consultadas,

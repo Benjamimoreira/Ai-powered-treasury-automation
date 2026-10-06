@@ -255,3 +255,37 @@ def mapa_espaco_fracao_por_ref() -> dict:
             "fracao": _texto_ou_none(linha[COL_FRACAO]),
         }
     return resultado
+
+
+def listar_negocios() -> list:
+    """Um negócio por linha do índice comercial (com REF), com a agenda de
+    pagamentos do comprador: o sinal no CPCV (data do CPCV + valor
+    recebido), os reforços de sinal e a escritura - cada um com data e
+    valor quando marcados. Base da vista detalhada de Análise de Extratos
+    (ver vendas.detalhe_negocios); lista vazia se o ficheiro não existir."""
+    dados = _ler_linhas_indice()
+    resultado = []
+    for _, linha in dados.iterrows():
+        ref = _texto_ou_none(linha.get(COL_REF))
+        if not ref:
+            continue
+        data_cpcv = _parse_data_cpcv(linha.get(COL_DATA_CPCV))
+        pagamentos = [{"tipo": "Sinal (CPCV)", "dia": data_cpcv, "valor": _parse_valor_misto(linha.get(COL_VALOR_RECEBIDO))}]
+        for col_data, col_valor, tipo in AGENDA_RECEBIMENTOS:
+            pagamentos.append({
+                "tipo": tipo,
+                "dia": _parse_data_agenda(linha.get(col_data), data_cpcv.day if data_cpcv else None),
+                "valor": _parse_valor_misto(linha.get(col_valor)),
+            })
+        resultado.append({
+            "ref": ref.strip().upper(),
+            "empreendimento": _texto_ou_none(linha.get(COL_ESPACO_FISICO)),
+            "fracao": _texto_ou_none(linha.get(COL_FRACAO)),
+            "cliente": _texto_ou_none(linha.get(COL_NOME_CLIENTE)),
+            "empresa": _texto_ou_none(linha.get(COL_EMPRESA)),
+            "valor_tabela": _parse_valor_misto(linha.get(COL_VALOR_TABELA)),
+            "valor_proposto": _parse_valor_misto(linha.get(COL_VALOR_PROPOSTO)),
+            "data_cpcv": data_cpcv,
+            "pagamentos": [p for p in pagamentos if p["dia"] is not None and p["valor"] and p["valor"] > 0],
+        })
+    return resultado
