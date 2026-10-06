@@ -240,18 +240,23 @@ TOLERANCIA_COBERTURA = 0.2
 TOLERANCIA_COBERTURA_MIN_EUR = 5000
 
 
-def ritmo_atual(db: Session, empresa: Optional[str], historico: list, dias_futuros: list,
-                ate: date = None, janela_dias: int = JANELA_RITMO_DIAS) -> Optional[dict]:
-    """Saldo "ao ritmo atual": se os próximos dias forem como os últimos
-    `janela_dias`, a que ritmo o saldo desce (ou sobe) e quando chega a
-    -DESCOBERTO_MATERIAL_EUR - o tempo de vida.
+DIAS_TEMPO_DE_VIDA = 365  # a linha é calculada para 1 ano, para o tempo de vida não depender do horizonte
 
-    O ritmo vem dos recebimentos e pagamentos dos extratos nesse período,
-    verificados contra a variação real do saldo: quando os movimentos não a
-    explicam (faltam entradas nos extratos - é o caso do grupo), usa-se a
-    variação do saldo, e `fonte` diz qual foi usada. É uma reta - a mesma
-    em qualquer horizonte - e não soma os fluxos conhecidos, que já estão
-    nos últimos 90 dias (rendas, recorrentes)."""
+
+def ritmo_atual(db: Session, empresa: Optional[str], historico: list, dias_futuros: list,
+                contexto: ContextoPrevisao, ate: date = None, janela_dias: int = JANELA_RITMO_DIAS) -> Optional[dict]:
+    """Saldo "ao ritmo atual": a previsão dos fluxos já conhecidos (rendas,
+    recorrentes, Mapa com data futura, nos dias em que caem) mais o resto
+    dos recebimentos e pagamentos ao ritmo dos últimos `janela_dias` - e
+    quando essa linha chega a -DESCOBERTO_MATERIAL_EUR (o tempo de vida).
+
+    O "resto" são os movimentos desse período que não são fluxos conhecidos
+    (esses já entram pela previsão - contá-los também no ritmo seria contar
+    duas vezes). Verifica-se contra a variação real do saldo: quando os
+    extratos não a explicam (faltam entradas - é o caso do grupo), o ritmo
+    do resto sai da variação do saldo menos os fluxos conhecidos do período,
+    e `fonte` diz qual foi usada. O tempo de vida vem da linha a
+    DIAS_TEMPO_DE_VIDA dias, por isso é o mesmo em qualquer horizonte."""
     partida = historico[-1]
     inicio = next((h for h in reversed(historico) if h.dia <= partida.dia - timedelta(days=janela_dias)), None)
     if inicio is None:
@@ -262,32 +267,53 @@ def ritmo_atual(db: Session, empresa: Optional[str], historico: list, dias_futur
     excluir = set()
     if empresa is None:  # no grupo, as transferências entre empresas anulam-se
         excluir = ids_intragrupo([m for m in db.query(MovimentoBancario).all() if ate is None or m.dia <= ate])
-    janela = [s for s in _movimentos_por_dia(db, empresa, ate, excluir) if inicio.dia < s["dia"] <= partida.dia]
+
+    def na_janela(excluir_ids):
+        return [s for s in _movimentos_por_dia(db, empresa, ate, excluir_ids) if inicio.dia < s["dia"] <= partida.dia]
+
+    janela = na_janela(excluir)
     recebimentos = float(sum(s["recebimentos"] for s in janela))
     pagamentos = float(sum(s["pagamentos"] for s in janela))
     liquido_movimentos = recebimentos - pagamentos
+    liquido_resto = float(sum(s["recebimentos"] - s["pagamentos"] for s in na_janela(excluir | contexto.ids_conhecidos)))
+    conhecidos_no_periodo = liquido_movimentos - liquido_resto
 
     diferenca = abs(liquido_movimentos - variacao_saldo)
     tolerancia = max(TOLERANCIA_COBERTURA_MIN_EUR,
                      TOLERANCIA_COBERTURA * max(abs(liquido_movimentos), abs(variacao_saldo)))
     fonte = "movimentos" if janela and diferenca <= tolerancia else "saldo"
-    liquido_diario = (liquido_movimentos if fonte == "movimentos" else variacao_saldo) / dias
+    resto_diario = (liquido_resto if fonte == "movimentos" else variacao_saldo - conhecidos_no_periodo) / dias
 
+    # os fluxos conhecidos do próximo ano, dia a dia (sem o comercial, como a previsão central)
+    dias_ano = [partida.dia + timedelta(days=k) for k in range(1, max(DIAS_TEMPO_DE_VIDA, len(dias_futuros)) + 1)]
+    indice = {d: k for k, d in enumerate(dias_ano)}
+    conhecidos_dia = np.zeros(len(dias_ano))
+    for f in fluxos_conhecidos_no_horizonte(contexto, dias_ano, empresa):
+        if f["fonte"] != "comercial":
+            conhecidos_dia[indice[f["dia"]]] += f["valor"]
     saldo = float(partida.saldo_contabilistico)
-    linha = [saldo + liquido_diario * (i + 1) for i in range(len(dias_futuros))]
+    linha = saldo + np.cumsum(conhecidos_dia + resto_diario)
+    liquido_diario_medio = float((linha[-1] - saldo) / len(dias_ano))
+
     limite = -DESCOBERTO_MATERIAL_EUR
+    abaixo = np.nonzero(linha < limite)[0]
     if saldo <= limite:
         vida = {"dias": 0, "dia": partida.dia.isoformat()}
-    elif liquido_diario < 0:
-        n = int((saldo - limite) // -liquido_diario) + 1  # 1.º dia abaixo do limite
+    elif len(abaixo):
+        n = int(abaixo[0]) + 1
+        vida = {"dias": n, "dia": dias_ano[n - 1].isoformat()}
+    elif liquido_diario_medio < 0:  # para lá de 1 ano: em linha reta com a média desse ano
+        n = len(dias_ano) + int((linha[-1] - limite) // -liquido_diario_medio) + 1
         vida = {"dias": n, "dia": (partida.dia + timedelta(days=n)).isoformat()}
     else:
         vida = {"dias": None, "dia": None}  # recebe mais do que paga: não se esgota a este ritmo
     return {
         "janela_dias": dias, "desde": inicio.dia.isoformat(),
         "recebimentos": recebimentos, "pagamentos": pagamentos, "liquido_movimentos": liquido_movimentos,
-        "variacao_saldo": variacao_saldo, "fonte": fonte, "liquido_diario": liquido_diario,
-        "previsao": _serie(dias_futuros, linha),
+        "variacao_saldo": variacao_saldo, "fonte": fonte,
+        "conhecidos_no_periodo": conhecidos_no_periodo, "resto_diario": resto_diario,
+        "liquido_diario": liquido_diario_medio,
+        "previsao": _serie(dias_futuros, linha[:len(dias_futuros)]),
         "tempo_de_vida": {**vida, "limite_eur": limite, "alem_do_horizonte": vida["dias"] is not None
                           and vida["dias"] > len(dias_futuros)},
     }
@@ -380,7 +406,7 @@ def prever_saldo_ancorado(
         "banda_incerteza": banda,
         "risco_saldo_negativo": risco_negativo,
         "trajetorias_exemplo": trajetorias,
-        "ritmo_atual": ritmo_atual(db, empresa, historico, dias_futuros, ate) if com_banda else None,
+        "ritmo_atual": ritmo_atual(db, empresa, historico, dias_futuros, contexto, ate) if com_banda else None,
         "cashflow_semanal_previsto": _cashflow_semanal(dias_futuros, receb_fixos, pag_fixos, desvios),
         "fluxos_conhecidos_previstos": [{**f, "dia": f["dia"].isoformat()} for f in conhecidos],
     }

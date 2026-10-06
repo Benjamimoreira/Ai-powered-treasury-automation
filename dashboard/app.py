@@ -545,19 +545,31 @@ def _tempo_de_vida(ritmo):
     return f"{vida['dias']} dias", f"até {pd.to_datetime(vida['dia']):%d/%m/%Y} · {por_dia:+,.0f} €/dia"
 
 
-def _explicar_ritmo(ritmo) -> str:
-    """Uma frase com de onde vem a linha "ao ritmo dos últimos 90 dias"."""
+def _explicar_ritmo(ritmo, fluxos_previstos: list, dias_horizonte: int) -> str:
+    """De onde vem a linha "previsão ao ritmo atual": os fluxos conhecidos
+    da previsão + o resto ao ritmo dos últimos 90 dias - e quanto os fluxos
+    conhecidos previstos diferem dos que se viram nesse período (é aí que a
+    linha mais pode enganar: ex. rendas previstas que não aparecem nos extratos)."""
     if not ritmo:
         return "Menos de 90 dias de histórico de saldo - sem linha ao ritmo atual."
+    n = ritmo["janela_dias"]
     desde = f"{pd.to_datetime(ritmo['desde']):%d/%m}"
     if ritmo["fonte"] == "movimentos":
-        return (f"Ao ritmo dos últimos {ritmo['janela_dias']} dias (desde {desde}): recebeu "
-                f"{ritmo['recebimentos']:,.0f} € e pagou {ritmo['pagamentos']:,.0f} € - "
-                f"{ritmo['liquido_diario']:+,.0f} €/dia, em linha reta a partir de hoje.")
-    return (f"Ao ritmo dos últimos {ritmo['janela_dias']} dias (desde {desde}): os extratos não explicam a variação "
-            f"do saldo (movimentos {ritmo['liquido_movimentos']:+,.0f} € contra saldo {ritmo['variacao_saldo']:+,.0f} € - "
-            f"faltam movimentos nos extratos), por isso o ritmo usa a variação real do saldo: "
-            f"{ritmo['liquido_diario']:+,.0f} €/dia.")
+        origem = (f"o resto dos recebimentos e pagamentos ao ritmo dos últimos {n} dias (desde {desde}): "
+                  f"{ritmo['resto_diario']:+,.0f} €/dia.")
+    else:
+        origem = (f"o resto ao ritmo dos últimos {n} dias (desde {desde}), tirado da variação real do saldo - os "
+                  f"extratos não a explicam (movimentos {ritmo['liquido_movimentos']:+,.0f} € contra saldo "
+                  f"{ritmo['variacao_saldo']:+,.0f} €): {ritmo['resto_diario']:+,.0f} €/dia.")
+    texto = "A laranja: os fluxos já conhecidos da previsão, nos dias em que caem, mais " + origem
+    if dias_horizonte:
+        por_dia_previsto = sum(f["valor"] for f in fluxos_previstos if f["fonte"] != "comercial") / dias_horizonte
+        por_dia_visto = ritmo["conhecidos_no_periodo"] / n
+        if abs(por_dia_previsto - por_dia_visto) > max(50, 0.5 * abs(por_dia_visto)):
+            texto += (f" Atenção: a previsão conta com {por_dia_previsto:+,.0f} €/dia de fluxos conhecidos, mas nos "
+                      f"últimos {n} dias os extratos só mostraram {por_dia_visto:+,.0f} €/dia desses fluxos - se a "
+                      f"diferença não estiver a entrar (ex. rendas), a linha e o tempo de vida estão otimistas.")
+    return texto
 
 
 def _kpis_painel(fc: dict, horizonte: int, incluir_comercial: bool, risco):
@@ -587,9 +599,9 @@ def _kpis_painel(fc: dict, horizonte: int, incluir_comercial: bool, risco):
         vida_valor, vida_delta = _tempo_de_vida(fc.get("ritmo_atual"))
         st.metric(
             "Tempo de vida", vida_valor, vida_delta, delta_color="off", border=True,
-            help="Quantos dias o saldo aguenta, se os próximos dias forem como os últimos 90 (recebimentos − "
-                 "pagamentos, ou a variação real do saldo quando os extratos não a explicam), até ficar abaixo "
-                 "de −1 000 € - o mesmo limite do risco de liquidez. Linha laranja no gráfico.",
+            help="Quantos dias até o saldo ficar abaixo de −1 000 € (o mesmo limite do risco de liquidez), "
+                 "seguindo a linha laranja: os fluxos já conhecidos da previsão mais o resto dos recebimentos e "
+                 "pagamentos ao ritmo dos últimos 90 dias. Calculado a 1 ano, por isso não depende do horizonte.",
         )
         st.metric(
             "Intervalo provável (80%)",
@@ -697,7 +709,7 @@ SERIE_HISTORICO_FC = "Saldo real"
 # data futura) - "Previsão" fazia parecer que era o saldo esperado, e por
 # isso a linha depois de "Hoje" (quase plana, aos degraus) confundia
 SERIE_MEDIA_FC = "Só fluxos já conhecidos"
-SERIE_RITMO_FC = "Ao ritmo dos últimos 90 dias"
+SERIE_RITMO_FC = "Previsão ao ritmo atual"
 # 2.º slot categórico validado (o 1.º, azul, é o saldo real)
 COR_RITMO_FC = "#eb6834"
 SERIE_TRAJETORIA_FC = "Trajetória possível"
@@ -997,9 +1009,8 @@ def _painel_forecast():
                 width="stretch",
             )
             st.caption(
-                "Depois de \"Hoje\": a laranja, o saldo se os próximos dias forem como os últimos 90; "
-                "a cinzento, só o que já se sabe (rendas, recorrentes, Mapa com data futura). "
-                + _explicar_ritmo(ritmo_fc)
+                "Depois de \"Hoje\", a cinzento: só o que já se sabe (rendas, recorrentes, Mapa com data futura). "
+                + _explicar_ritmo(ritmo_fc, fc.get("fluxos_conhecidos_previstos") or [], len(fc["previsao"]))
             )
         with col_fluxos:
             _cartao_fluxos_proximos(fc.get("fluxos_conhecidos_previstos") or [], incluir_comercial_fc)
