@@ -97,25 +97,30 @@ O limiar fica cerca de 4 casos abaixo dos 71,7 % medidos: uma margem para a vari
 
 ## Observabilidade
 
-Cada chamada ao LLM fica registada com prompt, resposta, tokens, latência e modelo:
-- no **Arize Phoenix** (`http://localhost:6006`), local;
-- no **LangSmith**, opcional: com `LANGSMITH_TRACING=true`, o grafo do agente aparece passo a passo, com as chamadas ao LLM lá dentro.
+Desde 06/10/2026, a observabilidade dos LLMs é só o **Arize Phoenix** (`http://localhost:6006`), num container local: nem os traces com dados reais nem o conjunto de avaliação saem da máquina. O LangSmith foi desligado. Ver [`llm_tracing.py`](../app/services/llm_tracing.py).
 
-Ver [`app/services/llm_tracing.py`](../app/services/llm_tracing.py).
+| O quê | Como aparece no Phoenix |
+|---|---|
+| Pergunta ao Assistente | Trace `assistente`: uma ronda do modelo por span LLM (`assistente_llm`, com o prompt, as chamadas a ferramentas e os tokens) e um span por ferramenta, com o resultado |
+| Sugestão para um caso ambíguo | Span LLM com o prompt, a resposta, os tokens e o modelo |
+| Agente de investigação | Trace `agente_ambiguos` com o grafo LangGraph nó a nó, e a chamada ao LLM dentro do nó que a fez |
+| Feedback, guardrail, juiz, anotações | Anotações de cada trace |
 
-### Experiências no LangSmith
+### Experiências no Phoenix
 
-`python -m app.evals.avaliar --langsmith` corre a mesma avaliação como uma **experiência** no LangSmith ([`app/evals/langsmith_experiencias.py`](../app/evals/langsmith_experiencias.py)):
+`python -m app.evals.avaliar --phoenix` corre a mesma avaliação como uma **experiência** no Phoenix ([`phoenix_experiencias.py`](../app/evals/phoenix_experiencias.py)):
 
 - **Dataset** `tesouraria-ambiguos-v2`: os 60 casos. Cada caso é o *input*, e a resposta esperada e a categoria ficam como *referência*, por isso o modelo nunca as vê. É sincronizado pelo id do caso: correr duas vezes não duplica, e uma nova versão do conjunto dá um dataset novo.
-- **Uma experiência por corrida** (`<estratégia>-<modelo>`), com três métricas por caso (`certa`, `resposta_valida`, `decidido_sem_llm`) e os traces do LLM e do agente dentro de cada caso. No LangSmith, *Datasets → tesouraria-ambiguos-v2 → Compare* põe as corridas lado a lado e deixa abrir cada caso falhado.
-- **A porta de qualidade do deploy também corre assim**, por isso cada deploy que mexe no LLM fica registado como uma experiência. Se o LangSmith não responder, a avaliação corre localmente e o limiar é verificado na mesma: a porta nunca depende de um serviço externo.
+- **Uma experiência por corrida** (`<estratégia>-<modelo>`), com três avaliações por caso (`certa`, `resposta_valida`, `decidido_sem_llm`). Cada run aponta para o trace do caso, por isso um caso falhado abre-se com o prompt e, na estratégia agente, o grafo inteiro. Em *Datasets → tesouraria-ambiguos-v2 → Experiments* dá para comparar corridas lado a lado.
+- **A porta de qualidade do deploy também corre assim**, com o commit da imagem nos metadados, por isso cada deploy que mexe no LLM fica registado como uma experiência. Se o Phoenix não responder, a avaliação corre localmente e o limiar é verificado na mesma.
 
-Comparar dois modelos passa a ser correr os dois e abrir o *Compare*:
+Comparar dois modelos passa a ser correr os dois e abrir as experiências:
 ```powershell
-python -m app.evals.avaliar --estrategia hibrida --langsmith
-python -m app.evals.avaliar --estrategia hibrida --langsmith --modelo qwen2.5:7b
+python -m app.evals.avaliar --estrategia hibrida --phoenix
+python -m app.evals.avaliar --estrategia hibrida --phoenix --modelo qwen2.5:7b
 ```
+
+O `--langsmith` ([`langsmith_experiencias.py`](../app/evals/langsmith_experiencias.py)) continua a funcionar, mas já não é usado.
 
 ## Avaliação em produção (o Assistente)
 

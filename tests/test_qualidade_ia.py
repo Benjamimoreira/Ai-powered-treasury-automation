@@ -158,3 +158,60 @@ def test_anotar_trace_novo_repete_enquanto_o_phoenix_nao_tem_o_trace(monkeypatch
 
     assert phoenix_cliente._enviar_anotacao("http://phoenix", "t1", {"data": []}, tentativas=6) is True
     assert len(pedidos) == 3
+
+
+def test_guardrail_aceita_a_notacao_inglesa_e_a_ambigua():
+    dados = ['{"saldo_contabilistico_total": 233203.52, "saldo_disponivel_total": 222063.01, "taxa": 1.234}']
+    resposta = ("O saldo é de € 233,203.52 no contabilístico e de 222,063.01 € no disponível; "
+                "a taxa é 1,234 e o total ronda 233,204 €.")
+    resultado = guardrail_numeros.verificar(resposta, dados)
+    # 233,204 € em inglês = 233 204 €, a 0,48 € de 233 203,52 - dentro da tolerância de ±0,5 €
+    assert resultado == {"verificados": 4, "nao_verificados": []}
+
+
+def test_rondas_do_assistente_ficam_como_spans_llm(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace as NS
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from app.services import llm_tracing
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(llm_tracing, "_tracer", provider.get_tracer("teste"))
+    monkeypatch.setattr(llm_tracing, "_iniciado", True)
+
+    def bloco(content=None, tool_calls=None, usage=None):
+        delta = NS(content=content, tool_calls=tool_calls, role=None)
+        return NS(choices=[NS(delta=delta)] if usage is None else [], usage=usage)
+
+    chamada = lambda arg, nome=None: [NS(index=0, function=NS(name=nome, arguments=arg))]  # noqa: E731
+
+    class Cliente:
+        async def chat_completion(self, **kwargs):
+            assert kwargs["stream_options"] == {"include_usage": True}
+
+            async def fluxo():
+                yield bloco(tool_calls=chamada("", "saldo_total_tool"))
+                yield bloco(tool_calls=chamada("{}"))
+                yield bloco(usage=NS(prompt_tokens=2192, completion_tokens=17))
+            return fluxo()
+
+    cliente = Cliente()
+    llm_tracing.instrumentar_cliente_chat(cliente, "ollama", "qwen2.5:3b")
+
+    async def correr():
+        fluxo = await cliente.chat_completion(messages=[{"role": "user", "content": "Saldo?"}], tools=[{}], stream=True)
+        return [b async for b in fluxo]
+
+    assert len(asyncio.run(correr())) == 3  # o Agent continua a receber todos os blocos
+    (span,) = exporter.get_finished_spans()
+    a = span.attributes
+    assert a["openinference.span.kind"] == "LLM" and a["llm.model_name"] == "qwen2.5:3b"
+    assert a["llm.token_count.prompt"] == 2192 and a["llm.token_count.completion"] == 17
+    assert a["llm.output_messages.0.message.tool_calls.0.tool_call.function.name"] == "saldo_total_tool"
+    assert a["llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments"] == "{}"

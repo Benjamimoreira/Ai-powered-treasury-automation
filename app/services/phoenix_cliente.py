@@ -118,3 +118,50 @@ def enviar_dataset(nome: str, descricao: str, entradas: List[dict], saidas: List
     })
     resposta.raise_for_status()
     return resposta.json().get("data", {}).get("dataset_id")
+
+
+# --- experiências (avaliação offline: app/evals/phoenix_experiencias.py) ---
+
+def _exigir_base() -> str:
+    base = url_base()
+    if not base:
+        raise RuntimeError("Phoenix não configurado - define PHOENIX_URL ou PHOENIX_COLLECTOR_ENDPOINT.")
+    return base
+
+
+def obter_dataset_id(nome: str) -> Optional[str]:
+    resposta = httpx.get(f"{_exigir_base()}/v1/datasets", params={"name": nome}, timeout=TIMEOUT_S)
+    resposta.raise_for_status()
+    dados = resposta.json().get("data") or []
+    return dados[0]["id"] if dados else None
+
+
+def listar_exemplos(dataset_id: str) -> List[Dict[str, Any]]:
+    resposta = httpx.get(f"{_exigir_base()}/v1/datasets/{dataset_id}/examples", timeout=30)
+    resposta.raise_for_status()
+    return resposta.json()["data"]["examples"]
+
+
+def criar_experiencia(dataset_id: str, nome: str, metadata: Dict[str, Any]) -> str:
+    resposta = httpx.post(f"{_exigir_base()}/v1/datasets/{dataset_id}/experiments", timeout=TIMEOUT_S,
+                          json={"name": nome, "metadata": metadata, "repetitions": 1})
+    resposta.raise_for_status()
+    return resposta.json()["data"]["id"]
+
+
+def registar_run(experiencia_id: str, exemplo_id: str, saida: Dict[str, Any], inicio: str, fim: str,
+                 trace_id: Optional[str] = None, erro: Optional[str] = None) -> str:
+    resposta = httpx.post(f"{_exigir_base()}/v1/experiments/{experiencia_id}/runs", timeout=TIMEOUT_S, json={
+        "dataset_example_id": exemplo_id, "output": saida, "repetition_number": 1,
+        "start_time": inicio, "end_time": fim, "trace_id": trace_id, "error": erro,
+    })
+    resposta.raise_for_status()
+    return resposta.json()["data"]["id"]
+
+
+def avaliar_run(run_id: str, nome: str, score: float, inicio: str, fim: str, label: Optional[str] = None) -> None:
+    resposta = httpx.post(f"{_exigir_base()}/v1/experiment_evaluations", timeout=TIMEOUT_S, json={
+        "experiment_run_id": run_id, "name": nome, "annotator_kind": "CODE",
+        "start_time": inicio, "end_time": fim, "result": {"score": score, "label": label},
+    })
+    resposta.raise_for_status()

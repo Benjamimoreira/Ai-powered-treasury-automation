@@ -142,6 +142,19 @@ def avaliar(casos: list, fornecedor: str, modelo: str = None, versao_prompt: str
     return _relatorio(resultados, fornecedor, modelo, versao_prompt, estrategia)
 
 
+def avaliar_no_phoenix(casos: list, caminho_conjunto: str, fornecedor: str, modelo: str = None,
+                       versao_prompt: str = VERSAO_PROMPT, estrategia: str = "sugestao") -> dict:
+    """Mesma avaliação, corrida como experiência no Phoenix (ver
+    app/evals/phoenix_experiencias.py) - mesmas métricas e mesmo limiar."""
+    from app.evals.phoenix_experiencias import correr
+
+    config = {"fornecedor": fornecedor, "modelo": modelo, "versao_prompt": versao_prompt, "estrategia": estrategia}
+    previsoes = correr(casos, caminho_conjunto,
+                       lambda caso: prever_caso(caso, fornecedor, modelo, versao_prompt, estrategia), config)
+    resultados = [_resultado(caso, previsao) for caso, previsao in zip(casos, previsoes)]
+    return _relatorio(resultados, fornecedor, modelo, versao_prompt, estrategia)
+
+
 def avaliar_no_langsmith(casos: list, caminho_conjunto: str, fornecedor: str, modelo: str = None,
                          versao_prompt: str = VERSAO_PROMPT, estrategia: str = "sugestao") -> dict:
     """Mesma avaliação, corrida como experiência no LangSmith (ver
@@ -218,6 +231,9 @@ def main(argv=None) -> int:
     parser.add_argument("--limiar", type=float, default=None, help="exatidão mínima (0-1); abaixo sai com código 1")
     parser.add_argument("--pausa", type=float, default=0.0, help="segundos entre casos (limites de pedidos)")
     parser.add_argument("--conjunto", default=CONJUNTO)
+    parser.add_argument("--phoenix", action="store_true",
+                        help="corre como experiência no Phoenix (PHOENIX_COLLECTOR_ENDPOINT ou PHOENIX_URL); "
+                             "se o Phoenix falhar, avalia localmente na mesma")
     parser.add_argument("--langsmith", action="store_true",
                         help="corre como experiência no LangSmith (precisa de LANGSMITH_API_KEY); "
                              "se o LangSmith falhar, avalia localmente na mesma")
@@ -227,7 +243,12 @@ def main(argv=None) -> int:
     fornecedor = args.fornecedor or fornecedor_por_omissao()
     casos = carregar_casos(args.conjunto, args.max_casos)
     relatorio = None
-    if args.langsmith:
+    if args.phoenix:
+        try:
+            relatorio = avaliar_no_phoenix(casos, args.conjunto, fornecedor, args.modelo, args.prompt, args.estrategia)
+        except Exception as e:  # a porta de qualidade nunca depende do Phoenix estar disponível
+            print(f"  Phoenix indisponível ({e}) - a avaliar localmente.")
+    if relatorio is None and args.langsmith:
         try:
             relatorio = avaliar_no_langsmith(casos, args.conjunto, fornecedor, args.modelo, args.prompt, args.estrategia)
         except Exception as e:  # a porta de qualidade nunca depende do LangSmith estar disponível

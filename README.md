@@ -61,7 +61,7 @@ camadas com responsabilidades claras:
 | **LLM + RAG** | Para cada caso ambíguo, dá ao LLM o descritivo do banco, as linhas candidatas, o histórico de imputações da empresa e casos parecidos já resolvidos (embeddings `sentence-transformers`), e grava uma sugestão com justificação. Nunca aplica sozinho. |
 | **Agente de investigação (LangGraph)** | `POST /ambiguos/{id}/investigar`: recolhe provas (histórico da empresa, movimentos com o mesmo descritivo, faturas com o mesmo valor), pede mais histórico se precisar, e prepara um dossier com recomendação, confiança e alertas. Regras fixas no fim: id inexistente descartado, confiança baixa obriga a revisão, decisão sempre humana (`app/services/agente_ambiguos.py`). |
 | **Avaliação de LLMs** | Conjunto de 60 casos com resposta conhecida, construído a partir de dados reais e pseudonimizado (`evals/ambiguos.json`). `python -m app.evals.avaliar` mede exatidão, respostas válidas, latência, tokens e custo; no CI, o deploy não avança se a exatidão descer abaixo do limiar. Resultados e escolha do modelo em [docs/AVALIACAO_LLM.md](docs/AVALIACAO_LLM.md). |
-| **Observabilidade de LLMs** | Cada chamada ao LLM (sugestões, agente) fica registada no **Arize Phoenix** (self-hosted, `http://localhost:6006`) e/ou no **LangSmith** (com `LANGSMITH_TRACING=true`; o grafo do agente é rastreado pelo LangGraph), com prompt, resposta, latência e tokens (`app/services/llm_tracing.py`). |
+| **Observabilidade de LLMs** | Tudo no **Arize Phoenix** (self-hosted, `http://localhost:6006`): cada ronda do Assistente, cada sugestão e o grafo do agente nó a nó, com prompt, resposta, latência e tokens (`app/services/llm_tracing.py`). As avaliações offline são experiências no Phoenix, e o feedback, o guardrail de números e o juiz das avaliações online ficam como anotações de cada trace - ver [docs/AVALIACAO_LLM.md](docs/AVALIACAO_LLM.md). |
 | **Modelo local** | Todo o LLM (sugestões, agente, Assistente) corre localmente no **Ollama** (`qwen2.5:3b`) - nenhum dado sai da máquina. As APIs externas foram retiradas; a comparação que sustenta a escolha está em [docs/AVALIACAO_LLM.md](docs/AVALIACAO_LLM.md). |
 | **Decisão sem LLM primeiro** | Regras baratas antes do LLM (`app/services/resolucao_regras.py`): triagem pelo texto sem consultar nada, histórico só se preciso, LLM só para o que sobra. Decidem ~36 % dos casos reais com 99,7 % de precisão. |
 | **Governança** | Mapa do sistema face ao AI Act e ao RGPD (nível de risco, supervisão humana, registo de decisões, transferências, lacunas): [docs/GOVERNANCA_IA.md](docs/GOVERNANCA_IA.md). |
@@ -77,7 +77,7 @@ camadas com responsabilidades claras:
 ## Stack
 
 FastAPI · SQLAlchemy (SQLite local / Postgres em Docker) · Pydantic ·
-sentence-transformers · Ollama (LLM local) · LangGraph · LangSmith ·
+sentence-transformers · Ollama (LLM local) · LangGraph ·
 OpenTelemetry + Arize Phoenix · scikit-learn · statsmodels · MCP SDK · Streamlit ·
 pytest · Docker · GitHub Actions
 

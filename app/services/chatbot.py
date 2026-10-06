@@ -106,14 +106,22 @@ def criar_agent() -> Agent:
 
     from app.services.llm_resolver import FORNECEDORES
 
+    from app.services.llm_tracing import instrumentar_cliente_chat
+
     config = FORNECEDORES["ollama"]
-    return Agent(
-        model=os.environ.get(config["modelo_env"]) or config["modelo"],
+    modelo = os.environ.get(config["modelo_env"]) or config["modelo"]
+    agent = Agent(
+        model=modelo,
         base_url=os.environ.get(config["url_env"]) or config["url"],
         # o Ollama não pede chave, mas o cliente OpenAI exige uma
         api_key="ollama",
         servers=servers, prompt=PROMPT_SISTEMA,
     )
+    # cada ronda do modelo como um span LLM no Phoenix (prompt, chamadas a
+    # ferramentas, tokens) - sem isto só se viam as ferramentas e a resposta
+    if getattr(agent, "client", None) is not None:
+        instrumentar_cliente_chat(agent.client, "ollama", modelo)
+    return agent
 
 
 def acumular_resposta(eventos) -> dict:

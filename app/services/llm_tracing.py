@@ -95,13 +95,13 @@ def _contexto_do_no_langgraph():
     agente (LangGraph): a instrumentação do LangChain cria o span do nó mas
     não o põe como span corrente do OpenTelemetry, e sem isto a chamada ao
     LLM ficava num trace à parte em vez de dentro do nó. None = o contexto
-    corrente (o caso normal, fora do agente)."""
+    corrente (o caso normal, fora do agente). O nó tem prioridade mesmo com
+    um span corrente (ex. o "caso_avaliacao" à volta do agente), que é
+    antepassado do nó e por isso seria um pai menos preciso."""
     try:
         from opentelemetry import trace
         from openinference.instrumentation.langchain import get_current_span
 
-        if trace.get_current_span().get_span_context().is_valid:
-            return None
         no = get_current_span()
         return trace.set_span_in_context(no) if no is not None else None
     except Exception:
@@ -285,3 +285,96 @@ def registar_passo(cadeia, nome: str, tipo: str, entradas: dict, saidas: dict):
             filho.post()
         except Exception:
             pass
+
+
+def _para_json(valor) -> str:
+    return json.dumps(valor, ensure_ascii=False, default=lambda o: getattr(o, "__dict__", str(o)))
+
+
+def instrumentar_cliente_chat(cliente, fornecedor: str, modelo: str, nome: str = "assistente_llm") -> None:
+    """Cada chamada de `cliente.chat_completion` (o AsyncInferenceClient do
+    Agent do Assistente) passa a ser um span LLM no Phoenix, filho do span
+    corrente (o trace "assistente"): mensagens, texto ou chamadas a
+    ferramentas, tokens e modelo. O Agent fala com o Ollama sem passar por
+    span_llm, e sem isto cada ronda do modelo era invisível - só se viam as
+    ferramentas e a resposta final. As respostas em streaming ficam com o
+    span aberto até o stream acabar."""
+    tracer = _obter_tracer()
+    if tracer is None:
+        return
+    original = cliente.chat_completion
+
+    async def chat_completion(*args, **kwargs):
+        from opentelemetry.trace import Status, StatusCode
+
+        mensagens = kwargs.get("messages") or (args[0] if args else [])
+        span = tracer.start_span(nome)
+        span.set_attribute("openinference.span.kind", "LLM")
+        span.set_attribute("llm.provider", fornecedor)
+        span.set_attribute("llm.model_name", modelo)
+        span.set_attribute("input.value", _para_json(mensagens))
+        span.set_attribute("input.mime_type", "application/json")
+        for i, m in enumerate(mensagens):
+            m = m if isinstance(m, dict) else getattr(m, "__dict__", {})
+            span.set_attribute(f"llm.input_messages.{i}.message.role", str(m.get("role") or ""))
+            span.set_attribute(f"llm.input_messages.{i}.message.content", str(m.get("content") or ""))
+        span.set_attribute("tesouraria.n_ferramentas_disponiveis", len(kwargs.get("tools") or []))
+        streaming = bool(kwargs.get("stream"))
+        if streaming and kwargs.get("stream_options") is None:
+            kwargs["stream_options"] = {"include_usage": True}  # o último bloco traz os tokens
+        try:
+            resposta = await original(*args, **kwargs)
+        except Exception as erro:
+            span.record_exception(erro)
+            span.set_status(Status(StatusCode.ERROR, str(erro)))
+            span.end()
+            raise
+        if not streaming:
+            mensagem = resposta.choices[0].message
+            chamadas = {i: {"nome": tc.function.name, "argumentos": tc.function.arguments or ""}
+                        for i, tc in enumerate(mensagem.tool_calls or [])}
+            _fechar_span_chat(span, mensagem.content or "", chamadas, getattr(resposta, "usage", None))
+            return resposta
+        return _fluxo_com_span(resposta, span)
+
+    cliente.chat_completion = chat_completion
+
+
+async def _fluxo_com_span(resposta, span):
+    texto, chamadas, uso = [], {}, None
+    try:
+        async for bloco in resposta:
+            uso = getattr(bloco, "usage", None) or uso
+            delta = bloco.choices[0].delta if bloco.choices else None
+            if delta is not None:
+                if delta.content:
+                    texto.append(delta.content)
+                for tc in delta.tool_calls or []:
+                    chamada = chamadas.setdefault(tc.index, {"nome": None, "argumentos": ""})
+                    if tc.function and tc.function.name:
+                        chamada["nome"] = tc.function.name
+                    if tc.function and tc.function.arguments:
+                        chamada["argumentos"] += tc.function.arguments
+            yield bloco
+    finally:
+        _fechar_span_chat(span, "".join(texto), chamadas, uso)
+
+
+def _fechar_span_chat(span, texto: str, chamadas: dict, uso) -> None:
+    try:
+        saida = {"conteudo": texto, "chamadas_ferramentas": list(chamadas.values())}
+        span.set_attribute("output.value", _para_json(saida))
+        span.set_attribute("output.mime_type", "application/json")
+        span.set_attribute("llm.output_messages.0.message.role", "assistant")
+        span.set_attribute("llm.output_messages.0.message.content", texto)
+        for i, c in enumerate(chamadas.values()):
+            prefixo = f"llm.output_messages.0.message.tool_calls.{i}.tool_call.function"
+            span.set_attribute(f"{prefixo}.name", c["nome"] or "")
+            span.set_attribute(f"{prefixo}.arguments", c["argumentos"])
+        if uso is not None:
+            entrada, saida_tokens = getattr(uso, "prompt_tokens", 0) or 0, getattr(uso, "completion_tokens", 0) or 0
+            span.set_attribute("llm.token_count.prompt", entrada)
+            span.set_attribute("llm.token_count.completion", saida_tokens)
+            span.set_attribute("llm.token_count.total", entrada + saida_tokens)
+    finally:
+        span.end()
