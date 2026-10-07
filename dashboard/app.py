@@ -2451,13 +2451,6 @@ with aba_analise_extratos:
         else:
             st.info("Sem pagamentos registados no período.")
 
-    with st.container(border=True):
-        grafico_ranking_pag = grafico_ranking_imputacoes(analise.get("pagamentos", []), "Imputações que mais gastam (ranking completo)")
-        if grafico_ranking_pag is not None:
-            st.altair_chart(grafico_ranking_pag, width="stretch")
-        else:
-            st.info("Sem pagamentos registados no período.")
-
     sep_receb, sep_pag, sep_cpcv_mapa, sep_cpcv_indice = st.tabs([
         f"Recebimentos ({len(linhas_receb)})", f"Pagamentos ({len(linhas_pag)})",
         f"CPCVs / Escrituras - Mapa ({len(linhas_cpcv_escritura)})", "Vendas - Índice comercial",
@@ -2511,6 +2504,13 @@ with aba_analise_extratos:
 
     with sep_cpcv_indice:
         _secao_vendas_indice(empresa_extratos, periodo_extratos)
+
+    with st.container(border=True):
+        grafico_ranking_pag = grafico_ranking_imputacoes(analise.get("pagamentos", []), "Imputações que mais gastam (ranking completo)")
+        if grafico_ranking_pag is not None:
+            st.altair_chart(grafico_ranking_pag, width="stretch")
+        else:
+            st.info("Sem pagamentos registados no período.")
 
 def _rodape_resposta(mensagem: dict):
     """Por baixo de cada resposta do Assistente: as ferramentas consultadas,
