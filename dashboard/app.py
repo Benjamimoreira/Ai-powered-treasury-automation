@@ -15,6 +15,27 @@ import streamlit as st
 
 import api_client as api
 
+# Números e datas dos gráficos em português (170 249 em vez de 170,249;
+# meses em português) - os eixos usavam o formato inglês do Vega, e as
+# tabelas e os KPIs o português, na mesma página.
+LOCALE_PT = {
+    "number": {"decimal": ",", "thousands": " ", "grouping": [3], "currency": ["", " €"]},
+    "time": {
+        "dateTime": "%A, %e de %B de %Y, %X", "date": "%d/%m/%Y", "time": "%H:%M:%S",
+        "periods": ["AM", "PM"],
+        "days": ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"],
+        "shortDays": ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"],
+        "months": ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro",
+                   "outubro", "novembro", "dezembro"],
+        "shortMonths": ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"],
+    },
+}
+
+
+@alt.theme.register("tesouraria_pt", enable=True)
+def _tema_pt():
+    return alt.theme.ThemeConfig({"config": {"locale": LOCALE_PT}})
+
 # O Streamlit volta a correr o script INTEIRO (todos os separadores) a cada
 # interação - sem cache, mexer num slider ou num toggle voltava a pedir à
 # API todas as previsões (cada uma treina vários modelos; o ranking de risco
@@ -125,24 +146,44 @@ MAX_FATIAS_IMPUTACAO = 6
 
 # Formatação partilhada para colunas EUR em tabelas cruas (st.dataframe)
 # - separador de milhares, sem depender de cada chamada repetir a config.
-COLUNA_VALOR_EUR = {"valor": st.column_config.NumberColumn("valor", format="euro")}
+COLUNA_VALOR_EUR = {"valor": st.column_config.NumberColumn("Valor", format="euro")}
 COLUNAS_SALDO_EUR = {
-    "saldo_contabilistico": st.column_config.NumberColumn("saldo_contabilistico", format="euro"),
-    "saldo_disponivel": st.column_config.NumberColumn("saldo_disponivel", format="euro"),
+    "saldo_contabilistico": st.column_config.NumberColumn("Saldo contabilístico", format="euro"),
+    "saldo_disponivel": st.column_config.NumberColumn("Saldo disponível", format="euro"),
 }
 
 
 def seta_saldo(variacao):
     """Seta de tendência do mapa de saldos - reaproveitada na Visão Geral e na aba Saldos."""
-    if variacao is None or pd.isna(variacao):
-        return "➖"
+    if variacao is None or pd.isna(variacao) or variacao == 0:
+        return "➖"  # (antes, variação 0 dava 🔽 - todas as contas paradas pareciam a descer)
     return "🔼" if variacao > 0 else "🔽"
 
 
 def fmt_pct_saldo(pct):
     if pct is None or pd.isna(pct):
         return "—"
-    return f"{pct:+.1f}%"
+    return f"{_n(pct, 1, sinal=True)} %"
+
+
+def variacao_saldo(variacao, pct) -> str:
+    """"🔼 +2,3 %" - seta e percentagem numa coluna só."""
+    return f"{seta_saldo(variacao)} {fmt_pct_saldo(pct)}"
+
+
+DIAS_LEITURA_ANTIGA = 7
+# extratos exportados sem o nome da empresa ficam com o nome de ficheiro
+# genérico "<dia>_Empresa.xlsx" e a conta aparece como "Empresa"
+NOMES_SEM_EMPRESA = {"EMPRESA"}
+
+
+def rotulo_conta(entidade: str, dia, dia_mais_recente) -> str:
+    """Nome da conta no mapa de saldos, com ⚠️ quando a última leitura é antiga
+    (continua a contar no total) ou quando o extrato veio sem o nome da empresa."""
+    if str(entidade).strip().upper() in NOMES_SEM_EMPRESA:
+        return "⚠️ Conta sem nome (extrato \"…_Empresa.xlsx\")"
+    antiga = dia and dia_mais_recente and (pd.to_datetime(dia_mais_recente) - pd.to_datetime(dia)).days > DIAS_LEITURA_ANTIGA
+    return f"⚠️ {entidade}" if antiga else entidade
 
 
 def resumo_mensal_previsao(previsao_por_modelo: dict, chave_serie: str = "ensemble") -> pd.DataFrame:
@@ -245,7 +286,7 @@ def tabela_extratos_colorida(linhas: list, cor_por_imputacao: dict, legenda_vazi
         cor = cor_por_imputacao.get(linha["imputacao"], COR_IMPUTACAO_OUTRAS)
         return [f"background-color: {cor}33"] * len(linha)
 
-    estilo = df.style.apply(_pintar_linha, axis=1).format({"valor": "{:,.2f} €"})
+    estilo = df.style.apply(_pintar_linha, axis=1).format({"valor": lambda v: f"{_n(v, 2)} €"})
     st.dataframe(
         estilo,
         width="stretch",
@@ -363,6 +404,27 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+def _n(valor, casas: int = 0, sinal: bool = False) -> str:
+    """Número no formato português: 170 249 / 1 234,56 / +7 885 (espaço
+    inquebrável nos milhares, vírgula decimal) - as tabelas já mostravam
+    assim e os KPIs/legendas em inglês (170,249), na mesma página."""
+    texto = format(valor, f"{'+' if sinal else ''},.{casas}f")
+    return texto.replace(",", " ").replace(".", ",")
+
+
+def _resumo_atualizacao(resultado: dict) -> str:
+    """"Importados: movimentos de 03/10 e 06/10; saldos de 05/10." em vez das
+    listas de dias em bruto que a API devolve."""
+    def dias(chave):
+        lista = sorted(resultado.get(chave) or [])
+        return " e ".join(", ".join(f"{pd.to_datetime(d):%d/%m}" for d in lista).rsplit(", ", 1))
+    partes = [f"{nome} de {dias(chave)}" for chave, nome in (
+        ("dias_com_movimentos_novos", "movimentos"), ("dias_com_saldos_novos", "saldos"),
+        ("dias_com_mapa_novo", "Mapa de Pagamentos e Recebimentos"),
+    ) if resultado.get(chave)]
+    return "Importados: " + "; ".join(partes) + "." if partes else "Já estava tudo atualizado."
+
+
 if "startup_sync_done" not in st.session_state:
     st.session_state.startup_sync_done = False
 
@@ -377,13 +439,8 @@ if not st.session_state.startup_sync_done:
             )
             if novos > 0:
                 _limpar_cache_previsoes()
-                st.success(
-                    f"Atualizado na abertura: {resultado['dias_com_movimentos_novos']} movimentos, "
-                    f"{resultado['dias_com_saldos_novos']} saldos, "
-                    f"{resultado['dias_com_mapa_novo']} mapa."
-                )
-            else:
-                st.info("Tudo já estava atualizado quando abriu a dashboard.")
+            # notificação que desaparece sozinha - a faixa fixa ocupava o topo de todos os separadores
+            st.toast(_resumo_atualizacao(resultado), icon="🔄")
             if resultado.get("erros"):
                 st.warning(f"Erros de sincronização: {resultado['erros']}")
         except Exception as e:
@@ -403,13 +460,7 @@ with col_botao:
                 )
                 if novos > 0:
                     _limpar_cache_previsoes()
-                    st.success(
-                        f"Atualizado: {resultado['dias_com_movimentos_novos']} movimentos, "
-                        f"{resultado['dias_com_saldos_novos']} saldos, "
-                        f"{resultado['dias_com_mapa_novo']} mapa."
-                    )
-                else:
-                    st.info("Nada de novo - já estava tudo atualizado.")
+                st.toast(_resumo_atualizacao(resultado), icon="🔄")
                 if resultado["erros"]:
                     st.warning(f"Erros: {resultado['erros']}")
                 st.rerun()
@@ -450,9 +501,9 @@ def _secao_fiabilidade(empresa, horizonte: int):
         st.info("Histórico ainda curto para um backtest neste horizonte.")
         return
     b1, b2, b3, b4 = st.columns(4)
-    b1.metric("Erro médio da previsão", f"{bt['erro_medio_modelo']:,.0f} €")
-    b2.metric("Erro médio \"saldo fica igual\"", f"{bt['erro_medio_sem_alteracao']:,.0f} €")
-    b3.metric("Erro com recebimentos do comercial", f"{bt['erro_medio_com_comercial']:,.0f} €")
+    b1.metric("Erro médio da previsão", f"{_n(bt['erro_medio_modelo'])} €")
+    b2.metric("Erro médio \"saldo fica igual\"", f"{_n(bt['erro_medio_sem_alteracao'])} €")
+    b3.metric("Erro com recebimentos do comercial", f"{_n(bt['erro_medio_com_comercial'])} €")
     b4.metric(
         "Real dentro da banda",
         f"{bt['cobertura_banda']:.0%}" if bt["cobertura_banda"] is not None else "—",
@@ -510,7 +561,7 @@ def _cartao_fluxos_proximos(fluxos: list, incluir_comercial: bool):
         with st.container(horizontal=True):
             for fonte, total in por_fonte.items():
                 st.badge(
-                    f"{TIPOS_FLUXO_CONHECIDO.get(fonte, fonte)} {total:+,.0f} €",
+                    f"{TIPOS_FLUXO_CONHECIDO.get(fonte, fonte)} {_n(total, sinal=True)} €",
                     color="green" if total >= 0 else "red",
                 )
         st.dataframe(
@@ -539,10 +590,10 @@ def _tempo_de_vida(ritmo):
     if vida["dias"] == 0:
         return "esgotado", "saldo já abaixo de −1 000 €"
     if vida["dias"] is None:
-        return "sem fim à vista", f"{por_dia:+,.0f} €/dia"
+        return "sem fim à vista", f"{_n(por_dia, sinal=True)} €/dia"
     if vida["dias"] > 730:
-        return "mais de 2 anos", f"{por_dia:+,.0f} €/dia"
-    return f"{vida['dias']} dias", f"até {pd.to_datetime(vida['dia']):%d/%m/%Y} · {por_dia:+,.0f} €/dia"
+        return "mais de 2 anos", f"{_n(por_dia, sinal=True)} €/dia"
+    return f"{vida['dias']} dias", f"até {pd.to_datetime(vida['dia']):%d/%m/%Y} · {_n(por_dia, sinal=True)} €/dia"
 
 
 def _explicar_ritmo(ritmo, fluxos_previstos: list, dias_horizonte: int) -> str:
@@ -556,18 +607,18 @@ def _explicar_ritmo(ritmo, fluxos_previstos: list, dias_horizonte: int) -> str:
     desde = f"{pd.to_datetime(ritmo['desde']):%d/%m}"
     if ritmo["fonte"] == "movimentos":
         origem = (f"o resto dos recebimentos e pagamentos ao ritmo dos últimos {n} dias (desde {desde}): "
-                  f"{ritmo['resto_diario']:+,.0f} €/dia.")
+                  f"{_n(ritmo['resto_diario'], sinal=True)} €/dia.")
     else:
         origem = (f"o resto ao ritmo dos últimos {n} dias (desde {desde}), tirado da variação real do saldo - os "
-                  f"extratos não a explicam (movimentos {ritmo['liquido_movimentos']:+,.0f} € contra saldo "
-                  f"{ritmo['variacao_saldo']:+,.0f} €): {ritmo['resto_diario']:+,.0f} €/dia.")
+                  f"extratos não a explicam (movimentos {_n(ritmo['liquido_movimentos'], sinal=True)} € contra saldo "
+                  f"{_n(ritmo['variacao_saldo'], sinal=True)} €): {_n(ritmo['resto_diario'], sinal=True)} €/dia.")
     texto = "A laranja: os fluxos já conhecidos da previsão, nos dias em que caem, mais " + origem
     if dias_horizonte:
         por_dia_previsto = sum(f["valor"] for f in fluxos_previstos if f["fonte"] != "comercial") / dias_horizonte
         por_dia_visto = ritmo["conhecidos_no_periodo"] / n
         if abs(por_dia_previsto - por_dia_visto) > max(50, 0.5 * abs(por_dia_visto)):
-            texto += (f" Atenção: a previsão conta com {por_dia_previsto:+,.0f} €/dia de fluxos conhecidos, mas nos "
-                      f"últimos {n} dias os extratos só mostraram {por_dia_visto:+,.0f} €/dia desses fluxos - se a "
+            texto += (f" Atenção: a previsão conta com {_n(por_dia_previsto, sinal=True)} €/dia de fluxos conhecidos, mas nos "
+                      f"últimos {n} dias os extratos só mostraram {_n(por_dia_visto, sinal=True)} €/dia desses fluxos - se a "
                       f"diferença não estiver a entrar (ex. rendas), a linha e o tempo de vida estão otimistas.")
     return texto
 
@@ -575,9 +626,9 @@ def _explicar_ritmo(ritmo, fluxos_previstos: list, dias_horizonte: int) -> str:
 def _explicar_indice(indice, ritmo) -> str:
     """Frase do cenário "só vendas do índice" (linha roxa)."""
     n = ritmo["janela_dias"]
-    return (f" A roxo: o mesmo sem as vendas dos últimos {n} dias ({indice['vendas_no_periodo']:,.0f} € de CPCV/"
-            f"escrituras, {indice['vendas_no_periodo'] / n:,.0f} €/dia), com só as vendas marcadas no índice comercial "
-            f"nas datas marcadas ({indice['comercial_no_horizonte']:,.0f} € neste horizonte) - quanto tempo dura o "
+    return (f" A roxo: o mesmo sem as vendas dos últimos {n} dias ({_n(indice['vendas_no_periodo'])} € de CPCV/"
+            f"escrituras, {_n(indice['vendas_no_periodo'] / n)} €/dia), com só as vendas marcadas no índice comercial "
+            f"nas datas marcadas ({_n(indice['comercial_no_horizonte'])} € neste horizonte) - quanto tempo dura o "
             f"dinheiro se não se assinar mais nenhum negócio.")
 
 
@@ -587,7 +638,6 @@ def _kpis_painel(fc: dict, horizonte: int, incluir_comercial: bool, risco):
     preenchido no fim (ver _kpi_liquidez), para não atrasar o resto."""
     central = fc["previsao"]
     serie_fim = (fc.get("previsao_com_comercial") if incluir_comercial else None) or central
-    banda = fc.get("banda_incerteza")
     saldo_atual = fc["saldo_partida"]
     fluxos = fc.get("fluxos_conhecidos_previstos") or []
     comercial_total = sum(f["valor"] for f in fluxos if f["fonte"] == "comercial")
@@ -595,20 +645,20 @@ def _kpis_painel(fc: dict, horizonte: int, incluir_comercial: bool, risco):
 
     with st.container(horizontal=True):
         st.metric(
-            f"Saldo em {pd.to_datetime(fc['dia_partida']):%d/%m}", f"{saldo_atual:,.0f} €",
-            f"{saldo_atual - historico_30[0]:+,.0f} € em 30 dias" if historico_30 else None,
-            border=True, chart_data=historico_30, chart_type="area",
+            f"Saldo em {pd.to_datetime(fc['dia_partida']):%d/%m}", f"{_n(saldo_atual)} €",
+            f"{_n(saldo_atual - historico_30[0], sinal=True)} € em 30 dias" if historico_30 else None,
+            border=True, height="stretch", chart_data=historico_30, chart_type="area",
         )
         st.metric(
-            f"Saldo previsto a {horizonte} dias", f"{serie_fim[-1]['valor']:,.0f} €",
-            f"{serie_fim[-1]['valor'] - saldo_atual:+,.0f} €", border=True,
+            f"Saldo previsto a {horizonte} dias", f"{_n(serie_fim[-1]['valor'])} €",
+            f"{_n(serie_fim[-1]['valor'] - saldo_atual, sinal=True)} €", border=True, height="stretch",
             chart_data=[p["valor"] for p in serie_fim], chart_type="line",
             help="Com recebimentos do comercial, se o interruptor estiver ligado.",
         )
         vida_valor, vida_delta = _tempo_de_vida(fc.get("ritmo_atual"))
         indice = (fc.get("ritmo_atual") or {}).get("so_vendas_do_indice") if incluir_comercial else None
         st.metric(
-            "Tempo de vida", vida_valor, vida_delta, delta_color="off", border=True,
+            "Tempo de vida", vida_valor, vida_delta, delta_color="off", delta_arrow="off", border=True, height="stretch",
             help="Quantos dias até o saldo ficar abaixo de −1 000 € (o mesmo limite do risco de liquidez), "
                  "seguindo a linha laranja: os fluxos já conhecidos da previsão mais o resto dos recebimentos e "
                  "pagamentos ao ritmo dos últimos 90 dias. Calculado a 1 ano, por isso não depende do horizonte.",
@@ -617,29 +667,26 @@ def _kpis_painel(fc: dict, horizonte: int, incluir_comercial: bool, risco):
             vida_indice_valor, vida_indice_delta = _tempo_de_vida(indice)
             st.metric(
                 "Tempo de vida · só vendas do índice", vida_indice_valor, vida_indice_delta, delta_color="off",
-                border=True,
+                delta_arrow="off", border=True, height="stretch",
                 help="O mesmo, mas sem as vendas (CPCV/escrituras) dos últimos 90 dias no ritmo e com só os "
                      "sinais, reforços e escrituras marcados no índice comercial, nas datas marcadas - quanto "
                      "tempo dura o dinheiro se não se assinar mais nenhum negócio. Linha roxa no gráfico.",
             )
-        st.metric(
-            "Intervalo provável (80%)",
-            f"{banda['baixa'][-1]['valor'] / 1000:,.0f}k – {banda['alta'][-1]['valor'] / 1000:,.0f}k €" if banda else "—",
-            border=True, help="Onde caem 80% das 1000 simulações no fim do horizonte.",
-        )
-        st.metric(
-            "Recebimentos do comercial", f"{comercial_total:,.0f} €", border=True,
-            help="Sinais, reforços e escrituras marcados no índice comercial dentro do horizonte.",
-        )
+            # (o "Intervalo provável", de -531 k a +956 k € no grupo, saiu: confundia
+            # mais do que informava - fica no gráfico, com o interruptor)
+            st.metric(
+                "Recebimentos do comercial", f"{_n(comercial_total)} €", border=True, height="stretch",
+                help="Sinais, reforços e escrituras marcados no índice comercial dentro do horizonte.",
+            )
         if risco is not None:
             st.metric(
                 "Zona de risco", ZONAS_ROTULO[risco["zona_atual"]],
                 (f"prevista: {ZONAS_ROTULO[risco['zona_prevista']]}" if risco["zona_prevista"] != risco["zona_atual"] else None),
-                delta_color="inverse", border=True,
+                delta_color="inverse", delta_arrow="off", border=True, height="stretch",
                 help="Crítico: o saldo cobre menos de 1 semana de despesa média; alerta: menos de 1 mês.",
             )
         lugar_liquidez = st.empty()
-        lugar_liquidez.metric("Risco de liquidez", "a calcular…", border=True, help=AJUDA_LIQUIDEZ)
+        lugar_liquidez.metric("Risco de liquidez", "a calcular…", border=True, height="stretch", help=AJUDA_LIQUIDEZ)
     return lugar_liquidez
 
 
@@ -653,7 +700,8 @@ def _kpi_liquidez(lugar, liquidez_fc: list, empresa):
         p = r.get("probabilidade_negativo")
         lugar.metric(
             "Risco de liquidez", NIVEL_LIQUIDEZ_ROTULO.get(r["nivel"], r["nivel"]),
-            f"{p:.0%} de ficar a descoberto" if p is not None else None, delta_color="off", border=True,
+            f"{p:.0%} de ficar a descoberto" if p is not None else None, delta_color="off", delta_arrow="off",
+            border=True, height="stretch",
             help=AJUDA_LIQUIDEZ,
         )
     else:
@@ -662,7 +710,8 @@ def _kpi_liquidez(lugar, liquidez_fc: list, empresa):
         altos = sum(1 for x in em_risco if x["nivel"] == "alto")
         lugar.metric(
             "Empresas com risco de liquidez", f"{len(em_risco)}",
-            f"{altos} em risco alto" if altos else None, delta_color="inverse", border=True,
+            f"{altos} em risco alto" if altos else None, delta_color="inverse", delta_arrow="off", border=True,
+            height="stretch",
             help=AJUDA_LIQUIDEZ,
         )
 
@@ -1125,7 +1174,7 @@ def _painel_forecast():
                 if risco_fc:
                     autonomia = risco_fc["dias_autonomia_tendencia"]
                     st.caption(
-                        f"Ritmo de caixa (30 dias): {risco_fc['taxa_diaria_liquida']:+,.0f} €/dia · "
+                        f"Ritmo de caixa (30 dias): {_n(risco_fc['taxa_diaria_liquida'], sinal=True)} €/dia · "
                         + (f"aguenta cerca de {autonomia:.0f} dias a este ritmo" if autonomia is not None
                            else "o saldo não está a esgotar-se")
                         + (f" · pior caso (sem receitas): {risco_fc['dias_autonomia_despesa']:.0f} dias"
@@ -1243,29 +1292,29 @@ with aba_visao_geral:
     # --- KPIs
     with st.container(horizontal=True):
         st.metric(
-            "Recebimentos do dia", f"{total_recebimentos:,.0f} €", f"{len(recebimentos_vg)} movimento(s)",
-            delta_color="off", border=True,
+            "Recebimentos do dia", f"{_n(total_recebimentos)} €", f"{len(recebimentos_vg)} movimento(s)",
+            delta_color="off", delta_arrow="off", border=True,
             chart_data=[r.get("recebimentos_externos", r["recebimentos"]) for r in resumo_ate_dia] or None, chart_type="bar",
         )
         st.metric(
-            "Pagamentos do dia", f"{total_pagamentos:,.0f} €", f"{len(pagamentos_vg)} movimento(s)",
-            delta_color="off", border=True,
+            "Pagamentos do dia", f"{_n(total_pagamentos)} €", f"{len(pagamentos_vg)} movimento(s)",
+            delta_color="off", delta_arrow="off", border=True,
             chart_data=[r.get("pagamentos_externos", r["pagamentos"]) for r in resumo_ate_dia] or None, chart_type="bar",
         )
         st.metric(
-            f"Balanço de {dia_vg:%m/%Y} até ao dia", f"{balanco_ate_ao_dia:,.0f} €", border=True,
+            f"Balanço de {dia_vg:%m/%Y} até ao dia", f"{_n(balanco_ate_ao_dia)} €", border=True,
             help="Recebimentos menos pagamentos do extrato bancário, do dia 1 até ao dia escolhido.",
         )
         if totais:
             st.metric(
-                "Saldo contabilístico total", f"{totais['saldo_contabilistico_total']:,.0f} €",
-                (f"{totais['saldo_contabilistico_total'] - serie_total_ate_dia[-31]['saldo_contabilistico_total']:+,.0f} € em 30 dias"
+                "Saldo contabilístico total", f"{_n(totais['saldo_contabilistico_total'])} €",
+                (f"{_n(totais['saldo_contabilistico_total'] - serie_total_ate_dia[-31]['saldo_contabilistico_total'], sinal=True)} € em 30 dias"
                  if len(serie_total_ate_dia) > 30 else None),
                 border=True,
                 chart_data=[p["saldo_contabilistico_total"] for p in serie_total_ate_dia[-30:]] or None,
                 chart_type="area",
             )
-            st.metric("Saldo disponível total", f"{totais['saldo_disponivel_total']:,.0f} €", border=True)
+            st.metric("Saldo disponível total", f"{_n(totais['saldo_disponivel_total'])} €", border=True)
             st.metric("Contas incluídas", totais["entidades"], border=True)
 
     # --- saldo total + top contas
@@ -1308,6 +1357,7 @@ with aba_visao_geral:
             saldos_atuais = []
         if saldos_atuais:
             df_ranking = pd.DataFrame(saldos_atuais).sort_values("saldo_contabilistico", ascending=False).head(10)
+            df_ranking["entidade"] = [rotulo_conta(e, None, None) for e in df_ranking["entidade"]]
             st.altair_chart(
                 alt.Chart(df_ranking).mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
                     y=alt.Y("entidade:N", title=None, sort="-x", axis=alt.Axis(labelLimit=180)),
@@ -1341,7 +1391,10 @@ with aba_visao_geral:
             )
             cores_mensal = {"Recebimentos": COR_RECEBIMENTOS_MES, "Pagamentos": COR_PAGAMENTOS_MES, "Líquido do dia": "#1c1f26"}
             escala_mensal = alt.Scale(domain=list(cores_mensal), range=list(cores_mensal.values()))
-            eixo_dia = alt.X("dia:T", title=None, axis=alt.Axis(format="%d/%m", labelAngle=-45))
+            # um tick por dia: com poucos dias o Vega punha ticks de hora em hora, e o
+            # eixo repetia "01/10 01/10 01/10…"
+            eixo_dia = alt.X("dia:T", title=None, axis=alt.Axis(
+                format="%d/%m", labelAngle=-45, tickCount={"interval": "day", "step": 1}))
             barras_mes = alt.Chart(df_barras).mark_bar(size=12).encode(
                 x=eixo_dia,
                 y=alt.Y("valor:Q", title="EUR (pagamentos para baixo)", axis=alt.Axis(format=",.0f")),
@@ -1358,7 +1411,7 @@ with aba_visao_geral:
             internas_mes = (df_mensal["recebimentos"] - df_mensal["recebimentos_externos"]).sum()
             st.caption(
                 ("Só o que entrou e saiu de fora do grupo: "
-                 f"{internas_mes:,.0f} € de transferências entre empresas do grupo ficam de fora este mês. "
+                 f"{_n(internas_mes)} € de transferências entre empresas do grupo ficam de fora este mês. "
                  if not incluir_internas_vg else
                  "Inclui as transferências entre empresas do grupo (contam como recebimento numa e pagamento noutra). ")
                 + "Somas do extrato bancário (CGD), não do Mapa - podem divergir num dia ainda não "
@@ -1378,7 +1431,8 @@ with aba_visao_geral:
             if linhas:
                 st.dataframe(
                     pd.DataFrame(linhas)[["empresa", "descricao", "valor"]],
-                    width="stretch", hide_index=True, height=320, column_config=COLUNA_VALOR_EUR,
+                    width="stretch", hide_index=True, height=min(320, 38 + 35 * len(linhas)),
+                    column_config={**COLUNA_VALOR_EUR, "empresa": "Empresa", "descricao": "Descrição"},
                 )
             else:
                 st.info(vazio)
@@ -1404,7 +1458,22 @@ def _renderizar_detalhe_tarefas(detalhe: list):
         )
 
 
+def _hora_local(valor) -> str:
+    """"2026-10-06T15:20:28Z" (UTC, como a API devolve) -> "06/10 16:20" na
+    hora de Lisboa; o que não for uma data fica como veio."""
+    if not valor or valor == "-":
+        return valor or ""
+    try:
+        return pd.Timestamp(valor).tz_convert("Europe/Lisbon").strftime("%d/%m %H:%M")
+    except (ValueError, TypeError):
+        try:
+            return pd.Timestamp(valor).tz_localize("UTC").tz_convert("Europe/Lisbon").strftime("%d/%m %H:%M")
+        except (ValueError, TypeError):
+            return str(valor)
+
+
 def _linha_log(timestamp, titulo, nivel, mensagem, cor):
+    timestamp = _hora_local(timestamp)
     st.markdown(
         f"<div style='margin-bottom:8px;padding:8px 10px;border-left:4px solid {cor};"
         f"background:{cor}0f;border-radius:4px;white-space:pre-wrap;'>"
@@ -1462,17 +1531,19 @@ with aba_monitorizacao:
                     )
             else:
                 atrasados_mask = pd.Series(False, index=df_scripts.index)
+            df_scripts["ultima_execucao"] = df_scripts["ultima_execucao"].map(_hora_local)
+            df_scripts["ultima_erro"] = df_scripts["ultima_erro"].fillna("")
             st.dataframe(
                 df_scripts[["nome", "descricao", "hora_execucao", "status_badge", "ultima_execucao", "ultima_erro"]],
                 width="stretch",
                 hide_index=True,
                 column_config={
-                    "nome": st.column_config.TextColumn("script"),
-                    "descricao": st.column_config.TextColumn("descrição"),
-                    "hora_execucao": st.column_config.TextColumn("hora"),
-                    "ultima_execucao": st.column_config.TextColumn("última execução"),
-                    "ultima_erro": st.column_config.TextColumn("último erro"),
-                    "status_badge": st.column_config.TextColumn("estado"),
+                    "nome": st.column_config.TextColumn("Script"),
+                    "descricao": st.column_config.TextColumn("Descrição"),
+                    "hora_execucao": st.column_config.TextColumn("Horas"),
+                    "ultima_execucao": st.column_config.TextColumn("Última execução"),
+                    "ultima_erro": st.column_config.TextColumn("Último erro"),
+                    "status_badge": st.column_config.TextColumn("Estado"),
                 },
             )
 
@@ -1550,7 +1621,7 @@ with aba_monitorizacao:
             if script_info:
                 with st.container(horizontal=True):
                     st.metric("Estado", script_info.get("status", "ok").upper(), border=True)
-                    st.metric("Última execução", script_info.get("ultima_execucao") or "Nunca", border=True)
+                    st.metric("Última execução", _hora_local(script_info.get("ultima_execucao")) or "Nunca", border=True)
                     st.metric("Hora esperada", script_info.get("hora_execucao") or "—", border=True)
                 if script_info.get("ultima_erro"):
                     st.error(f"**Erro da última execução:**\n\n{script_info['ultima_erro']}")
@@ -1610,10 +1681,10 @@ with aba_monitorizacao:
                 bate_certo = abs(diferenca) <= TOLERANCIA_AUDITORIA
 
                 with st.container(horizontal=True):
-                    st.metric("Soma do extrato bancário", f"{soma_extrato:,.2f} €", border=True)
-                    st.metric("Soma no Mapa (confirmado)", f"{soma_mapa:,.2f} €", border=True)
+                    st.metric("Soma do extrato bancário", f"{_n(soma_extrato, 2)} €", border=True)
+                    st.metric("Soma no Mapa (confirmado)", f"{_n(soma_mapa, 2)} €", border=True)
                     st.metric(
-                        "Diferença", f"{diferenca:,.2f} €", "bate certo" if bate_certo else "não bate certo",
+                        "Diferença", f"{_n(diferenca, 2)} €", "bate certo" if bate_certo else "não bate certo",
                         delta_color="normal" if bate_certo else "inverse", border=True,
                     )
                     st.metric("Extrato sem linha no Mapa", resultado["sem_match_fwd"], border=True)
@@ -1741,7 +1812,7 @@ with aba_monitorizacao:
                     )
                     st.metric(
                         "Satisfação (👍)", _pct(m_ass["taxa_satisfacao"]),
-                        f"{m_ass['feedback_positivo']} 👍 · {m_ass['feedback_negativo']} 👎", delta_color="off", border=True,
+                        f"{m_ass['feedback_positivo']} 👍 · {m_ass['feedback_negativo']} 👎", delta_color="off", delta_arrow="off", border=True,
                         help=f"Só conta as respostas avaliadas ({_pct(m_ass['taxa_com_feedback'])} das perguntas).",
                     )
                     st.metric(
@@ -1755,7 +1826,7 @@ with aba_monitorizacao:
                     st.metric(
                         "Tempo de resposta", f"{m_ass['duracao_media_s']:.0f} s" if m_ass["duracao_media_s"] else "—",
                         f"p95 {m_ass['duracao_p95_s']:.0f} s" if m_ass["duracao_p95_s"] else None,
-                        delta_color="off", border=True,
+                        delta_color="off", delta_arrow="off", border=True,
                     )
 
                 if m_ass["por_dia"]:
@@ -1874,15 +1945,15 @@ with aba_monitorizacao:
                 st.markdown("**Sugestões para casos ambíguos**")
                 with st.container(horizontal=True):
                     st.metric("Casos", m_amb["casos"], f"{m_amb['pendentes']} pendente(s)" if m_amb["pendentes"] else None,
-                              delta_color="off", border=True)
+                              delta_color="off", delta_arrow="off", border=True)
                     st.metric(
                         "Sugestões aceites", _pct(m_amb["taxa_aceitacao"]),
-                        f"{m_amb['aceites']} aceites · {m_amb['rejeitadas']} rejeitadas", delta_color="off", border=True,
+                        f"{m_amb['aceites']} aceites · {m_amb['rejeitadas']} rejeitadas", delta_color="off", delta_arrow="off", border=True,
                         help="Casos resolvidos em que a decisão humana foi igual à sugestão.",
                     )
                     st.metric(
                         "Decididas sem LLM", _pct(m_amb["taxa_sem_llm"]),
-                        f"{m_amb['sugestoes_por_regras']} regras · {m_amb['sugestoes_por_llm']} LLM", delta_color="off", border=True,
+                        f"{m_amb['sugestoes_por_regras']} regras · {m_amb['sugestoes_por_llm']} LLM", delta_color="off", delta_arrow="off", border=True,
                         help="Sugestões dadas pelas regras (triagem pelo texto/histórico), sem chamar o modelo.",
                     )
                     st.metric(
@@ -1993,11 +2064,11 @@ with aba_faturas:
             st.metric("Fornecedores", identificados["fornecedor"].nunique() if "fornecedor" in df_faturas else "—",
                       f"{len(df_faturas) - len(identificados)} faturas sem fornecedor identificado"
                       if len(df_faturas) > len(identificados) else None,
-                      delta_color="off", border=True)
+                      delta_color="off", delta_arrow="off", border=True)
             if "pdf" in df_faturas.columns:
                 st.metric("Com PDF", int(df_faturas["pdf"].notna().sum()), border=True)
             if "dia" in df_faturas.columns and not df_faturas.empty:
-                st.metric("Mais recente", str(df_faturas["dia"].max()), border=True)
+                st.metric("Mais recente", f"{pd.to_datetime(df_faturas['dia'].max()):%d/%m/%Y}", border=True)
 
         col_tabela_fat, col_top_fat = st.columns([3, 1])
         with col_tabela_fat, st.container(border=True):
@@ -2011,20 +2082,34 @@ with aba_faturas:
             if df_faturas.empty:
                 st.info("Nenhuma fatura corresponde aos filtros escolhidos.")
             else:
+                # valores em texto já formatado e células vazias em branco - o
+                # Streamlit mostrava "None" em quase todas as colunas de valores
+                tabela_fat = df_faturas[colunas_existentes].copy()
+                for coluna in ("valor_fatura", "debito", "credito", "saldo"):
+                    if coluna in tabela_fat:
+                        numeros = pd.to_numeric(tabela_fat[coluna], errors="coerce")
+                        tabela_fat[coluna] = [f"{_n(v, 2)} €" if pd.notna(v) else "" for v in numeros]
+                texto = [c for c in tabela_fat.columns if c not in ("pdf", "n_anexos_pdf")]  # o link e o nº ficam
+                tabela_fat[texto] = tabela_fat[texto].astype(object).where(tabela_fat[texto].notna(), "")
+                if "dia" in tabela_fat:
+                    tabela_fat["dia"] = pd.to_datetime(tabela_fat["dia"]).dt.strftime("%d/%m/%Y")
                 st.dataframe(
-                    df_faturas[colunas_existentes],
+                    tabela_fat,
                     width="stretch",
                     hide_index=True,
                     height=520,
                     column_config={
+                        "dia": "Dia", "hora": "Hora", "empresa": "Empresa", "fornecedor": "Fornecedor",
+                        "debito": "Débito", "credito": "Crédito", "saldo": "Saldo", "assunto": "Assunto",
+                        "remetente": "Remetente",
                         "fonte_fornecedor": st.column_config.TextColumn(
-                            "fornecedor vem de", help="documento (texto extraído do PDF/email), NIF (nome já conhecido "
+                            "Fornecedor vem de", help="documento (texto extraído do PDF/email), NIF (nome já conhecido "
                                                       "para o mesmo NIF) ou email do remetente"),
                         "fornecedor_original": st.column_config.TextColumn(
-                            "texto extraído", help="o que o recolher_faturas_recebidas.py extraiu, sem limpeza"),
+                            "Texto extraído", help="o que o recolher_faturas_recebidas.py extraiu, sem limpeza"),
                         "nif_fornecedor": st.column_config.TextColumn("NIF fornecedor"),
-                        "valor_fatura": st.column_config.TextColumn("valor fatura"),
-                        "n_anexos_pdf": st.column_config.NumberColumn("nº anexos PDF"),
+                        "valor_fatura": st.column_config.TextColumn("Valor fatura"),
+                        "n_anexos_pdf": st.column_config.NumberColumn("Anexos PDF"),
                         "pdf": st.column_config.LinkColumn("PDF", display_text="Abrir PDF"),
                     },
                 )
@@ -2063,8 +2148,9 @@ with aba_saldos:
     with st.container(border=True, horizontal=True, vertical_alignment="bottom"):
         dia_mapa = st.date_input("Dia do mapa (opcional)", value=None, key="dia_mapa_saldos", width=220)
         st.caption(
-            "Última leitura de cada conta até ao dia escolhido (hoje, se vazio). Seta e variação % "
-            "face à leitura anterior de cada conta - nem todas têm leitura todos os dias."
+            "Última leitura de cada conta até ao dia escolhido (hoje, se vazio). Variação face à leitura "
+            "anterior de cada conta - nem todas têm leitura todos os dias. ⚠️ = última leitura com mais de "
+            f"{DIAS_LEITURA_ANTIGA} dias (continua a contar no total) ou extrato sem o nome da empresa."
         )
 
     try:
@@ -2079,8 +2165,8 @@ with aba_saldos:
         n_desceram = int((df_mapa["variacao_contabilistico"] < 0).sum())
         n_negativos = int((df_mapa["saldo_contabilistico"] < 0).sum())
         with st.container(horizontal=True):
-            st.metric("Saldo contabilístico total", f"{df_mapa['saldo_contabilistico'].sum():,.0f} €", border=True)
-            st.metric("Saldo disponível total", f"{df_mapa['saldo_disponivel'].sum():,.0f} €", border=True)
+            st.metric("Saldo contabilístico total", f"{_n(df_mapa['saldo_contabilistico'].sum())} €", border=True)
+            st.metric("Saldo disponível total", f"{_n(df_mapa['saldo_disponivel'].sum())} €", border=True)
             st.metric("Contas", len(df_mapa), border=True)
             st.metric("Subiram / desceram", f"{n_subiram} / {n_desceram}", border=True,
                       help="Face à leitura anterior de cada conta.")
@@ -2099,27 +2185,25 @@ with aba_saldos:
         if not mapa:
             st.info("Sem saldos guardados (precisas de correr /saldos/atualizar primeiro).")
         else:
-            df_mapa["Seta (contab.)"] = df_mapa["variacao_contabilistico"].apply(seta_saldo)
-            df_mapa["Var. % (contab.)"] = df_mapa["variacao_pct_contabilistico"].apply(fmt_pct_saldo)
-            df_mapa["Seta (disp.)"] = df_mapa["variacao_disponivel"].apply(seta_saldo)
-            df_mapa["Var. % (disp.)"] = df_mapa["variacao_pct_disponivel"].apply(fmt_pct_saldo)
+            df_mapa["Var. (contab.)"] = [variacao_saldo(v, p) for v, p in
+                                         zip(df_mapa["variacao_contabilistico"], df_mapa["variacao_pct_contabilistico"])]
+            df_mapa["Var. (disp.)"] = [variacao_saldo(v, p) for v, p in
+                                       zip(df_mapa["variacao_disponivel"], df_mapa["variacao_pct_disponivel"])]
+            dia_mais_recente = df_mapa["dia"].max()
+            df_mapa["Empresa"] = [rotulo_conta(e, d, dia_mais_recente) for e, d in zip(df_mapa["entidade"], df_mapa["dia"])]
+            df_mapa["Dia"] = pd.to_datetime(df_mapa["dia"]).dt.strftime("%d/%m/%Y")
 
             tabela_mapa = df_mapa[[
-                "entidade", "dia", "saldo_contabilistico", "Seta (contab.)", "Var. % (contab.)",
-                "saldo_disponivel", "Seta (disp.)", "Var. % (disp.)",
+                "Empresa", "Dia", "saldo_contabilistico", "Var. (contab.)", "saldo_disponivel", "Var. (disp.)",
             ]].rename(columns={
-                "entidade": "Empresa",
-                "dia": "Dia",
                 "saldo_contabilistico": "Saldo contabilístico",
                 "saldo_disponivel": "Saldo disponível",
             })
 
             linha_total = pd.DataFrame([{
                 "Empresa": "Total", "Dia": "",
-                "Saldo contabilístico": df_mapa["saldo_contabilistico"].sum(),
-                "Seta (contab.)": "", "Var. % (contab.)": "",
-                "Saldo disponível": df_mapa["saldo_disponivel"].sum(),
-                "Seta (disp.)": "", "Var. % (disp.)": "",
+                "Saldo contabilístico": df_mapa["saldo_contabilistico"].sum(), "Var. (contab.)": "",
+                "Saldo disponível": df_mapa["saldo_disponivel"].sum(), "Var. (disp.)": "",
             }])
             tabela_mapa_com_total = pd.concat([tabela_mapa, linha_total], ignore_index=True)
 
@@ -2135,9 +2219,15 @@ with aba_saldos:
                 # (linha ~35px + cabeçalho ~38px + margem) - por omissão o
                 # st.dataframe só mostra ~10 linhas e obriga a fazer scroll.
                 height=int(35 * len(tabela_mapa_com_total) + 38 + 3),
+                # colunas estreitas onde o conteúdo é curto, para caber tudo sem
+                # scroll horizontal (o "Saldo disponível" ficava cortado)
                 column_config={
-                    "Saldo contabilístico": st.column_config.NumberColumn(format="euro"),
-                    "Saldo disponível": st.column_config.NumberColumn(format="euro"),
+                    "Empresa": st.column_config.TextColumn(width="large"),
+                    "Dia": st.column_config.TextColumn(width="small"),
+                    "Saldo contabilístico": st.column_config.NumberColumn(format="euro", width="small"),
+                    "Var. (contab.)": st.column_config.TextColumn(width="small"),
+                    "Saldo disponível": st.column_config.NumberColumn(format="euro", width="small"),
+                    "Var. (disp.)": st.column_config.TextColumn(width="small"),
                 },
             )
 
@@ -2163,8 +2253,8 @@ with aba_saldos:
             if resultado:
                 ultimo = sorted(resultado, key=lambda r: r["dia"])[-1]
                 with st.container(horizontal=True):
-                    st.metric(f"Contabilístico ({ultimo['dia']})", f"{ultimo['saldo_contabilistico']:,.2f} €", border=True)
-                    st.metric("Disponível", f"{ultimo['saldo_disponivel']:,.2f} €", border=True)
+                    st.metric(f"Contabilístico ({pd.to_datetime(ultimo['dia']):%d/%m/%Y})", f"{_n(ultimo['saldo_contabilistico'], 2)} €", border=True)
+                    st.metric("Disponível", f"{_n(ultimo['saldo_disponivel'], 2)} €", border=True)
             else:
                 st.warning("Nenhum saldo encontrado para essa empresa/dia.")
 
@@ -2231,15 +2321,15 @@ def _secao_vendas_indice(empresa, periodo: dict):
 
     with st.container(horizontal=True):
         st.metric("Negócios", resumo["negocios"], border=True)
-        st.metric("Valor dos negócios", f"{resumo['valor_proposto']:,.0f} €", border=True)
-        st.metric("Recebido", f"{resumo['recebido']:,.0f} €", border=True,
+        st.metric("Valor dos negócios", f"{_n(resumo['valor_proposto'])} €", border=True)
+        st.metric("Recebido", f"{_n(resumo['recebido'])} €", border=True,
                   help="Pagamentos da agenda casados com o Mapa, mais o sinal que o índice regista como recebido.")
-        st.metric("Por receber", f"{resumo['por_receber']:,.0f} €", border=True)
-        st.metric("Por confirmar", f"{resumo['por_confirmar']:,.0f} €",
+        st.metric("Por receber", f"{_n(resumo['por_receber'])} €", border=True)
+        st.metric("Por confirmar", f"{_n(resumo['por_confirmar'])} €",
                   f"{resumo['n_por_confirmar']} negócio(s)" if resumo["n_por_confirmar"] else None,
-                  delta_color="off", border=True,
+                  delta_color="off", delta_arrow="off", border=True,
                   help="Reforços/escrituras com data já passada sem entrada identificada no Mapa.")
-        st.metric("Agendado · 30 dias", f"{resumo['proximos_30_dias']:,.0f} €", border=True,
+        st.metric("Agendado · 30 dias", f"{_n(resumo['proximos_30_dias'])} €", border=True,
                   help="Sinais, reforços e escrituras marcados no índice para os próximos 30 dias.")
 
     if dados.get("por_mes"):
@@ -2260,7 +2350,7 @@ def _secao_vendas_indice(empresa, periodo: dict):
 
     def _proximo(n):
         p = n["proximo_pagamento"]
-        return f"{p['tipo']} · {pd.to_datetime(p['dia']):%d/%m/%Y} · {p['valor']:,.0f} €" if p else "—"
+        return f"{p['tipo']} · {pd.to_datetime(p['dia']):%d/%m/%Y} · {_n(p['valor'])} €" if p else "—"
 
     df_neg = pd.DataFrame([{
         "Estado": ESTADOS_NEGOCIO.get(n["estado"], n["estado"]), "Ref.": n["ref"],
@@ -2338,9 +2428,9 @@ with aba_analise_extratos:
 
     # --- KPIs
     with st.container(horizontal=True):
-        st.metric("Recebido (confirmado)", f"{total_recebido:,.0f} €", border=True)
-        st.metric("Pago (confirmado)", f"{total_pago:,.0f} €", border=True)
-        st.metric("Líquido", f"{total_recebido - total_pago:+,.0f} €", border=True)
+        st.metric("Recebido (confirmado)", f"{_n(total_recebido)} €", border=True)
+        st.metric("Pago (confirmado)", f"{_n(total_pago)} €", border=True)
+        st.metric("Líquido", f"{_n(total_recebido - total_pago, sinal=True)} €", border=True)
         st.metric("Linhas pendentes", n_pendentes, border=True,
                   help="Linhas do Mapa ainda sem movimento correspondente no extrato.")
         st.metric("CPCVs / escrituras", len(linhas_cpcv_escritura), border=True)
