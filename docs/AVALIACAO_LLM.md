@@ -139,6 +139,21 @@ Os embeddings dos movimentos ficam na tabela `embeddings_movimentos` ([`app/serv
 
 O Postgres continua a ser o `postgres:16-alpine` com o pgvector compilado lá dentro ([`docker/db/Dockerfile`](../docker/db/Dockerfile)), e não a imagem oficial do pgvector (Debian). O volume de dados foi criado com a musl do Alpine, e passar para a glibc muda a ordenação do texto por baixo dos índices já existentes. Se a extensão não estiver disponível, a app arranca na mesma e a recuperação calcula os embeddings em memória.
 
+### E no LLM? (ablação, 07/10/2026)
+
+Mesmos 60 casos, só LLM (estratégia `sugestao`, `qwen2.5:3b`), muda apenas o histórico que vai para o prompt (`python -m app.evals.avaliar --estrategia sugestao --recuperacao recencia|denso`):
+
+| Histórico no prompt | Exatidão | Linha certa | Nenhuma serve | Respostas "nenhuma serve" |
+|---|---|---|---|---|
+| Os 6 mais recentes | 30,0 % | 14,6 % | 91,7 % | 50 de 60 |
+| Os 6 mais parecidos | 30,0 % | 14,6 % | 91,7 % | 51 de 60 |
+
+**Um contexto melhor não mudou nada no modelo pequeno.** Mudaram 9 respostas, mas compensam-se: 3 linhas certas ganhas e 3 perdidas, e 1 "nenhuma serve" ganho e 1 perdido. O `qwen2.5:3b` responde "nenhuma serve" em 5 de cada 6 casos, venha o contexto que vier. O limite está no modelo, não na recuperação. Dois cuidados a ter:
+- neste conjunto só 18 casos têm algum item relevante no histórico (ver acima), por isso o efeito possível era pequeno à partida;
+- a latência (33 s contra 21 s) não é comparável, porque as duas corridas tiveram o CPU partilhado com outros processos de forma diferente. Os tokens são iguais (~590 de entrada).
+
+A recuperação fica em produção porque é ela que decide o que o modelo vê: com um modelo que use o contexto (o 7b, ou outro), parte de 80 % em vez de 39 %. Isso é o que se mede a seguir, já com este contexto.
+
 ## Porta de qualidade no deploy
 
 No job `deploy` do [ci.yml](../.github/workflows/ci.yml), no runner desta máquina, onde está o Ollama:
