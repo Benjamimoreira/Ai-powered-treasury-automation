@@ -1238,10 +1238,111 @@ def _painel_forecast():
                     )
 
 
+def _rodape_resposta(mensagem: dict, chave: str):
+    """Por baixo de cada resposta do Assistente: as ferramentas consultadas,
+    o aviso do guardrail de números (valores que não vieram de nenhuma
+    ferramenta - ver app/services/guardrail_numeros.py) e o 👍/👎."""
+    if mensagem.get("ferramentas_usadas"):
+        st.caption("🔧 consultou: " + ", ".join(mensagem["ferramentas_usadas"]))
+    if mensagem.get("numeros_nao_verificados"):
+        st.warning(
+            "⚠ Estes valores não aparecem nos dados que o assistente consultou - confirma antes de os usar: "
+            + ", ".join(mensagem["numeros_nao_verificados"])
+        )
+    _feedback_resposta(mensagem, chave)
+
+
+def _feedback_resposta(mensagem: dict, chave: str):
+    """👍/👎 por baixo de cada resposta do Assistente - vai para
+    interacoes_assistente e alimenta Monitorização > Qualidade da IA."""
+    if mensagem.get("role") != "assistant" or not mensagem.get("id"):
+        return
+    valor = st.feedback("thumbs", key=f"feedback_chat_{chave}_{mensagem['id']}")
+    if valor is not None and valor != mensagem.get("feedback"):
+        try:
+            api.enviar_feedback_chat(mensagem["id"], util=bool(valor))
+            mensagem["feedback"] = valor
+        except Exception as e:
+            st.caption(f"Não foi possível guardar o feedback: {e}")
+
+
+@st.fragment
+def _painel_assistente(chave: str, altura_conversa=None):
+    """O Assistente (chat), no topo da Visão Geral e no separador próprio -
+    a mesma conversa nos dois (st.session_state["chat_mensagens"]), `chave`
+    só separa os widgets. Fragmento: uma pergunta volta a correr só isto, e
+    não a página toda (as respostas do modelo local demoram minutos).
+    `altura_conversa`: altura fixa, com scroll, para a conversa não empurrar
+    o resto da página para baixo."""
+    with st.container(border=True, horizontal=True, vertical_alignment="center"):
+        # transparência (AI Act, art. 50.º): quem conversa tem de saber que é
+        # uma IA e o que ela pode fazer - ver docs/GOVERNANCA_IA.md
+        st.markdown(
+            "**Assistente de IA** · respostas geradas por um modelo de linguagem "
+            f"local ({os.environ.get('OLLAMA_MODEL_ID', 'qwen2.5:3b')}, via Ollama - os dados não saem desta máquina) "
+            "a partir dos dados reais, "
+            "com ferramentas só de leitura - nunca reconcilia nem resolve nada sozinho. "
+            "Pode errar: confirma os números importantes nos outros separadores."
+        )
+        if st.button("🗑 Reiniciar conversa", key=f"reiniciar_chat_{chave}"):
+            try:
+                api.reiniciar_chat()
+            except Exception as e:
+                st.error(f"Erro: {e}")
+            st.session_state["chat_mensagens"] = []
+            st.rerun()
+
+    if "chat_mensagens" not in st.session_state:
+        st.session_state["chat_mensagens"] = []
+
+    if not st.session_state["chat_mensagens"]:
+        st.caption("Exemplos: \"Qual é o saldo total hoje?\" · \"Que empresas estão em zona crítica?\" · "
+                   "\"Quanto pagou a J. Pinto em agosto?\"")
+
+    conversa = (st.container(height=altura_conversa) if altura_conversa and st.session_state["chat_mensagens"]
+                else st.container())
+    with conversa:
+        for mensagem in st.session_state["chat_mensagens"]:
+            with st.chat_message(mensagem["role"]):
+                st.write(mensagem["content"])
+                _rodape_resposta(mensagem, chave)
+
+    pergunta = st.chat_input("Pergunta sobre os dados da tesouraria...", key=f"pergunta_chat_{chave}")
+    if pergunta:
+        st.session_state["chat_mensagens"].append({"role": "user", "content": pergunta})
+        with conversa:
+            with st.chat_message("user"):
+                st.write(pergunta)
+
+            with st.chat_message("assistant"):
+                with st.spinner("A pensar... (o modelo local pode demorar até 5 minutos)"):
+                    try:
+                        resultado = api.perguntar_chat(pergunta)
+                        resposta = resultado["resposta"]
+                        ferramentas = resultado.get("ferramentas_usadas", [])
+                        interacao_id = resultado.get("id")
+                        nao_verificados = resultado.get("numeros_nao_verificados", [])
+                    except Exception as e:
+                        resposta = f"Erro a contactar o assistente: {e}"
+                        ferramentas = []
+                        interacao_id = None
+                        nao_verificados = []
+                st.write(resposta)
+                mensagem_nova = {
+                    "role": "assistant", "content": resposta, "ferramentas_usadas": ferramentas, "id": interacao_id,
+                    "numeros_nao_verificados": nao_verificados,
+                }
+                _rodape_resposta(mensagem_nova, chave)
+
+        st.session_state["chat_mensagens"].append(mensagem_nova)
+
+
 with aba_forecast:
     _painel_forecast()
 
 with aba_visao_geral:
+    _painel_assistente("visao_geral", altura_conversa=360)
+
     with st.container(border=True, horizontal=True, vertical_alignment="bottom"):
         dia_vg = st.date_input("Dia", value=date.today(), key="dia_visao_geral", width=220)
         st.caption(
@@ -2512,92 +2613,8 @@ with aba_analise_extratos:
         else:
             st.info("Sem pagamentos registados no período.")
 
-def _rodape_resposta(mensagem: dict):
-    """Por baixo de cada resposta do Assistente: as ferramentas consultadas,
-    o aviso do guardrail de números (valores que não vieram de nenhuma
-    ferramenta - ver app/services/guardrail_numeros.py) e o 👍/👎."""
-    if mensagem.get("ferramentas_usadas"):
-        st.caption("🔧 consultou: " + ", ".join(mensagem["ferramentas_usadas"]))
-    if mensagem.get("numeros_nao_verificados"):
-        st.warning(
-            "⚠ Estes valores não aparecem nos dados que o assistente consultou - confirma antes de os usar: "
-            + ", ".join(mensagem["numeros_nao_verificados"])
-        )
-    _feedback_resposta(mensagem)
-
-
-def _feedback_resposta(mensagem: dict):
-    """👍/👎 por baixo de cada resposta do Assistente - vai para
-    interacoes_assistente e alimenta Monitorização > Qualidade da IA."""
-    if mensagem.get("role") != "assistant" or not mensagem.get("id"):
-        return
-    valor = st.feedback("thumbs", key=f"feedback_chat_{mensagem['id']}")
-    if valor is not None and valor != mensagem.get("feedback"):
-        try:
-            api.enviar_feedback_chat(mensagem["id"], util=bool(valor))
-            mensagem["feedback"] = valor
-        except Exception as e:
-            st.caption(f"Não foi possível guardar o feedback: {e}")
-
-
 with aba_assistente:
-    with st.container(border=True, horizontal=True, vertical_alignment="center"):
-        # transparência (AI Act, art. 50.º): quem conversa tem de saber que é
-        # uma IA e o que ela pode fazer - ver docs/GOVERNANCA_IA.md
-        st.markdown(
-            "**Assistente de IA** · respostas geradas por um modelo de linguagem "
-            f"local ({os.environ.get('OLLAMA_MODEL_ID', 'qwen2.5:3b')}, via Ollama - os dados não saem desta máquina) "
-            "a partir dos dados reais, "
-            "com ferramentas só de leitura - nunca reconcilia nem resolve nada sozinho. "
-            "Pode errar: confirma os números importantes nos outros separadores."
-        )
-        if st.button("🗑 Reiniciar conversa"):
-            try:
-                api.reiniciar_chat()
-            except Exception as e:
-                st.error(f"Erro: {e}")
-            st.session_state["chat_mensagens"] = []
-            st.rerun()
-
-    if "chat_mensagens" not in st.session_state:
-        st.session_state["chat_mensagens"] = []
-
-    if not st.session_state["chat_mensagens"]:
-        st.caption("Exemplos: \"Qual é o saldo total hoje?\" · \"Que empresas estão em zona crítica?\" · "
-                   "\"Quanto pagou a J. Pinto em agosto?\"")
-
-    for mensagem in st.session_state["chat_mensagens"]:
-        with st.chat_message(mensagem["role"]):
-            st.write(mensagem["content"])
-            _rodape_resposta(mensagem)
-
-    pergunta = st.chat_input("Pergunta sobre os dados da tesouraria...")
-    if pergunta:
-        st.session_state["chat_mensagens"].append({"role": "user", "content": pergunta})
-        with st.chat_message("user"):
-            st.write(pergunta)
-
-        with st.chat_message("assistant"):
-            with st.spinner("A pensar... (o modelo local pode demorar até 5 minutos)"):
-                try:
-                    resultado = api.perguntar_chat(pergunta)
-                    resposta = resultado["resposta"]
-                    ferramentas = resultado.get("ferramentas_usadas", [])
-                    interacao_id = resultado.get("id")
-                    nao_verificados = resultado.get("numeros_nao_verificados", [])
-                except Exception as e:
-                    resposta = f"Erro a contactar o assistente: {e}"
-                    ferramentas = []
-                    interacao_id = None
-                    nao_verificados = []
-            st.write(resposta)
-            mensagem_nova = {
-                "role": "assistant", "content": resposta, "ferramentas_usadas": ferramentas, "id": interacao_id,
-                "numeros_nao_verificados": nao_verificados,
-            }
-            _rodape_resposta(mensagem_nova)
-
-        st.session_state["chat_mensagens"].append(mensagem_nova)
+    _painel_assistente("aba")
 
 # Rodapé corporativo - fecha visualmente com o cabeçalho (mesma barra
 # escura, mesmo traço vermelho fino), assinala que é uma ferramenta
