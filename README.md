@@ -33,6 +33,10 @@ camadas com responsabilidades claras:
 
 ## Arquitetura
 
+Documentação detalhada: [arquitetura](docs/ARQUITETURA.md) (componentes, fluxos,
+modelo de dados) · [API](docs/API.md) (endpoints HTTP e tools MCP) ·
+[operação](docs/OPERACAO.md) (configuração, deploy, rotina, backups, resolução de problemas).
+
 ```
 ┌──────────────┐     ┌─────────────────────────────────────┐
 │  Dashboard   │────▶│              FastAPI                 │
@@ -99,7 +103,7 @@ mcp_server.py                # servidor MCP (tools)
 scripts/                     # scripts de migração/importação únicos + testes manuais
 evals/ambiguos.json          # conjunto de avaliação do LLM (pseudonimizado)
 evals/recuperacao.json       # conjunto de avaliação da recuperação/RAG (pseudonimizado)
-docs/                        # avaliação de LLMs, governança (AI Act/RGPD)
+docs/                        # arquitetura, API, operação, avaliação de LLMs, governança (AI Act/RGPD)
 tests/                       # suite pytest
 Dockerfile · docker-compose.yml · .github/workflows/ci.yml
 ```

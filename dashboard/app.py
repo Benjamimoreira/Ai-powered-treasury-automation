@@ -468,10 +468,10 @@ with col_botao:
                 st.error(f"Erro: {e}")
 
 (
-    aba_forecast, aba_visao_geral, aba_monitorizacao, aba_faturas, aba_saldos,
-    aba_analise_extratos, aba_assistente,
+    aba_visao_geral, aba_monitorizacao, aba_faturas, aba_saldos,
+    aba_analise_extratos, aba_assistente, aba_forecast,
 ) = st.tabs(
-    ["Forecast", "Visão Geral", "Monitorização", "Faturas", "Saldos", "Análise de Extratos", "Assistente"]
+    ["Visão Geral", "Monitorização", "Faturas", "Saldos", "Análise de Extratos", "Assistente", "Forecast"]
 )
 
 @st.cache_data(ttl=3600, show_spinner="A correr o backtest da previsão...")
@@ -1386,7 +1386,7 @@ with aba_visao_geral:
             df_mensal["Recebimentos"] = df_mensal[f"recebimentos{sufixo}"]
             df_mensal["Pagamentos"] = -df_mensal[f"pagamentos{sufixo}"]
             df_mensal["Líquido"] = df_mensal["Recebimentos"] + df_mensal["Pagamentos"]
-            df_barras = df_mensal.melt(
+            df_linhas = df_mensal.melt(
                 id_vars=["dia"], value_vars=["Recebimentos", "Pagamentos"], var_name="tipo", value_name="valor",
             )
             cores_mensal = {"Recebimentos": COR_RECEBIMENTOS_MES, "Pagamentos": COR_PAGAMENTOS_MES, "Líquido do dia": "#1c1f26"}
@@ -1395,7 +1395,7 @@ with aba_visao_geral:
             # eixo repetia "01/10 01/10 01/10…"
             eixo_dia = alt.X("dia:T", title=None, axis=alt.Axis(
                 format="%d/%m", labelAngle=-45, tickCount={"interval": "day", "step": 1}))
-            barras_mes = alt.Chart(df_barras).mark_bar(size=12).encode(
+            linhas_mes = alt.Chart(df_linhas).mark_line(point=True, strokeWidth=2).encode(
                 x=eixo_dia,
                 y=alt.Y("valor:Q", title="EUR (pagamentos para baixo)", axis=alt.Axis(format=",.0f")),
                 color=alt.Color("tipo:N", scale=escala_mensal, legend=alt.Legend(title=None, orient="top")),
@@ -1407,7 +1407,7 @@ with aba_visao_geral:
                 tooltip=[alt.Tooltip("dia:T", format="%d/%m"), alt.Tooltip("Líquido:Q", format=",.2f")],
             )
             zero_mes = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#5c6370", strokeWidth=1).encode(y="y:Q")
-            st.altair_chart((barras_mes + zero_mes + liquido_mes).properties(height=280), width="stretch")
+            st.altair_chart((linhas_mes + zero_mes + liquido_mes).properties(height=280), width="stretch")
             internas_mes = (df_mensal["recebimentos"] - df_mensal["recebimentos_externos"]).sum()
             st.caption(
                 ("Só o que entrou e saiu de fora do grupo: "
