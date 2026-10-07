@@ -10,6 +10,7 @@ sentence-transformers~=5.7
 huggingface_hub~=1.27
 mcp[cli]<2
 psycopg[binary]~=3.3
+pgvector~=0.5
 python-dotenv~=1.2
 streamlit~=1.61
 scikit-learn~=1.9

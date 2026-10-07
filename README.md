@@ -38,18 +38,16 @@ camadas com responsabilidades claras:
 │  Dashboard   │────▶│              FastAPI                 │
 │  (Streamlit) │     │  reconciliação · ambíguos · saldos    │
 └──────────────┘     │  anomalias (ML) · sync OneDrive       │
-                      └───────┬───────────────┬──────────────┘
-┌──────────────┐              │               │
-│  MCP Server  │──────────────┘               │
-│ (mcp_server) │                       ┌───────▼────────┐
-└──────────────┘                       │  SQLite/Postgres │
-                                        └──────────────────┘
-        │
-        ▼
-┌──────────────────┐        ┌────────────────────────┐
-│ HuggingFace       │        │  OneDrive (só leitura)  │
-│ (LLM + RAG local) │        │  extratos CGD + Mapa    │
-└──────────────────┘        └────────────────────────┘
+                      └───┬──────────┬───────────────┬───────┘
+┌──────────────┐          │          │               │
+│  MCP Server  │──────────┘          │       ┌───────▼──────────┐
+│ (mcp_server) │                     │       │ Postgres+pgvector │
+└──────────────┘                     │       │ (SQLite em dev)   │
+                                     │       └──────────────────┘
+┌──────────────────────┐   ┌─────────▼─────────┐  ┌────────────────────────┐
+│ Ollama (LLM local)    │◀──│ regras → RAG → LLM │  │  OneDrive (só leitura)  │
+│ + embeddings (CPU)    │   │ traces → Phoenix   │  │  extratos CGD + Mapa    │
+└──────────────────────┘   └───────────────────┘  └────────────────────────┘
 ```
 
 ## Funcionalidades
@@ -58,7 +56,8 @@ camadas com responsabilidades claras:
 |---|---|
 | **Reconciliação** | Casa movimentos bancários com linhas "Valor Previsto" do Mapa, por empresa (ignora LDA/SA) + valor. Idempotente - nunca reprocessa nem duplica. |
 | **Ambíguos** | Movimentos com mais que uma linha candidata ficam em fila para decisão humana. |
-| **LLM + RAG** | Para cada caso ambíguo, dá ao LLM o descritivo do banco, as linhas candidatas, o histórico de imputações da empresa e casos parecidos já resolvidos (embeddings `sentence-transformers`), e grava uma sugestão com justificação. Nunca aplica sozinho. |
+| **LLM + RAG** | Para cada caso ambíguo, dá ao LLM o descritivo do banco, as linhas candidatas e os 6 movimentos anteriores da empresa **mais parecidos** com este, com a rubrica a que foram imputados no Mapa. Os embeddings (`sentence-transformers`) ficam guardados no Postgres com **pgvector**, e a pesquisa por semelhança é feita na própria base de dados (`app/services/rag_historico.py`, `app/services/indice_vetorial.py`). Grava uma sugestão com justificação; nunca aplica sozinho. |
+| **Avaliação da recuperação** | A parte "R" do RAG medida à parte, sem LLM: recall@k, MRR e precisão do contexto em ~1 300 consultas reais pseudonimizadas (`evals/recuperacao.json`), com a relevância tirada dos pares reais (sem etiquetagem manual). A recuperação por embeddings leva o recall@6 de 39 % (os mais recentes) para 80 %; o método e o modelo foram escolhidos por estes números, que também são porta de qualidade no deploy. Ver [docs/AVALIACAO_LLM.md](docs/AVALIACAO_LLM.md#recuperação-a-parte-r-do-rag). |
 | **Agente de investigação (LangGraph)** | `POST /ambiguos/{id}/investigar`: recolhe provas (histórico da empresa, movimentos com o mesmo descritivo, faturas com o mesmo valor), pede mais histórico se precisar, e prepara um dossier com recomendação, confiança e alertas. Regras fixas no fim: id inexistente descartado, confiança baixa obriga a revisão, decisão sempre humana (`app/services/agente_ambiguos.py`). |
 | **Avaliação de LLMs** | Conjunto de 60 casos com resposta conhecida, construído a partir de dados reais e pseudonimizado (`evals/ambiguos.json`). `python -m app.evals.avaliar` mede exatidão, respostas válidas, latência, tokens e custo; no CI, o deploy não avança se a exatidão descer abaixo do limiar. Resultados e escolha do modelo em [docs/AVALIACAO_LLM.md](docs/AVALIACAO_LLM.md). |
 | **Observabilidade de LLMs** | Tudo no **Arize Phoenix** (self-hosted, `http://localhost:6006`): cada ronda do Assistente, cada sugestão e o grafo do agente nó a nó, com prompt, resposta, latência e tokens (`app/services/llm_tracing.py`). As avaliações offline são experiências no Phoenix, e o feedback, o guardrail de números e o juiz das avaliações online ficam como anotações de cada trace - ver [docs/AVALIACAO_LLM.md](docs/AVALIACAO_LLM.md). |
@@ -76,7 +75,7 @@ camadas com responsabilidades claras:
 
 ## Stack
 
-FastAPI · SQLAlchemy (SQLite local / Postgres em Docker) · Pydantic ·
+FastAPI · SQLAlchemy (SQLite local / Postgres + pgvector em Docker) · Pydantic ·
 sentence-transformers · Ollama (LLM local) · LangGraph ·
 OpenTelemetry + Arize Phoenix · scikit-learn · statsmodels · MCP SDK · Streamlit ·
 pytest · Docker · GitHub Actions
@@ -98,7 +97,8 @@ dashboard/
   api_client.py                # cliente HTTP fino - o dashboard nunca acede à BD diretamente
 mcp_server.py                # servidor MCP (tools)
 scripts/                     # scripts de migração/importação únicos + testes manuais
-evals/ambiguos.json          # conjunto de avaliação (pseudonimizado)
+evals/ambiguos.json          # conjunto de avaliação do LLM (pseudonimizado)
+evals/recuperacao.json       # conjunto de avaliação da recuperação/RAG (pseudonimizado)
 docs/                        # avaliação de LLMs, governança (AI Act/RGPD)
 tests/                       # suite pytest
 Dockerfile · docker-compose.yml · .github/workflows/ci.yml
@@ -154,7 +154,7 @@ desenvolvimento (Docker Desktop sem WSL2 disponível).
 
 A cada push para `master`, o GitHub Actions ([ci.yml](.github/workflows/ci.yml))
 corre os testes, faz o build das imagens e publica-as no GitHub Container
-Registry (`ghcr.io/benjamimoreira/ai-powered-treasury-automation/{api,log-archiver,faturas-ocr}`,
+Registry (`ghcr.io/benjamimoreira/ai-powered-treasury-automation/{api,db,log-archiver,faturas-ocr}`,
 tags `latest` e `<sha do commit>`). A máquina de destino só precisa de
 Docker - não compila nada nem precisa de Python.
 

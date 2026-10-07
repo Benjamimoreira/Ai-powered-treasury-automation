@@ -86,14 +86,69 @@ O vLLM ficou de fora porque precisa de uma GPU NVIDIA.
 
 **Medido em 06/10/2026: o `qwen2.5:7b` não compensa nas sugestões.** Exatidão de 66,7 % contra 71,7 % do `qwen2.5:3b`, com mais do dobro da latência. Encontra mais linhas certas (75 % contra 69 %), mas arrisca mais: em 8 dos 12 casos "nenhuma serve" escolhe uma linha (33 % contra 83 %). Como uma sugestão de linha errada é pior do que "não sei", **as sugestões ficam com o 3b**. O 7b fica como juiz das avaliações online do Assistente: julgar uma resposta é outra tarefa, e o juiz deve ser maior do que o modelo avaliado. A calibração contra as anotações humanas vai dizer se é um bom juiz.
 
+## Recuperação (a parte "R" do RAG)
+
+Medida à parte do LLM, porque a exatidão final mistura duas coisas: o contexto que o modelo recebe e o que faz com ele.
+
+### O problema que a avaliação encontrou
+
+O "RAG" original procurava casos ambíguos **já resolvidos por uma pessoa**, e havia 0 na base de dados. Nos 60 casos de avaliação, essa parte do prompt estava sempre vazia: a recuperação não contribuía nada. O conhecimento útil está noutro lado, nos ~1 800 pares reais "descritivo do banco → rubrica no Mapa". Mas o prompt recebia os **6 mais recentes** da empresa, fossem ou não parecidos com o caso.
+
+### O conjunto
+
+[`evals/recuperacao.json`](../evals/recuperacao.json), gerado por [`scripts/construir_conjunto_recuperacao.py`](../scripts/construir_conjunto_recuperacao.py) e pseudonimizado como o outro (um pseudonimizador por empresa, para o mesmo arrendatário manter o mesmo pseudónimo em todo o histórico).
+
+- **Cada par real é uma consulta**, contra todo o histórico anterior da empresa (só dias anteriores, sem espreitar o futuro): 1 281 consultas.
+- **Um item é relevante** se foi imputado à mesma rubrica que a resposta certa. A relevância sai dos dados, sem etiquetagem manual.
+- **621 consultas têm pelo menos um relevante** no histórico. Nas outras (a primeira vez que uma rubrica aparece), nenhum método pode acertar, e ficam fora da conta.
+
+O `evals/ambiguos.json` não servia para isto: guarda só 25 itens de histórico por caso e um caso por rubrica, por isso **só 18 dos 48 casos** têm algum relevante. São poucos para distinguir métodos ou modelos.
+
+### Resultados (07/10/2026, 621 consultas)
+
+`python -m app.evals.avaliar_recuperacao` ([`app/evals/avaliar_recuperacao.py`](../app/evals/avaliar_recuperacao.py)). Os métodos estão em [`app/services/rag_historico.py`](../app/services/rag_historico.py).
+
+| Método | Modelo de embeddings | R@1 | R@3 | **R@6** | **MRR** | P@6 |
+|---|---|---|---|---|---|---|
+| Recência (o que estava em produção) | - | 12,4 % | 22,7 % | 38,8 % | 0,230 | 9,7 % |
+| Lexical (BM25) | - | 57,0 % | 68,1 % | 77,1 % | 0,650 | 30,3 % |
+| **Denso** (produção) | `all-MiniLM-L6-v2` | **57,8 %** | 71,3 % | **80,5 %** | **0,669** | **33,4 %** |
+| Denso | `multilingual-e5-small` | 57,0 % | 71,8 % | 80,2 % | 0,665 | 33,4 % |
+| Denso | `multilingual-e5-base` | 58,1 % | 71,8 % | 79,7 % | 0,670 | 33,0 % |
+| Denso | `paraphrase-multilingual-MiniLM-L12-v2` | 57,6 % | 70,0 % | 79,4 % | 0,662 | 33,0 % |
+| Híbrido (BM25 + denso, RRF) | `all-MiniLM-L6-v2` | 57,3 % | 70,4 % | 79,5 % | 0,664 | 31,6 % |
+| Híbrido + valor (RRF de 3 listas) | `multilingual-e5-small` | 51,4 % | 71,2 % | 83,1 % | 0,638 | 32,4 % |
+
+R@k: fração das consultas com um relevante entre os k primeiros (k=6 é o que vai para o prompt). MRR: média de 1/posição do primeiro relevante. P@6: fração dos 6 itens do prompt que são relevantes.
+
+### O que os números dizem
+
+1. **A recuperação duplica a qualidade do contexto.** Com os 6 mais recentes, só em 39 % das consultas o LLM via um exemplo da rubrica certa; com os 6 mais parecidos, em 80 %. O sinal útil no contexto passa de 1 em 10 itens para 1 em 3.
+2. **Um modelo multilingue não ajuda.** A hipótese era que um modelo treinado só em inglês (`all-MiniLM-L6-v2`) falhasse em descritivos portugueses. Os quatro modelos ficam dentro de 1 ponto. Os descritivos bancários são códigos e nomes de entidades ("AGUAS DE GONDOMAR", "TRF PESSOA_03", "FT 01P202620"), não frases. **Fica o mais pequeno** (~90 MB contra ~470 MB do e5-base).
+3. **O híbrido não ganha ao denso.** O BM25 sozinho já é bom (as palavras são muito específicas), mas a fusão por RRF não acrescenta nada. Fica o mais simples.
+4. **O valor como sinal piora.** A ideia era que a mesma renda se repete com o mesmo valor. Mas fundido com o texto baixa o R@1 de 57 % para 47-51 %, porque valores parecidos aparecem em rubricas diferentes. Sobe o R@6 para 83 %, mas à custa de pôr itens irrelevantes à frente. Ficou de fora.
+
+### Em produção: pgvector
+
+Os embeddings dos movimentos ficam na tabela `embeddings_movimentos` ([`app/services/indice_vetorial.py`](../app/services/indice_vetorial.py)), com a coluna do tipo `vector(384)` do **pgvector**. A pesquisa é feita na própria base de dados, com a distância de cosseno (`<=>`), filtrada pelos movimentos anteriores da empresa. Verificado contra o cálculo em Python, com dados reais:
+- **5 278 movimentos indexados em 96 s** (CPU). Depois disso, só se calculam os embeddings dos movimentos novos;
+- a mesma escolha de 6 em **38 de 40 consultas**; as 2 diferentes são empates (o mesmo descritivo em dias diferentes, ou semelhanças iguais até à 3.ª casa decimal);
+- a pesquisa vetorial demora **~7 ms**.
+
+**Pesquisa exata, sem índice HNSW, de propósito.** Cada consulta é sobre o histórico de uma empresa (centenas de vetores, ~5 mil no total), e o filtro por empresa e dia tiraria o proveito de um índice aproximado. Um HNSW só compensa com dezenas de milhares de vetores pesquisados sem filtro.
+
+O Postgres continua a ser o `postgres:16-alpine` com o pgvector compilado lá dentro ([`docker/db/Dockerfile`](../docker/db/Dockerfile)), e não a imagem oficial do pgvector (Debian). O volume de dados foi criado com a musl do Alpine, e passar para a glibc muda a ordenação do texto por baixo dos índices já existentes. Se a extensão não estiver disponível, a app arranca na mesma e a recuperação calcula os embeddings em memória.
+
 ## Porta de qualidade no deploy
 
 No job `deploy` do [ci.yml](../.github/workflows/ci.yml), no runner desta máquina, onde está o Ollama:
 1. a imagem nova é descarregada;
-2. se mudou algo que afeta o LLM (prompt, regras, agente, conjunto, avaliador), a avaliação **corre dentro da imagem nova**, contra o Ollama;
-3. se a exatidão ficar **abaixo de 65 %**, o passo falha e os **containers antigos continuam a correr**.
+2. se mudou algo que afeta o LLM (prompt, regras, agente, recuperação, conjuntos, avaliadores), as avaliações **correm dentro da imagem nova**;
+3. **primeiro a recuperação**, sem LLM (~1 minuto): se o recall@6 do método em produção ficar **abaixo de 75 %**, o passo falha;
+4. **depois o LLM**, contra o Ollama: se a exatidão ficar **abaixo de 65 %**, o passo falha;
+5. se algum falhar, os **containers antigos continuam a correr**.
 
-O limiar fica cerca de 4 casos abaixo dos 71,7 % medidos: uma margem para a variação normal do modelo, que ainda assim apanha qualquer regressão a sério.
+O limiar do LLM fica cerca de 4 casos abaixo dos 71,7 % medidos: uma margem para a variação normal do modelo, que ainda assim apanha qualquer regressão a sério. O da recuperação fica 5 pontos abaixo dos 80,5 % medidos. Esta avaliação é determinística, por isso a margem existe só para o conjunto poder crescer com dados novos sem partir o deploy.
 
 ## Observabilidade
 

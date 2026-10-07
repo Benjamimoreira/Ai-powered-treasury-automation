@@ -1,6 +1,9 @@
 services:
+  # Postgres 16 com a extensão pgvector (embeddings do histórico, para a
+  # recuperação do RAG - ver docker/db/Dockerfile e app/services/indice_vetorial.py)
   db:
-    image: postgres:16-alpine
+    build: ./docker/db
+    image: ${IMAGE_PREFIX:-ghcr.io/benjamimoreira/ai-powered-treasury-automation}/db:${IMAGE_TAG:-latest}
     environment:
       POSTGRES_USER: tesouraria
       POSTGRES_PASSWORD: tesouraria
@@ -50,6 +53,7 @@ services:
       - "${COMERCIAL_INDICE_RAIZ_DOCKER}:/comercial:ro"
     command: >
       sh -c "python scripts/criar_tabelas.py &&
+             (python scripts/indexar_embeddings.py >> /var/log/app/indexar_embeddings.log 2>&1 &) &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 2>&1 | tee /var/log/app/api.log"
     depends_on:
       db:

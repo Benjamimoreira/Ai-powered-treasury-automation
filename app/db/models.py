@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, Integer, JSON, String
 from sqlalchemy.orm import relationship
+from pgvector.sqlalchemy import Vector
 
 from app.db.session import Base
 
@@ -40,6 +41,24 @@ class LinhaMapa(Base):
     descricao = Column(String, nullable=True)
 
     reconciliacoes = relationship("Reconciliacao", back_populates="linha")
+
+
+class EmbeddingMovimento(Base):
+    """Embedding do descritivo de um movimento bancário, para a recuperação
+    do histórico da entidade (app/services/indice_vetorial.py). No Postgres
+    a coluna é do tipo vector (pgvector) e a pesquisa por semelhança é feita
+    na própria base de dados; no SQLite (testes, desenvolvimento) fica em
+    JSON e a pesquisa é feita em Python. Um movimento pode ter embeddings de
+    vários modelos (para os comparar sem apagar nada)."""
+    __tablename__ = "embeddings_movimentos"
+
+    movimento_id = Column(Integer, ForeignKey("movimentos_bancarios.id"), primary_key=True)
+    modelo = Column(String, primary_key=True)
+    texto = Column(String, nullable=False)
+    # 384 = all-MiniLM-L6-v2 (e os outros modelos comparados) - ver
+    # rag_historico.DIMENSAO_EMBEDDINGS
+    vetor = Column(Vector(384).with_variant(JSON(), "sqlite"), nullable=False)
+    criado_em = Column(DateTime, default=_utcnow_naive, nullable=False)
 
 
 class Reconciliacao(Base):
@@ -227,3 +246,21 @@ class EventoScript(Base):
     nivel = Column(String, nullable=False)
     mensagem = Column(String, nullable=False)
     timestamp = Column(DateTime, default=_utcnow_naive, nullable=False, index=True)
+
+
+def criar_tabelas(engine) -> None:
+    """create_all (só cria o que falta) e, antes, CREATE EXTENSION vector no
+    Postgres. Sem pgvector (imagem do Postgres sem a extensão) cria tudo
+    menos embeddings_movimentos: a app arranca na mesma e a recuperação
+    calcula os embeddings em memória (ver app/services/indice_vetorial.py)."""
+    from sqlalchemy import text
+
+    tabelas = None
+    if engine.dialect.name == "postgresql":
+        try:
+            with engine.begin() as ligacao:
+                ligacao.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        except Exception as erro:
+            print(f"pgvector indisponível ({erro.__class__.__name__}) - embeddings só em memória.")
+            tabelas = [t for t in Base.metadata.sorted_tables if t.name != EmbeddingMovimento.__tablename__]
+    Base.metadata.create_all(bind=engine, tables=tabelas)

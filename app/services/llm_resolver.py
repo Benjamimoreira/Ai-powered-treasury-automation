@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import time
@@ -10,9 +11,11 @@ from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
 from app.db.models import CasoAmbiguo, LinhaMapa, MovimentoBancario
+from app.services import rag_historico
 from app.services.llm_tracing import custo_estimado, span_llm
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 TOP_K_EXEMPLOS = 3
 N_HISTORICO_ENTIDADE = 6
@@ -34,26 +37,12 @@ TENTATIVAS_LIMITE_PEDIDOS = 5
 # de 5 min parado)
 ESTADOS_A_REPETIR = {429, 500, 502, 503}
 
-_modelo_embeddings = None
-
-
-def _carregar_modelo_embeddings():
-    """Carrega o modelo de embeddings (sentence-transformers) só na primeira
-    vez que é preciso - evita o custo de arranque (e o download do modelo)
-    em código que nunca chega a usar a camada de RAG."""
-    global _modelo_embeddings
-    if _modelo_embeddings is None:
-        from sentence_transformers import SentenceTransformer
-        _modelo_embeddings = SentenceTransformer("all-MiniLM-L6-v2")
-    return _modelo_embeddings
-
-
 def obter_embeddings(textos):
     """Isolado numa função própria para os testes poderem substituir isto
     por uma versão falsa e determinística, sem carregar o modelo real nem
-    depender de rede/GPU."""
-    modelo = _carregar_modelo_embeddings()
-    return modelo.encode(textos, normalize_embeddings=True).tolist()
+    depender de rede/GPU. O modelo é o mesmo da recuperação do histórico
+    (rag_historico), carregado só na primeira vez que é preciso."""
+    return rag_historico.vetorizar(textos)
 
 
 def _similaridade_cosseno(a, b):
@@ -132,21 +121,40 @@ def pares_movimento_linha(db: Session, ate=None) -> list:
     return pares
 
 
-def historico_da_entidade(db: Session, empresa: str, antes_de, n: int = N_HISTORICO_ENTIDADE) -> list:
+def historico_da_entidade(db: Session, empresa: str, antes_de, n: int = N_HISTORICO_ENTIDADE,
+                          consulta: str = None, metodo: str = None) -> list:
+    """Até n pares (movimento, imputação no Mapa) desta empresa antes do
+    dia, por ordem cronológica. Sem `consulta`, os n mais recentes (é o que
+    as regras usam); com `consulta` (o descritivo do caso), os n mais
+    parecidos com ele - a recuperação do RAG (app/services/rag_historico.py;
+    o método denso pesquisa os embeddings guardados, pgvector no Postgres)."""
     from app.services.reconciliador import chave_empresa
 
     alvo = chave_empresa(empresa)
     pares = sorted(
         (p for p in pares_movimento_linha(db) if chave_empresa(p[1].empresa) == alvo and p[1].dia < antes_de),
-        key=lambda p: p[1].dia,
-    )[-n:]
-    return [
+        key=lambda p: (p[1].dia, p[1].id),
+    )
+    itens = [
         {
             "dia": m.dia.isoformat(), "descricao": m.descricao, "valor": m.valor,
             "imputacao_no_mapa": l.imputacao or l.descricao,
         }
         for l, m in pares
     ]
+    metodo = metodo or rag_historico.METODO_POR_OMISSAO
+    if consulta is None or metodo == "recencia":
+        return itens[-n:]
+    if metodo == "denso":
+        from app.services import indice_vetorial
+
+        try:
+            escolhidos = set(indice_vetorial.ordenar(db, consulta, [m.id for _, m in pares])[:n])
+            return [item for (_, m), item in zip(pares, itens) if m.id in escolhidos]
+        except Exception:  # ex. Postgres sem pgvector - calcula em memória
+            db.rollback()
+            logger.warning("Índice vetorial indisponível - recuperação em memória.", exc_info=True)
+    return rag_historico.recuperar(consulta, itens, n, metodo)
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +182,9 @@ def dados_do_caso(db: Session, caso: CasoAmbiguo, candidatos: list, exemplos: li
             }
             for l in candidatos
         ],
-        "historico_entidade": historico_da_entidade(db, caso.empresa, caso.dia) if movimento else [],
+        "historico_entidade": (
+            historico_da_entidade(db, caso.empresa, caso.dia, consulta=movimento.descricao) if movimento else []
+        ),
         "exemplos_resolvidos": [
             {"caso": texto_do_caso(db, c), "resolucao": c.resolucao, "similaridade": sim} for c, sim in exemplos
         ],

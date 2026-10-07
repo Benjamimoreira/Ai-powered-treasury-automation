@@ -69,7 +69,8 @@ def correr(casos: list, caminho_conjunto: str, prever: Callable[[dict], dict], c
     metadata = {**{k: v for k, v in config.items() if v is not None}, "modelo": modelo}
     if os.environ.get("IMAGE_TAG"):  # na porta de qualidade do deploy: o commit da imagem avaliada
         metadata["imagem"] = os.environ["IMAGE_TAG"][:7]
-    experiencia_id = phoenix_cliente.criar_experiencia(dataset_id, f"{config['estrategia']}-{modelo}", metadata)
+    nome_experiencia = "-".join(x for x in (config["estrategia"], modelo, config.get("recuperacao")) if x)
+    experiencia_id = phoenix_cliente.criar_experiencia(dataset_id, nome_experiencia, metadata)
     previsoes = []
     for caso in casos:
         inicio = _agora()
@@ -91,5 +92,5 @@ def correr(casos: list, caminho_conjunto: str, prever: Callable[[dict], dict], c
             phoenix_cliente.avaliar_run(run_id, nome, float(score), inicio, fim)
 
     url = (os.environ.get("PHOENIX_URL_PUBLICA") or phoenix_cliente.url_base() or "").rstrip("/")
-    print(f"  Phoenix: experiência '{config['estrategia']}-{modelo}' no dataset '{dataset}' - {url}/datasets/{dataset_id}/experiments")
+    print(f"  Phoenix: experiência '{nome_experiencia}' no dataset '{dataset}' - {url}/datasets/{dataset_id}/experiments")
     return previsoes

@@ -16,6 +16,7 @@ qualidade do CI (.github/workflows/ci.yml, job "avaliacao-llm").
     python -m app.evals.avaliar --prompt v1 --max-casos 20
     python -m app.evals.avaliar --estrategia hibrida      # regras primeiro, LLM só se preciso
     python -m app.evals.avaliar --estrategia agente
+    python -m app.evals.avaliar --recuperacao recencia   # ablação do RAG (omissão: o de produção)
 """
 import argparse
 import json
@@ -25,7 +26,9 @@ import sys
 import time
 from datetime import datetime
 
+from app.services import rag_historico
 from app.services.llm_resolver import (
+    N_HISTORICO_ENTIDADE,
     VERSAO_PROMPT,
     chamar_llm_detalhado,
     interpretar_resposta,
@@ -43,17 +46,30 @@ def carregar_casos(caminho: str = CONJUNTO, max_casos: int = None) -> list:
     return casos[:max_casos] if max_casos else casos
 
 
-def _resolver_sugestao(caso: dict, fornecedor: str, modelo: str, versao_prompt: str) -> dict:
-    prompt = montar_prompt_de_dados(caso, versao_prompt)
+def dados_para_prompt(caso: dict, recuperacao: str) -> dict:
+    """O caso com o histórico que vai para o prompt escolhido pelo método
+    de recuperação (app/services/rag_historico.py), entre os 25 guardados -
+    o mesmo passo que llm_resolver.dados_do_caso faz em produção."""
+    historico = caso.get("historico_entidade") or []
+    escolhidos = rag_historico.recuperar(caso["movimento"].get("descricao") or "", historico,
+                                         N_HISTORICO_ENTIDADE, recuperacao)
+    return {**caso, "historico_entidade": escolhidos}
+
+
+def _resolver_sugestao(caso: dict, fornecedor: str, modelo: str, versao_prompt: str,
+                       recuperacao: str = rag_historico.METODO_POR_OMISSAO) -> dict:
+    prompt = montar_prompt_de_dados(dados_para_prompt(caso, recuperacao), versao_prompt)
     resposta = chamar_llm_detalhado(
         prompt, fornecedor, modelo, nome_span="avaliacao_sugestao", caso=caso["id"], versao_prompt=versao_prompt,
+        recuperacao=recuperacao,
     )
     return {"texto": resposta.texto, "tokens_entrada": resposta.tokens_entrada, "tokens_saida": resposta.tokens_saida,
             "latencia_s": resposta.latencia_s, "custo_usd": resposta.custo_usd, "modelo": resposta.modelo,
             "chamadas_llm": 1, "decidido_por": "llm"}
 
 
-def _resolver_hibrida(caso: dict, fornecedor: str, modelo: str, versao_prompt: str) -> dict:
+def _resolver_hibrida(caso: dict, fornecedor: str, modelo: str, versao_prompt: str,
+                      recuperacao: str = rag_historico.METODO_POR_OMISSAO) -> dict:
     """Regras primeiro (app/services/resolucao_regras.py); o histórico só é
     lido se a triagem pelo texto não decidir, e o LLM só é chamado se as
     regras não decidirem - é o que corre em produção."""
@@ -65,10 +81,11 @@ def _resolver_hibrida(caso: dict, fornecedor: str, modelo: str, versao_prompt: s
         return {"texto": json.dumps({"linha_id": decisao.linha_id, "justificacao": decisao.motivo}),
                 "tokens_entrada": 0, "tokens_saida": 0, "latencia_s": time.perf_counter() - inicio, "custo_usd": 0.0,
                 "modelo": None, "chamadas_llm": 0, "decidido_por": f"regras ({decisao.fonte})"}
-    return _resolver_sugestao(caso, fornecedor, modelo, versao_prompt)
+    return _resolver_sugestao(caso, fornecedor, modelo, versao_prompt, recuperacao)
 
 
-def _resolver_agente(caso: dict, fornecedor: str, modelo: str, versao_prompt: str, usar_regras: bool = False) -> dict:
+def _resolver_agente(caso: dict, fornecedor: str, modelo: str, versao_prompt: str, recuperacao: str = None,
+                     usar_regras: bool = False) -> dict:
     from app.services.agente_ambiguos import ContextoCaso, investigar
 
     inicio = time.perf_counter()
@@ -83,7 +100,8 @@ def _resolver_agente(caso: dict, fornecedor: str, modelo: str, versao_prompt: st
     }
 
 
-def _resolver_agente_hibrido(caso: dict, fornecedor: str, modelo: str, versao_prompt: str) -> dict:
+def _resolver_agente_hibrido(caso: dict, fornecedor: str, modelo: str, versao_prompt: str,
+                             recuperacao: str = None) -> dict:
     return _resolver_agente(caso, fornecedor, modelo, versao_prompt, usar_regras=True)
 
 
@@ -100,13 +118,13 @@ CAMPOS_PREVISAO = ("tokens_entrada", "tokens_saida", "latencia_s", "custo_usd", 
 
 
 def prever_caso(caso: dict, fornecedor: str, modelo: str = None, versao_prompt: str = VERSAO_PROMPT,
-                estrategia: str = "sugestao") -> dict:
+                estrategia: str = "sugestao", recuperacao: str = rag_historico.METODO_POR_OMISSAO) -> dict:
     """A previsão para um caso - sem ver a resposta esperada (é o "alvo" da
     experiência no LangSmith). Uma falha conta como resposta inválida, não
     pára a avaliação."""
     ids = [c["id"] for c in caso["candidatos"]]
     try:
-        bruto = ESTRATEGIAS[estrategia](caso, fornecedor, modelo, versao_prompt)
+        bruto = ESTRATEGIAS[estrategia](caso, fornecedor, modelo, versao_prompt, recuperacao)
         interpretado = interpretar_resposta(bruto["texto"], ids)
         erro = None
     except Exception as e:
@@ -126,45 +144,54 @@ def _resultado(caso: dict, previsao: dict) -> dict:
     }
 
 
-def _relatorio(resultados: list, fornecedor, modelo, versao_prompt, estrategia) -> dict:
+def _relatorio(resultados: list, fornecedor, modelo, versao_prompt, estrategia, recuperacao=None) -> dict:
     return {"config": {"fornecedor": fornecedor, "modelo": next((r["modelo"] for r in resultados if r["modelo"]), modelo),
-                       "versao_prompt": versao_prompt, "estrategia": estrategia, "n_casos": len(resultados)},
+                       "versao_prompt": versao_prompt, "estrategia": estrategia, "recuperacao": recuperacao,
+                       "n_casos": len(resultados)},
             "metricas": metricas(resultados), "resultados": resultados}
 
 
 def avaliar(casos: list, fornecedor: str, modelo: str = None, versao_prompt: str = VERSAO_PROMPT,
-            estrategia: str = "sugestao", pausa_s: float = 0.0) -> dict:
+            estrategia: str = "sugestao", pausa_s: float = 0.0,
+            recuperacao: str = rag_historico.METODO_POR_OMISSAO) -> dict:
     resultados = []
     for caso in casos:
-        resultados.append(_resultado(caso, prever_caso(caso, fornecedor, modelo, versao_prompt, estrategia)))
+        resultados.append(_resultado(caso, prever_caso(caso, fornecedor, modelo, versao_prompt, estrategia,
+                                                       recuperacao)))
         if pausa_s:
             time.sleep(pausa_s)
-    return _relatorio(resultados, fornecedor, modelo, versao_prompt, estrategia)
+    return _relatorio(resultados, fornecedor, modelo, versao_prompt, estrategia, recuperacao)
 
 
 def avaliar_no_phoenix(casos: list, caminho_conjunto: str, fornecedor: str, modelo: str = None,
-                       versao_prompt: str = VERSAO_PROMPT, estrategia: str = "sugestao") -> dict:
+                       versao_prompt: str = VERSAO_PROMPT, estrategia: str = "sugestao",
+                       recuperacao: str = rag_historico.METODO_POR_OMISSAO) -> dict:
     """Mesma avaliação, corrida como experiência no Phoenix (ver
     app/evals/phoenix_experiencias.py) - mesmas métricas e mesmo limiar."""
     from app.evals.phoenix_experiencias import correr
 
-    config = {"fornecedor": fornecedor, "modelo": modelo, "versao_prompt": versao_prompt, "estrategia": estrategia}
+    config = {"fornecedor": fornecedor, "modelo": modelo, "versao_prompt": versao_prompt, "estrategia": estrategia,
+              "recuperacao": recuperacao}
     previsoes = correr(casos, caminho_conjunto,
-                       lambda caso: prever_caso(caso, fornecedor, modelo, versao_prompt, estrategia), config)
+                       lambda caso: prever_caso(caso, fornecedor, modelo, versao_prompt, estrategia, recuperacao),
+                       config)
     resultados = [_resultado(caso, previsao) for caso, previsao in zip(casos, previsoes)]
-    return _relatorio(resultados, fornecedor, modelo, versao_prompt, estrategia)
+    return _relatorio(resultados, fornecedor, modelo, versao_prompt, estrategia, recuperacao)
 
 
 def avaliar_no_langsmith(casos: list, caminho_conjunto: str, fornecedor: str, modelo: str = None,
-                         versao_prompt: str = VERSAO_PROMPT, estrategia: str = "sugestao") -> dict:
+                         versao_prompt: str = VERSAO_PROMPT, estrategia: str = "sugestao",
+                         recuperacao: str = rag_historico.METODO_POR_OMISSAO) -> dict:
     """Mesma avaliação, corrida como experiência no LangSmith (ver
     app/evals/langsmith_experiencias.py) - mesmas métricas e mesmo limiar."""
     from app.evals.langsmith_experiencias import correr
 
-    config = {"fornecedor": fornecedor, "modelo": modelo, "versao_prompt": versao_prompt, "estrategia": estrategia}
+    config = {"fornecedor": fornecedor, "modelo": modelo, "versao_prompt": versao_prompt, "estrategia": estrategia,
+              "recuperacao": recuperacao}
     resultados = correr(casos, caminho_conjunto,
-                        lambda caso: prever_caso(caso, fornecedor, modelo, versao_prompt, estrategia), config)
-    return _relatorio(resultados, fornecedor, modelo, versao_prompt, estrategia)
+                        lambda caso: prever_caso(caso, fornecedor, modelo, versao_prompt, estrategia, recuperacao),
+                        config)
+    return _relatorio(resultados, fornecedor, modelo, versao_prompt, estrategia, recuperacao)
 
 
 def _p95(valores: list) -> float:
@@ -203,7 +230,8 @@ def metricas(resultados: list) -> dict:
 def resumo_texto(relatorio: dict) -> str:
     c, m = relatorio["config"], relatorio["metricas"]
     linhas = [
-        f"{c['estrategia']} | {c['fornecedor']} / {c['modelo']} | prompt {c['versao_prompt']} | {c['n_casos']} casos",
+        f"{c['estrategia']} | {c['fornecedor']} / {c['modelo']} | prompt {c['versao_prompt']} | "
+        f"recuperação {c.get('recuperacao')} | {c['n_casos']} casos",
         f"  exatidão {m['exatidao']:.1%}  ·  respostas válidas {m['respostas_validas']:.1%}  ·  erros de chamada {m['erros_de_chamada']}",
     ]
     linhas += [f"  - {cat}: {v['exatidao']:.1%} ({v['n']} casos)" for cat, v in m["por_categoria"].items()]
@@ -227,6 +255,8 @@ def main(argv=None) -> int:
     parser.add_argument("--modelo", default=None)
     parser.add_argument("--prompt", default=VERSAO_PROMPT, choices=["v1", "v2"])
     parser.add_argument("--estrategia", default="sugestao", choices=sorted(ESTRATEGIAS))
+    parser.add_argument("--recuperacao", default=rag_historico.METODO_POR_OMISSAO, choices=rag_historico.METODOS,
+                        help="como se escolhe o histórico que vai para o prompt (omissão: o de produção)")
     parser.add_argument("--max-casos", type=int, default=None)
     parser.add_argument("--limiar", type=float, default=None, help="exatidão mínima (0-1); abaixo sai com código 1")
     parser.add_argument("--pausa", type=float, default=0.0, help="segundos entre casos (limites de pedidos)")
@@ -245,20 +275,22 @@ def main(argv=None) -> int:
     relatorio = None
     if args.phoenix:
         try:
-            relatorio = avaliar_no_phoenix(casos, args.conjunto, fornecedor, args.modelo, args.prompt, args.estrategia)
+            relatorio = avaliar_no_phoenix(casos, args.conjunto, fornecedor, args.modelo, args.prompt, args.estrategia,
+                                           args.recuperacao)
         except Exception as e:  # a porta de qualidade nunca depende do Phoenix estar disponível
             print(f"  Phoenix indisponível ({e}) - a avaliar localmente.")
     if relatorio is None and args.langsmith:
         try:
-            relatorio = avaliar_no_langsmith(casos, args.conjunto, fornecedor, args.modelo, args.prompt, args.estrategia)
+            relatorio = avaliar_no_langsmith(casos, args.conjunto, fornecedor, args.modelo, args.prompt,
+                                             args.estrategia, args.recuperacao)
         except Exception as e:  # a porta de qualidade nunca depende do LangSmith estar disponível
             print(f"  LangSmith indisponível ({e}) - a avaliar localmente.")
     if relatorio is None:
-        relatorio = avaliar(casos, fornecedor, args.modelo, args.prompt, args.estrategia, args.pausa)
+        relatorio = avaliar(casos, fornecedor, args.modelo, args.prompt, args.estrategia, args.pausa, args.recuperacao)
     relatorio["quando"] = datetime.now().isoformat(timespec="seconds")
 
     os.makedirs(PASTA_RESULTADOS, exist_ok=True)
-    nome = f"{datetime.now():%Y%m%d-%H%M%S}_{args.estrategia}_{fornecedor}_{args.prompt}.json"
+    nome = f"{datetime.now():%Y%m%d-%H%M%S}_{args.estrategia}_{fornecedor}_{args.prompt}_{args.recuperacao}.json"
     with open(os.path.join(PASTA_RESULTADOS, nome), "w", encoding="utf-8") as f:
         json.dump(relatorio, f, ensure_ascii=False, indent=1)
     print(resumo_texto(relatorio))

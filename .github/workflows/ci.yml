@@ -38,6 +38,8 @@ jobs:
         include:
           - name: api
             context: .
+          - name: db
+            context: ./docker/db
           - name: log-archiver
             context: ./docker/log-archiver
           - name: faturas-ocr
@@ -119,8 +121,17 @@ jobs:
           rem ("dubious ownership"), a lista fica vazia e a avaliacao era saltada
           git -c safe.directory=* diff --name-only ${{ github.event.before }} HEAD > alterados.txt || git -c safe.directory=* diff --name-only HEAD~1 HEAD > alterados.txt
           echo Ficheiros alterados: & type alterados.txt
-          findstr /R /C:"^app/services/llm_resolver\.py" /C:"^app/services/llm_tracing\.py" /C:"^app/services/agente_ambiguos\.py" /C:"^app/services/resolucao_regras\.py" /C:"^app/evals/" /C:"^evals/ambiguos\.json" /C:"^requirements\.txt" /C:"^Dockerfile" /C:"^\.github/workflows/ci\.yml" alterados.txt >nul && (echo correr=true>>%GITHUB_OUTPUT%) || (echo correr=false>>%GITHUB_OUTPUT% & echo Nada que afete o LLM mudou - avaliacao nao corre.)
+          findstr /R /C:"^app/services/llm_resolver\.py" /C:"^app/services/llm_tracing\.py" /C:"^app/services/agente_ambiguos\.py" /C:"^app/services/resolucao_regras\.py" /C:"^app/services/rag_historico\.py" /C:"^app/services/indice_vetorial\.py" /C:"^app/evals/" /C:"^evals/ambiguos\.json" /C:"^evals/recuperacao\.json" /C:"^requirements\.txt" /C:"^Dockerfile" /C:"^\.github/workflows/ci\.yml" alterados.txt >nul && (echo correr=true>>%GITHUB_OUTPUT%) || (echo correr=false>>%GITHUB_OUTPUT% & echo Nada que afete o LLM mudou - avaliacao nao corre.)
           exit /b 0
+      # Porta de qualidade da recuperação (RAG): recall@6 do método em produção
+      # sobre evals/recuperacao.json (~1300 consultas reais pseudonimizadas).
+      # Não chama o LLM - corre em ~1 minuto. Ver docs/AVALIACAO_LLM.md, "Recuperação".
+      - name: Porta de qualidade da recuperação (sem LLM, imagem nova)
+        if: steps.mudou.outputs.correr == 'true'
+        timeout-minutes: 15
+        env:
+          LIMIAR_RECALL: "0.75"
+        run: docker run --rm %IMAGE_PREFIX%/api:%IMAGE_TAG% python -m app.evals.avaliar_recuperacao --metodos recencia denso --limiar-recall %LIMIAR_RECALL%
       - name: Porta de qualidade do LLM (Ollama local, imagem nova)
         if: steps.mudou.outputs.correr == 'true'
         timeout-minutes: 90

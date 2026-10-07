@@ -22,6 +22,33 @@ from app.db.session import Base, get_db
 from app.main import app
 
 
+def _vetorizar_falso(textos, modelo=None):
+    """Embeddings falsos e determinísticos: saco de palavras (as mesmas que o
+    BM25 usa) espalhado por 384 dimensões, normalizado - dois descritivos
+    são tão parecidos quanto as palavras que partilham."""
+    import zlib
+
+    from app.services.resolucao_regras import palavras_significativas
+
+    vetores = []
+    for texto in textos:
+        vetor = [0.0] * 384
+        for palavra in palavras_significativas(texto):
+            vetor[zlib.crc32(palavra.encode()) % 384] += 1.0
+        norma = sum(x * x for x in vetor) ** 0.5 or 1.0
+        vetores.append([x / norma for x in vetor])
+    return vetores
+
+
+@pytest.fixture(autouse=True)
+def _sem_modelo_de_embeddings(monkeypatch):
+    """Nenhum teste carrega o modelo real de embeddings (download, segundos
+    de arranque) - a recuperação usa sempre a versão falsa acima."""
+    from app.services import rag_historico
+
+    monkeypatch.setattr(rag_historico, "vetorizar", _vetorizar_falso)
+
+
 @pytest.fixture()
 def session_factory():
     """Fábrica de sessões (sessionmaker) ligada a um motor SQLite em

@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.db import models  # noqa: F401  (garante que os modelos são registados antes do create_all)
-from app.db.session import Base, engine
+from app.db.session import engine
 from app.routers import ambiguos, anomalias, chat, comercial, faturas, monitorizacao, reconciliacao, saldos, sync
 
 
@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
     preparamos o estado (agent=None, lock para a criação lazy) e
     garantimos que o Agent é fechado corretamente no shutdown, se
     alguma vez chegou a ser criado."""
-    Base.metadata.create_all(bind=engine)
+    models.criar_tabelas(engine)
     from app.services.llm_tracing import iniciar_tracing
 
     iniciar_tracing()

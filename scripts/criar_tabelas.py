@@ -6,8 +6,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db import models  # noqa: F401  (garante que os modelos são registados)
-from app.db.session import Base, engine
+from app.db.session import engine
 
 if __name__ == "__main__":
-    Base.metadata.create_all(bind=engine)
+    # com CREATE EXTENSION vector no Postgres (pgvector) - ver models.criar_tabelas
+    models.criar_tabelas(engine)
     print(f"Tabelas criadas em {engine.url.render_as_string(hide_password=True)}.")
