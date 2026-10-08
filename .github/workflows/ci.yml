@@ -71,7 +71,12 @@ jobs:
   # publicadas acima e reinicia os containers. O .env fica na pasta de
   # trabalho do runner (não é apagado por causa de clean: false).
   deploy:
-    runs-on: self-hosted
+    # Máquina de produção = runner com a label da variável DEPLOY_RUNNER
+    # (Settings > Secrets and variables > Actions > Variables). Sem a
+    # variável, qualquer runner self-hosted - com dois ligados (PC antigo e
+    # servidor), o deploy ia para um deles ao acaso. Para mudar de máquina:
+    # dar a label "servidor" ao runner novo e criar DEPLOY_RUNNER=servidor.
+    runs-on: ${{ vars.DEPLOY_RUNNER || 'self-hosted' }}
     needs: build-push
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
     env:
@@ -94,6 +99,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Diagnóstico
+        if: runner.os == 'Windows'
         run: |
           whoami
           where docker
@@ -102,6 +108,7 @@ jobs:
           if not exist .env (echo ERRO: falta o .env em %CD% - ver README, "Deploy noutra maquina" & exit /b 1)
           docker compose config --quiet
       - name: Puxar imagens novas
+        if: runner.os == 'Windows'
         run: docker compose pull --quiet
       # Porta de qualidade do LLM: corre o conjunto de avaliação dos casos
       # ambíguos (evals/ambiguos.json) DENTRO da imagem nova, contra o Ollama
@@ -114,6 +121,7 @@ jobs:
       # (os dados não saem da máquina). Ver docs/AVALIACAO_LLM.md.
       - name: Mudou algo que afeta o LLM?
         id: mudou
+        if: runner.os == 'Windows'
         run: |
           if "${{ github.event_name }}"=="workflow_dispatch" (echo correr=true>>%GITHUB_OUTPUT% & exit /b 0)
           rem safe.directory: o runner corre como "Servico de rede" e a pasta de
@@ -127,13 +135,13 @@ jobs:
       # sobre evals/recuperacao.json (~1300 consultas reais pseudonimizadas).
       # Não chama o LLM - corre em ~1 minuto. Ver docs/AVALIACAO_LLM.md, "Recuperação".
       - name: Porta de qualidade da recuperação (sem LLM, imagem nova)
-        if: steps.mudou.outputs.correr == 'true'
+        if: runner.os == 'Windows' && steps.mudou.outputs.correr == 'true'
         timeout-minutes: 15
         env:
           LIMIAR_RECALL: "0.75"
         run: docker run --rm %IMAGE_PREFIX%/api:%IMAGE_TAG% python -m app.evals.avaliar_recuperacao --metodos recencia denso --limiar-recall %LIMIAR_RECALL%
       - name: Porta de qualidade do LLM (Ollama local, imagem nova)
-        if: steps.mudou.outputs.correr == 'true'
+        if: runner.os == 'Windows' && steps.mudou.outputs.correr == 'true'
         timeout-minutes: 90
         env:
           LIMIAR_EXATIDAO: "0.65"
@@ -144,6 +152,20 @@ jobs:
           rem está na porta 6006 do anfitrião. Sem Phoenix, avalia localmente na mesma
           docker run --rm --env-file .env -e LLM_FORNECEDOR=ollama -e OLLAMA_URL=http://host.docker.internal:11434/v1 -e OLLAMA_MODEL_ID=qwen2.5:3b -e PHOENIX_COLLECTOR_ENDPOINT=http://host.docker.internal:6006/v1/traces -e PHOENIX_URL_PUBLICA=http://localhost:6006 -e LANGSMITH_TRACING=false -e IMAGE_TAG=%IMAGE_TAG% %IMAGE_PREFIX%/api:%IMAGE_TAG% python -m app.evals.avaliar --estrategia hibrida --phoenix --limiar %LIMIAR_EXATIDAO%
       - name: Reiniciar containers
+        if: runner.os == 'Windows'
         run: docker compose up -d --no-build --remove-orphans
       - name: Limpar imagens antigas
+        if: runner.os == 'Windows'
         run: docker image prune -f
+      # Num runner Linux (servidor), tudo o que os passos acima fazem, num só
+      # script de bash - os passos acima são "cmd" e só correm em Windows.
+      - name: Deploy (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        timeout-minutes: 120
+        env:
+          EVENTO: ${{ github.event_name }}
+          ANTES: ${{ github.event.before }}
+          LIMIAR_RECALL: "0.75"
+          LIMIAR_EXATIDAO: "0.65"
+        run: bash deploy/deploy.sh

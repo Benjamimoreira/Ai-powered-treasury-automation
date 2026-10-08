@@ -145,3 +145,43 @@ class _DataFixa(date):
     @classmethod
     def today(cls):
         return date(2026, 7, 21)
+
+
+def _exists_como_linux(monkeypatch):
+    """os.path.exists a distinguir maiúsculas/minúsculas, como num servidor
+    Linux (o Windows, onde os testes também correm, não distingue)."""
+    exists_real = os.path.exists
+
+    def exists(caminho):
+        if not exists_real(caminho):
+            return False
+        while True:  # cada pasta do caminho tem de existir com estas maiúsculas
+            pasta, nome = os.path.split(caminho)
+            if not nome or pasta == caminho:
+                return True
+            if nome not in os.listdir(pasta):
+                return False
+            caminho = pasta
+
+    monkeypatch.setattr(onedrive_sync.os.path, "exists", exists)
+
+
+def test_caminho_mapa_encontra_o_ficheiro_com_outras_maiusculas(tmp_path, monkeypatch):
+    _exists_como_linux(monkeypatch)
+    monkeypatch.setenv("ONEDRIVE_RAIZ", str(tmp_path))
+    pasta_ano = tmp_path / "contabilidade" / "12- Mapa de Pagamentos e Recebimentos" / "2026"
+    pasta_ano.mkdir(parents=True)
+    (pasta_ano / "10 - Mapa de Pagamentos  e Recebimentos de Outubro.xlsx").write_bytes(b"")
+
+    caminho = onedrive_sync.caminho_mapa(date(2026, 10, 8))
+
+    # pasta "contabilidade" e mês "Outubro" com outras maiúsculas que o código
+    assert os.path.basename(caminho) == "10 - Mapa de Pagamentos  e Recebimentos de Outubro.xlsx"
+    assert os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(caminho)))) == "contabilidade"
+    assert os.path.isfile(caminho)
+
+
+def test_resolver_caminho_inexistente_devolve_o_original(tmp_path, monkeypatch):
+    _exists_como_linux(monkeypatch)
+    caminho = os.path.join(str(tmp_path), "nao", "existe.xlsx")
+    assert onedrive_sync.resolver_caminho(caminho) == caminho

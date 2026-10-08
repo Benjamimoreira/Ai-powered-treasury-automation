@@ -1,0 +1,3 @@
+# Scripts de shell corridos em Linux (deploy/deploy.sh): sempre LF, mesmo
+# quando o checkout é feito no Windows - com CRLF o bash falha ("\r").
+*.sh text eol=lf

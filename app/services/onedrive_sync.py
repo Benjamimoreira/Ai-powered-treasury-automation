@@ -5,6 +5,7 @@ local, para nunca duplicar movimentos/linhas já importados."""
 import glob
 import os
 import re
+import unicodedata
 from collections import Counter
 from datetime import date, datetime, timedelta
 
@@ -25,11 +26,41 @@ MESES_PASTA = {
     5: "05_Maio", 6: "06_Junho", 7: "07_Julho", 8: "08_Agosto",
     9: "09_Setembro", 10: "10_Outubro", 11: "11_Novembro", 12: "12_Dezembro",
 }
+# minúsculas, como estão os ficheiros do Mapa ("... de outubro.xlsx") - no
+# Windows tanto fazia, num servidor Linux "Outubro" não encontrava o ficheiro
 MESES_NOME = {
-    1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril",
-    5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
-    9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro",
+    1: "janeiro", 2: "fevereiro", 3: "março", 4: "abril",
+    5: "maio", 6: "junho", 7: "julho", 8: "agosto",
+    9: "setembro", 10: "outubro", 11: "novembro", 12: "dezembro",
 }
+
+
+def _normalizar_nome(nome: str) -> str:
+    return unicodedata.normalize("NFC", nome).casefold()
+
+
+def resolver_caminho(caminho: str) -> str:
+    """O caminho tal como existe no disco, ignorando maiúsculas/minúsculas
+    e a forma Unicode dos acentos (NFC/NFD) em cada pasta. Os ficheiros do
+    OneDrive são criados à mão ("Outubro" num mês, "outubro" noutro) e o
+    Windows não distingue, mas um servidor Linux sim. Se não houver
+    correspondência devolve o caminho original (quem chama já trata o
+    "não existe")."""
+    if os.path.exists(caminho):
+        return caminho
+    cabeca, cauda = os.path.split(caminho)
+    if not cauda or cabeca == caminho:
+        return caminho
+    pasta = resolver_caminho(cabeca)
+    try:
+        nomes = os.listdir(pasta)
+    except OSError:
+        return caminho
+    alvo = _normalizar_nome(cauda)
+    for nome in nomes:
+        if _normalizar_nome(nome) == alvo:
+            return os.path.join(pasta, nome)
+    return caminho
 
 def _onedrive_raiz() -> str:
     """Caminho configurado em ONEDRIVE_RAIZ. O .env é partilhado (vive no
@@ -60,14 +91,14 @@ def pasta_extratos_cgd() -> str:
 
 
 def pasta_extratos_do_dia(dia: date) -> str:
-    return os.path.join(pasta_extratos_cgd(), MESES_PASTA[dia.month], dia.strftime("%d-%m-%Y"))
+    return resolver_caminho(os.path.join(pasta_extratos_cgd(), MESES_PASTA[dia.month], dia.strftime("%d-%m-%Y")))
 
 
 def caminho_mapa(dia: date) -> str:
-    return os.path.join(
+    return resolver_caminho(os.path.join(
         _onedrive_raiz(), "CONTABILIDADE", "12- Mapa de Pagamentos e Recebimentos", str(dia.year),
         f"{dia.month:02d} - Mapa de Pagamentos  e Recebimentos de {MESES_NOME[dia.month]}.xlsx",
-    )
+    ))
 
 
 def _importar_movimentos_em_falta(db: Session, caminho: str, dia: date) -> int:

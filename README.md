@@ -187,6 +187,9 @@ docker compose up -d --no-build
 
 Para voltar a uma versão anterior: `$env:IMAGE_TAG="<sha>"; docker compose up -d --no-build`.
 
+Passar a produção para outra máquina (Windows ou Linux), com a base de dados,
+os scripts do Windows e o runner: [docs/MIGRACAO_SERVIDOR.md](docs/MIGRACAO_SERVIDOR.md).
+
 ## Limitações conhecidas
 
 - Não há Alembic - novas colunas em tabelas já existentes só ficam ativas

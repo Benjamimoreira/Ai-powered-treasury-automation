@@ -6,7 +6,10 @@ services:
     image: ${IMAGE_PREFIX:-ghcr.io/benjamimoreira/ai-powered-treasury-automation}/db:${IMAGE_TAG:-latest}
     environment:
       POSTGRES_USER: tesouraria
-      POSTGRES_PASSWORD: tesouraria
+      # no servidor, definir POSTGRES_PASSWORD no .env (só letras e números:
+      # entra no DATABASE_URL da api). Só conta quando o volume é criado - numa
+      # BD já existente muda-se com ALTER USER (ver docs/MIGRACAO_SERVIDOR.md).
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tesouraria}
       POSTGRES_DB: tesouraria
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -25,7 +28,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg://tesouraria:tesouraria@db:5432/tesouraria
+      DATABASE_URL: postgresql+psycopg://tesouraria:${POSTGRES_PASSWORD:-tesouraria}@db:5432/tesouraria
       ONEDRIVE_RAIZ: /onedrive
       FORNECEDORES_RAIZ: /fornecedores
       # Caminho do Índice do Departamento Comercial *dentro* do container -
@@ -44,6 +47,10 @@ services:
       LLM_FORNECEDOR: ollama
       OLLAMA_URL: http://host.docker.internal:11434/v1
       OLLAMA_MODEL_ID: ${OLLAMA_MODEL_ID:-qwen2.5:3b}
+    # Em Linux o host.docker.internal não existe por omissão (o Docker Desktop
+    # cria-o sozinho); isto aponta-o para o anfitrião nos dois casos.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
     volumes:
