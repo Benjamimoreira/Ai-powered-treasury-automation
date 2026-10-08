@@ -1520,7 +1520,7 @@ if aba_visao_geral.open:
         # --- mês
         with st.container(border=True):
             with st.container(horizontal=True, vertical_alignment="center"):
-                st.markdown(f"**Recebimentos vs pagamentos por dia · {dia_vg:%m/%Y}**")
+                st.markdown(f"**Liquidez por dia (recebimentos − pagamentos) · {dia_vg:%m/%Y}**")
                 incluir_internas_vg = st.toggle(
                     "Incluir transferências entre empresas do grupo", value=False, persist_state="page", key="vg_incluir_internas",
                     help="Mútuos e transferências entre contas do grupo: saem de uma empresa e entram noutra, "
@@ -1531,30 +1531,28 @@ if aba_visao_geral.open:
                 df_mensal = pd.DataFrame(resumo_mensal)
                 df_mensal["dia"] = pd.to_datetime(df_mensal["dia"])
                 df_mensal["Recebimentos"] = df_mensal[f"recebimentos{sufixo}"]
-                df_mensal["Pagamentos"] = -df_mensal[f"pagamentos{sufixo}"]
-                df_mensal["Líquido"] = df_mensal["Recebimentos"] + df_mensal["Pagamentos"]
-                df_linhas = df_mensal.melt(
-                    id_vars=["dia"], value_vars=["Recebimentos", "Pagamentos"], var_name="tipo", value_name="valor",
-                )
-                cores_mensal = {"Recebimentos": COR_RECEBIMENTOS_MES, "Pagamentos": COR_PAGAMENTOS_MES, "Líquido do dia": "#1c1f26"}
-                escala_mensal = alt.Scale(domain=list(cores_mensal), range=list(cores_mensal.values()))
-                # um tick por dia: com poucos dias o Vega punha ticks de hora em hora, e o
-                # eixo repetia "01/10 01/10 01/10…"
-                eixo_dia = alt.X("dia:T", title=None, axis=alt.Axis(
-                    format="%d/%m", labelAngle=-45, tickCount={"interval": "day", "step": 1}))
-                linhas_mes = alt.Chart(df_linhas).mark_line(point=True, strokeWidth=2).encode(
+                df_mensal["Pagamentos"] = df_mensal[f"pagamentos{sufixo}"]
+                df_mensal["Líquido"] = df_mensal["Recebimentos"] - df_mensal["Pagamentos"]
+                df_mensal["sinal"] = df_mensal["Líquido"].map(lambda v: "Entrou mais" if v >= 0 else "Saiu mais")
+                # uma barra por dia: verde se entrou mais do que saiu, vermelha se saiu mais
+                cores_liquidez = {"Entrou mais": COR_RECEBIMENTOS_MES, "Saiu mais": COR_PAGAMENTOS_MES}
+                # eixo por dia (ordinal): num eixo de tempo as barras do 1.º e do último
+                # dia ficavam cortadas a meio nas margens
+                eixo_dia = alt.X("yearmonthdate(dia):O", title=None, axis=alt.Axis(format="%d/%m", labelAngle=-45))
+                barras_mes = alt.Chart(df_mensal).mark_bar(cornerRadiusEnd=4).encode(
                     x=eixo_dia,
-                    y=alt.Y("valor:Q", title="EUR (pagamentos para baixo)", axis=alt.Axis(format=",.0f")),
-                    color=alt.Color("tipo:N", scale=escala_mensal, legend=alt.Legend(title=None, orient="top")),
-                    tooltip=[alt.Tooltip("dia:T", format="%d/%m"), "tipo:N", alt.Tooltip("valor:Q", format=",.2f")],
-                )
-                liquido_mes = alt.Chart(df_mensal.assign(serie="Líquido do dia")).mark_point(filled=True, size=40).encode(
-                    x=eixo_dia, y="Líquido:Q",
-                    color=alt.Color("serie:N", scale=escala_mensal, legend=alt.Legend(title=None, orient="top")),
-                    tooltip=[alt.Tooltip("dia:T", format="%d/%m"), alt.Tooltip("Líquido:Q", format=",.2f")],
+                    y=alt.Y("Líquido:Q", title="Liquidez do dia (EUR)", axis=alt.Axis(format=",.0f")),
+                    color=alt.Color("sinal:N", scale=alt.Scale(domain=list(cores_liquidez), range=list(cores_liquidez.values())),
+                                    legend=alt.Legend(title=None, orient="top")),
+                    tooltip=[
+                        alt.Tooltip("dia:T", title="Dia", format="%d/%m"),
+                        alt.Tooltip("Líquido:Q", title="Liquidez", format=",.2f"),
+                        alt.Tooltip("Recebimentos:Q", format=",.2f"),
+                        alt.Tooltip("Pagamentos:Q", format=",.2f"),
+                    ],
                 )
                 zero_mes = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#5c6370", strokeWidth=1).encode(y="y:Q")
-                st.altair_chart((linhas_mes + zero_mes + liquido_mes).properties(height=280), width="stretch")
+                st.altair_chart((barras_mes + zero_mes).properties(height=280), width="stretch")
                 internas_mes = (df_mensal["recebimentos"] - df_mensal["recebimentos_externos"]).sum()
                 st.caption(
                     ("Só o que entrou e saiu de fora do grupo: "
