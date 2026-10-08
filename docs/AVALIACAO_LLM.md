@@ -152,7 +152,20 @@ Mesmos 60 casos, só LLM (estratégia `sugestao`, `qwen2.5:3b`), muda apenas o h
 - neste conjunto só 18 casos têm algum item relevante no histórico (ver acima), por isso o efeito possível era pequeno à partida;
 - a latência (33 s contra 21 s) não é comparável, porque as duas corridas tiveram o CPU partilhado com outros processos de forma diferente. Os tokens são iguais (~590 de entrada).
 
-A recuperação fica em produção porque é ela que decide o que o modelo vê: com um modelo que use o contexto (o 7b, ou outro), parte de 80 % em vez de 39 %. Isso é o que se mede a seguir, já com este contexto.
+**Com o `qwen2.5:7b`, o contexto já conta** (mesmo dia, mesmos 60 casos):
+
+| Estratégia | Histórico no prompt | Exatidão | Linha certa | Nenhuma serve | Chamadas ao LLM |
+|---|---|---|---|---|---|
+| Só LLM | Os 6 mais recentes | 46,7 % | 50,0 % | 33,3 % | 60 |
+| Só LLM | **Os 6 mais parecidos** | **55,0 %** | **60,4 %** | 33,3 % | 60 |
+| Regras + LLM | Os 6 mais recentes (06/10) | 66,7 % | 75,0 % | 33,3 % | 27 |
+| Regras + LLM | Os 6 mais parecidos | 66,7 % | 75,0 % | 33,3 % | 27 |
+
+1. **Só com LLM, +8,3 pontos.** Ganhou 8 casos e perdeu 3. Nos 18 casos com algum exemplo relevante no histórico, a exatidão sobe de 44 % para **67 %**. É o efeito que a avaliação da recuperação previa, agora medido no modelo.
+2. **Com as regras à frente, o ganho desaparece.** Dos 27 casos que chegam ao LLM, só 5 têm algum exemplo relevante: as regras também leem o histórico e já decidiram os casos em que ele ajuda. Mudaram 4 respostas, com saldo nulo. O que sobra para o LLM são casos sem precedente, em que nenhuma recuperação ajuda.
+3. **Decisão: as sugestões continuam com o 3b.** Regras + 3b dá 71,7 % contra 66,7 % do 7b, com metade da latência. O 7b continua a arriscar linhas nos "nenhuma serve" (33 % contra 83 %).
+
+A recuperação fica em produção na mesma: custa ~7 ms, e com um modelo que use o contexto vale +8 pontos sempre que o LLM é chamado sem as regras. O **agente** (`agente_ambiguos.py`) ainda recebe os mais recentes; passá-lo para a recuperação é o passo seguinte. O ganho maior, porém, não está no contexto, está nos casos sem precedente: perguntar à pessoa (o fluxo atual) e voltar a pôr essas decisões no histórico.
 
 ## Porta de qualidade no deploy
 

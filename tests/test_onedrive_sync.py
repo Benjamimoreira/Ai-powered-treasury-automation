@@ -96,6 +96,36 @@ def test_atualizar_dados_recentes_reimporta_saldos_de_ontem(db_session, monkeypa
     assert saldo.saldo_disponivel == 90.0
 
 
+def test_atualizar_dados_recentes_acrescenta_movimentos_da_versao_final(db_session, monkeypatch, tmp_path):
+    """Um dia já importado com a versão provisória (14:00) tem de ganhar os
+    movimentos que a versão final da manhã seguinte acrescenta - sem
+    duplicar os que já lá estavam nem mexer neles."""
+    pasta = _preparar_pasta_extratos(tmp_path)
+    monkeypatch.setenv("ONEDRIVE_RAIZ", str(tmp_path))
+    monkeypatch.setattr(onedrive_sync, "date", _DataFixa)
+    onedrive_sync.atualizar_dados_recentes(db_session, dias_atras=0)
+    provisorio = db_session.query(MovimentoBancario).one()
+
+    caminho = os.path.join(pasta, "21-07-2026_Empresa Teste,LDA.xlsx")
+    wb = openpyxl.load_workbook(caminho)
+    ws = wb.active
+    ws["B1"] = "200,00 EUR"
+    ws["A7"], ws["B7"], ws["C7"], ws["D7"] = "21-07-2026", "21-07-2026", "TRANSF TESTE", "-50,00"
+    ws["A8"], ws["B8"], ws["C8"], ws["D8"] = "21-07-2026", "21-07-2026", "DEPOSITO", "300,00"
+    wb.save(caminho)
+
+    resultado = onedrive_sync.atualizar_dados_recentes(db_session, dias_atras=0)
+
+    assert resultado["dias_com_movimentos_novos"] == ["2026-07-21"]
+    assert resultado["dias_com_saldos_novos"] == ["2026-07-21"]
+    movimentos = db_session.query(MovimentoBancario).order_by(MovimentoBancario.id).all()
+    assert [(m.descricao, m.valor) for m in movimentos] == [
+        ("TRANSF TESTE", -50.0), ("TRANSF TESTE", -50.0), ("DEPOSITO", 300.0),
+    ]
+    assert movimentos[0].id == provisorio.id
+    assert db_session.query(SaldoDiario).one().saldo_contabilistico == 200.0
+
+
 def test_atualizar_dados_recentes_ignora_dia_sem_pasta(db_session, monkeypatch, tmp_path):
     monkeypatch.setenv("ONEDRIVE_RAIZ", str(tmp_path))
     monkeypatch.setattr(onedrive_sync, "date", _DataFixa)

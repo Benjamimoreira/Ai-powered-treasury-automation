@@ -474,6 +474,7 @@ def listar_linhas_imputacao(db: Session, empresa: str = None, dia_inicio=None, d
             "empresa": l.empresa,
             "tipo": l.tipo,
             "imputacao": _imputacao_de_linha(l),
+            "descricao": l.descricao,
             "previsto": l.previsto,
             "valor": abs(l.pago) if l.pago is not None else abs(l.previsto),
             "confirmado": l.pago is not None,

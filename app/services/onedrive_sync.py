@@ -5,6 +5,7 @@ local, para nunca duplicar movimentos/linhas já importados."""
 import glob
 import os
 import re
+from collections import Counter
 from datetime import date, datetime, timedelta
 
 from sqlalchemy.orm import Session
@@ -14,7 +15,7 @@ from app.services.mapa_importer import importar_dia_do_mapa
 from app.services.reconciliador import (
     abrir_workbook_com_retry,
     chave_empresa,
-    importar_extrato_para_bd,
+    ler_movimentos_do_extrato,
     nome_empresa_do_ficheiro,
 )
 from app.services.saldos import parse_valor_eur, registar_saldos_do_dia
@@ -69,9 +70,42 @@ def caminho_mapa(dia: date) -> str:
     )
 
 
-def _importar_dia(db: Session, dia: date, forcar_resync_saldos: bool) -> dict:
-    """Importa um único dia (movimentos, saldos, mapa) se ainda não
-    existir localmente. Partilhado entre `atualizar_dados_recentes`
+def _importar_movimentos_em_falta(db: Session, caminho: str, dia: date) -> int:
+    """Acrescenta os movimentos do extrato que ainda não estão na BD para
+    este (dia, ficheiro), comparando por (descrição, valor) com contagem -
+    dois movimentos iguais no mesmo dia continuam a ser dois. O CGD publica
+    uma versão provisória do dia às 14:00 e substitui a pasta pela final na
+    manhã seguinte, com os movimentos da tarde: antes, um dia com algum
+    movimento já importado nunca mais era lido, e esses ficavam de fora
+    (confirmado em 06/10/2026: 30/09 com 41 movimentos no extrato e 24 na
+    BD). Nunca apaga - os movimentos já importados podem ter reconciliações
+    e resoluções manuais associadas."""
+    origem = os.path.basename(caminho)
+    ja_importados = Counter(
+        (descricao, valor) for descricao, valor in
+        db.query(MovimentoBancario.descricao, MovimentoBancario.valor)
+        .filter(MovimentoBancario.dia == dia, MovimentoBancario.ficheiro_origem == origem)
+    )
+    empresa = nome_empresa_do_ficheiro(caminho)
+    inseridos = 0
+    for mov in ler_movimentos_do_extrato(caminho):
+        chave = (mov["descricao"], mov["valor"])
+        if ja_importados[chave] > 0:
+            ja_importados[chave] -= 1
+            continue
+        db.add(MovimentoBancario(
+            dia=dia, empresa=empresa, descricao=mov["descricao"], valor=mov["valor"],
+            ficheiro_origem=origem,
+        ))
+        inseridos += 1
+    db.commit()
+    return inseridos
+
+
+def _importar_dia(db: Session, dia: date) -> dict:
+    """Importa um único dia (movimentos, saldos, mapa): o que ainda não
+    existir localmente e, nos movimentos e saldos, o que mudou desde a
+    última leitura do extrato. Partilhado entre `atualizar_dados_recentes`
     (varre os últimos N dias a partir de hoje) e `atualizar_dados_do_dia`
     (um dia arbitrário, ex. escolhido no date_input do dashboard - pode
     ser de um mês/ano completamente fora da janela dos últimos N dias)."""
@@ -80,34 +114,28 @@ def _importar_dia(db: Session, dia: date, forcar_resync_saldos: bool) -> dict:
     if not os.path.isdir(pasta):
         return resultado
 
-    se_ja_tem_movimentos = db.query(MovimentoBancario).filter(MovimentoBancario.dia == dia).first()
-    if not se_ja_tem_movimentos:
-        try:
-            total_importado = 0
-            for caminho in sorted(glob.glob(os.path.join(pasta, "*.xlsx"))):
-                empresa = nome_empresa_do_ficheiro(caminho)
-                total_importado += importar_extrato_para_bd(db, caminho, dia, empresa)
-            # só marca "novo" se algo foi mesmo inserido - a pasta do dia pode
-            # existir mas ainda sem nenhum .xlsx dentro (extratos do dia a
-            # decorrer ainda não gerados pelo banco), e sem isto o dashboard
-            # reportava "atualizado" mesmo sem nenhum movimento novo, o que
-            # parecia "a análise de contas não atualiza" quando na verdade
-            # não havia nada para importar ainda.
-            if total_importado > 0:
-                resultado["movimentos"] = dia.isoformat()
-        except Exception as e:
-            resultado["erro"] = f"movimentos {dia.isoformat()}: {e}"
+    try:
+        total_importado = 0
+        for caminho in sorted(glob.glob(os.path.join(pasta, "*.xlsx"))):
+            total_importado += _importar_movimentos_em_falta(db, caminho, dia)
+        # só marca "novo" se algo foi mesmo inserido - a pasta do dia pode
+        # existir mas ainda sem nenhum .xlsx dentro (extratos do dia a
+        # decorrer ainda não gerados pelo banco), e sem isto o dashboard
+        # reportava "atualizado" mesmo sem nenhum movimento novo, o que
+        # parecia "a análise de contas não atualiza" quando na verdade
+        # não havia nada para importar ainda.
+        if total_importado > 0:
+            resultado["movimentos"] = dia.isoformat()
+    except Exception as e:
+        resultado["erro"] = f"movimentos {dia.isoformat()}: {e}"
 
-    if forcar_resync_saldos:
-        db.query(SaldoDiario).filter(SaldoDiario.dia == dia).delete()
-
-    se_ja_tem_saldos = db.query(SaldoDiario).filter(SaldoDiario.dia == dia).first()
-    if not se_ja_tem_saldos:
-        try:
-            if registar_saldos_do_dia(db, dia, pasta) > 0:
-                resultado["saldos"] = dia.isoformat()
-        except Exception as e:
-            resultado["erro"] = f"saldos {dia.isoformat()}: {e}"
+    # Sempre: registar_saldos_do_dia só mexe nas entidades cujo saldo no
+    # extrato mudou (versão provisória -> final), por isso é seguro repetir.
+    try:
+        if registar_saldos_do_dia(db, dia, pasta) > 0:
+            resultado["saldos"] = dia.isoformat()
+    except Exception as e:
+        resultado["erro"] = f"saldos {dia.isoformat()}: {e}"
 
     se_ja_tem_mapa = db.query(LinhaMapa).filter(LinhaMapa.dia == dia).first()
     if not se_ja_tem_mapa:
@@ -132,19 +160,19 @@ def _importar_dia(db: Session, dia: date, forcar_resync_saldos: bool) -> dict:
 def atualizar_dados_recentes(db: Session, dias_atras: int = 7) -> dict:
     """Percorre os últimos `dias_atras` dias (incluindo hoje) e importa,
     para cada um, os dados que ainda não existem localmente: movimentos
-    bancários, linhas do mapa e saldos. Dias já importados são ignorados -
-    seguro chamar repetidamente (ex. a partir de um botão no dashboard).
+    bancários, linhas do mapa e saldos. Nunca duplica - seguro chamar
+    repetidamente (ex. a partir de um botão no dashboard).
 
-    Exceção: os SALDOS de ontem são sempre re-sincronizados (apagados e
-    reimportados), mesmo que já existam. Confirmado em 28/07/2026: o CGD
-    publica os extratos em duas fases - às 14:00 uma versão PROVISÓRIA do
-    dia a decorrer, e só na manhã seguinte (8:30) é que a pasta inteira é
-    SUBSTITUÍDA pela versão final/fechada (ex.: saldo disponível da HCN
-    passou de 57.089,68 € para 202.354,33 € nessa troca - um depósito que
-    esteve em cobrança até compensar). Sem isto, um dia importado à tarde
-    (provisório) nunca mais era corrigido, mesmo depois de a versão final
-    chegar. Não se aplica a movimentos/mapa - esses têm reconciliações e
-    resoluções manuais associadas que este refresh automático destruiria.
+    O CGD publica os extratos em duas fases - às 14:00 uma versão
+    PROVISÓRIA do dia a decorrer, e só na manhã seguinte (8:30) é que a
+    pasta inteira é SUBSTITUÍDA pela versão final/fechada (confirmado em
+    28/07/2026: saldo disponível da HCN passou de 57.089,68 € para
+    202.354,33 € nessa troca). Por isso, mesmo nos dias já importados, os
+    saldos são atualizados quando o extrato mudou e os movimentos que
+    entretanto apareceram são acrescentados (`_importar_movimentos_em_falta`
+    - nunca apaga, por causa das reconciliações e resoluções manuais).
+    Antes só se corrigiam os saldos de ontem, e os de sexta/sábado vistos
+    na segunda ficavam provisórios para sempre.
 
     Nota: isto só cobre os últimos `dias_atras` dias a contar de hoje. Um
     dia escolhido no dashboard fora dessa janela (mês anterior, etc.)
@@ -152,7 +180,6 @@ def atualizar_dados_recentes(db: Session, dias_atras: int = 7) -> dict:
     _onedrive_raiz()  # falha cedo e com mensagem clara se não estiver configurado
 
     hoje = date.today()
-    ontem = hoje - timedelta(days=1)
     dias_com_movimentos_novos = []
     dias_com_saldos_novos = []
     dias_com_mapa_novo = []
@@ -160,7 +187,7 @@ def atualizar_dados_recentes(db: Session, dias_atras: int = 7) -> dict:
 
     for i in range(dias_atras, -1, -1):
         dia = hoje - timedelta(days=i)
-        r = _importar_dia(db, dia, forcar_resync_saldos=(dia == ontem))
+        r = _importar_dia(db, dia)
         if r["movimentos"]:
             dias_com_movimentos_novos.append(r["movimentos"])
         if r["saldos"]:
@@ -187,7 +214,7 @@ def atualizar_dados_do_dia(db: Session, dia: date) -> dict:
     saldo e a folha do Mapa desse dia (e por extensão do mês certo do
     ficheiro do Mapa) estão importados antes de mostrar os dados."""
     _onedrive_raiz()
-    r = _importar_dia(db, dia, forcar_resync_saldos=False)
+    r = _importar_dia(db, dia)
     db.commit()
     return {
         "dias_com_movimentos_novos": [r["movimentos"]] if r["movimentos"] else [],
@@ -345,7 +372,7 @@ def importar_historico(db: Session, desde: date = None) -> dict:
     dias_movimentos, dias_saldos, dias_mapa, erros = [], [], [], []
     dia = desde
     while dia <= hoje:
-        r = _importar_dia(db, dia, forcar_resync_saldos=False)
+        r = _importar_dia(db, dia)
         if r["movimentos"]:
             dias_movimentos.append(r["movimentos"])
         if r["saldos"]:

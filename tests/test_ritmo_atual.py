@@ -1,5 +1,6 @@
 """Linha "previsão ao ritmo atual" e tempo de vida (previsao_ancorada.ritmo_atual):
-os fluxos conhecidos da previsão + o resto ao ritmo dos últimos 90 dias."""
+os fluxos conhecidos da previsão + o resto ao ritmo dos últimos 180 dias
+(ou de todo o histórico, se houver entre 90 e 180 dias)."""
 from datetime import date, timedelta
 from types import SimpleNamespace
 
@@ -109,3 +110,11 @@ def test_cenario_so_vendas_do_indice_tira_as_vendas_do_ritmo(monkeypatch):
     assert indice["comercial_no_horizonte"] == 4_000
     # 14 000 € a -200 €/dia: abaixo de -1 000 € ao dia 76 (75 dias -> -1 000 €, ainda não abaixo)
     assert indice["tempo_de_vida"]["dias"] == 76
+
+
+def test_com_historico_longo_usa_a_janela_de_180_dias(monkeypatch):
+    contexto = _cenario(monkeypatch, 10_000, 19_000)
+    historico = [SimpleNamespace(dia=HOJE - timedelta(days=d), saldo_contabilistico=v)
+                 for d, v in ((250, 99_000), (180, 23_000), (90, 14_000), (0, 5_000))]
+    r = pa.ritmo_atual(None, "EMPRESA X", historico, DIAS_FUTUROS, contexto)
+    assert r["janela_dias"] == 180 and r["desde"] == (HOJE - timedelta(days=180)).isoformat()

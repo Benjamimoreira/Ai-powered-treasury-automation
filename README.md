@@ -74,7 +74,7 @@ modelo de dados) · [API](docs/API.md) (endpoints HTTP e tools MCP) ·
 | **Saldos** | Lê saldos diretamente dos extratos, histórico por conta e total geral. |
 | **Sincronização** | Importa do OneDrive (só leitura) os dias ainda não existentes localmente - sob pedido (botão) ou script. |
 | **MCP** | As mesmas operações expostas como *tools* para um agente LLM chamar diretamente. |
-| **Assistente (chat)** | Separador no dashboard que conversa sobre os dados reais via MCP (só ferramentas de leitura) - nunca reconcilia nem resolve nada sozinho. |
+| **Assistente (chat)** | No topo da Visão Geral do dashboard: conversa sobre os dados reais via MCP (só ferramentas de leitura) - nunca reconcilia nem resolve nada sozinho. |
 | **Dashboard** | Streamlit: visão geral com KPIs e gráficos, análise por conta, saldos, ambíguos, assistente. |
 
 ## Stack
@@ -97,7 +97,7 @@ app/
   services/                  # lógica de negócio (reutilizada por API, MCP e scripts)
   evals/                     # avaliação das sugestões do LLM + pseudonimização
 dashboard/
-  app.py                      # Streamlit (Visão Geral, Reconciliação, Saldos, Análise de Contas, Ambíguos, Assistente)
+  app.py                      # Streamlit (Visão Geral com o Assistente, Monitorização, Faturas, Saldos, Análise de Extratos, Forecast)
   api_client.py                # cliente HTTP fino - o dashboard nunca acede à BD diretamente
 mcp_server.py                # servidor MCP (tools)
 scripts/                     # scripts de migração/importação únicos + testes manuais

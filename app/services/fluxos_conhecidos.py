@@ -194,6 +194,17 @@ def contrato_do_movimento(descricao: str, valor: float, empresa: str, contratos:
 MESES_ANALISE_RECORRENTES = 6
 MIN_MESES_RECORRENTE = 5  # presente em pelo menos 5 dos últimos 6 meses completos
 MAX_COEF_VARIACAO_RECORRENTE = 0.25
+# Regulares: o que se paga/recebe todos os meses mas com valor que varia, ou
+# em várias vezes no mês - TSU, AT, salários, faturas de fornecedores ("FT").
+# Os recorrentes acima exigem valor estável e no máximo 2 por mês, e deixavam
+# de fora ~150 k€/mês de saídas do grupo, enquanto as rendas (entradas)
+# entravam todas: a linha central subia sempre. Entram pela mediana do total
+# mensal. Os limiares vêm do backtest - ver o docstring de previsao_ancorada.py.
+MAX_COEF_VARIACAO_REGULAR = 1.0
+SINAIS_REGULARES = ("P",)
+# transferências entre empresas do grupo (mútuos, reforços) não são custos
+# nem receitas - mesmo sem o par do outro lado no extrato
+_TEXTO_INTRAGRUPO = re.compile(r"\bIG\b|MUTUO|REFORCO\s+SALDO", re.IGNORECASE)
 
 
 def _chave_recorrente(m) -> tuple:
@@ -219,7 +230,15 @@ class FluxoRecorrente:
     descricao: str
     valor_mensal: float  # sinalizado: + recebimento, - pagamento
     dia_mes: int
-    fonte: str  # "renda" | "recorrente"
+    fonte: str  # "renda" | "recorrente" | "regular"
+
+
+def _coef_variacao(totais: list) -> float:
+    """Desvio-padrão / |média| dos totais mensais (infinito se a média for 0)."""
+    media = sum(totais) / len(totais)
+    if media == 0:
+        return float("inf")
+    return (sum((t - media) ** 2 for t in totais) / len(totais)) ** 0.5 / abs(media)
 
 
 def _dia_tipico(dias: list) -> int:
@@ -267,6 +286,9 @@ def detetar_fluxos(movimentos: list, ate: date, contratos: list) -> tuple:
     # (o grupo junta TODO o histórico: só os últimos meses decidem se é
     # recorrente, mas os movimentos mais antigos do mesmo grupo também têm
     # de sair do sorteio, senão contavam a dobrar nos dias antigos sorteados)
+    from app.services.reconciliador import ids_intragrupo
+
+    intragrupo = ids_intragrupo(movimentos)
     grupos = {}
     for m in movimentos:
         if m.id in ids_conhecidos:
@@ -277,23 +299,28 @@ def detetar_fluxos(movimentos: list, ate: date, contratos: list) -> tuple:
         for m in ms:
             if (m.dia.year, m.dia.month) in meses:
                 por_mes.setdefault((m.dia.year, m.dia.month), []).append(m)
-        if len(por_mes) < MIN_MESES_RECORRENTE or any(len(v) > 2 for v in por_mes.values()):
-            continue  # raro de mais, ou várias vezes por mês (semanal/variável)
+        if len(por_mes) < MIN_MESES_RECORRENTE:
+            continue  # raro de mais
         totais = [sum(m.valor for m in v) for v in por_mes.values()]
-        media = sum(totais) / len(totais)
-        if media == 0:
-            continue
-        desvio = (sum((t - media) ** 2 for t in totais) / len(totais)) ** 0.5
-        if desvio / abs(media) > MAX_COEF_VARIACAO_RECORRENTE:
+        estavel = all(len(v) <= 2 for v in por_mes.values()) and _coef_variacao(totais) <= MAX_COEF_VARIACAO_RECORRENTE
+        # regulares: os meses sem nenhum movimento contam como 0 - um
+        # pagamento que falha um mês em seis vale 5/6 do valor por mês
+        com_zeros = [sum(m.valor for m in por_mes.get(mes, [])) for mes in meses]
+        regular = (
+            not estavel and chave[0] in SINAIS_REGULARES and _coef_variacao(com_zeros) <= MAX_COEF_VARIACAO_REGULAR
+            and not any(m.id in intragrupo or _TEXTO_INTRAGRUPO.search(m.descricao or "") for m in ms)
+        )
+        if not (estavel or regular):
             continue
         ids_conhecidos.update(m.id for m in ms)
+        fonte = "recorrente" if estavel else "regular"
         fluxos.append(FluxoRecorrente(
-            chave=("recorrente",) + chave,
+            chave=(fonte,) + chave,
             empresa=ms[-1].empresa,
-            descricao=ms[-1].descricao,
-            valor_mensal=float(median(totais)),
+            descricao=ms[-1].descricao if estavel else f"{ms[-1].descricao} (média mensal)",
+            valor_mensal=float(median(totais)) if estavel else sum(com_zeros) / len(com_zeros),
             dia_mes=_dia_tipico([m.dia.day for v in por_mes.values() for m in v]),
-            fonte="recorrente",
+            fonte=fonte,
         ))
     return fluxos, ids_conhecidos
 

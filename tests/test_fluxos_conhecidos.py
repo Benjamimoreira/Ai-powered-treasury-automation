@@ -63,9 +63,34 @@ def test_deteta_renda_e_recorrente_e_marca_movimentos_do_historico():
     por_fonte = {f.fonte: f for f in fluxos}
     assert por_fonte["renda"].valor_mensal == 400.0 and por_fonte["renda"].dia_mes == 8
     assert por_fonte["recorrente"].valor_mensal == -8600.0 and por_fonte["recorrente"].dia_mes == 27
-    assert len(fluxos) == 2  # a transferência de valor muito variável não é "recorrente"
-    assert all(m.id in ids for m in movs if "CAIXADIRECTA" not in m.descricao)
-    assert not any(m.id in ids for m in movs if "CAIXADIRECTA" in m.descricao)
+    # a transferência de valor muito variável não é "recorrente", mas paga-se
+    # todos os meses: entra como "regular", pela média mensal (abr-set)
+    assert len(fluxos) == 3
+    assert por_fonte["regular"].valor_mensal == -1000.0 * sum(m ** 2 for m in range(4, 10)) / 6
+    assert all(m.id in ids for m in movs)
+
+
+def _todos_os_meses(descricao, valores, empresa="HABISERVE", dia=20):
+    return [Mov(1000 + i, date(2026, mes, dia), empresa, descricao, v) for i, (mes, v) in enumerate(zip(range(4, 10), valores))]
+
+
+def test_pagamento_regular_falha_um_mes_e_conta_como_zero_na_media():
+    movs = _todos_os_meses("PAGAMENTO TSU", [-30000, -10000, 0, -25000, -40000, -15000])
+    movs = [m for m in movs if m.valor]
+    fluxos, ids = detetar_fluxos(movs, date(2026, 9, 30), [])
+    assert [(f.fonte, f.valor_mensal) for f in fluxos] == [("regular", -120000 / 6)]
+    assert ids == {m.id for m in movs}
+
+
+def test_entradas_variaveis_nao_sao_regulares():
+    # só as saídas: com as entradas, o backtest piorava (ver fluxos_conhecidos.SINAIS_REGULARES)
+    movs = _todos_os_meses("DEPOSITO", [30000, 10000, 5000, 25000, 40000, 15000])
+    assert detetar_fluxos(movs, date(2026, 9, 30), []) == ([], set())
+
+
+def test_mutuos_entre_empresas_nao_sao_regulares():
+    movs = _todos_os_meses("IG VIDOR SGPS MUTUO", [-30000, -10000, -50000, -25000, -40000, -15000])
+    assert detetar_fluxos(movs, date(2026, 9, 30), []) == ([], set())
 
 
 def test_backtest_honesto_so_usa_movimentos_ate_a_data_de_corte():

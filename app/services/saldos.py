@@ -230,34 +230,39 @@ def serie_saldo_total(db: Session) -> list:
 
 def registar_saldos_do_dia(db: Session, dia, pasta_extratos: str) -> int:
     """Lê os saldos finais de cada extrato da pasta e grava-os em
-    saldos_diarios. Devolve o número de entidades registadas.
+    saldos_diarios. Devolve o número de entidades novas ou alteradas.
 
-    Idempotente por (dia, entidade) - ignora entidades já registadas nesse
-    dia em vez de duplicar. Necessário porque este serviço é chamado tanto
-    pela sincronização automática (que já verifica antes, mas só ao nível
-    do dia inteiro) como pelo endpoint /saldos/atualizar/{dia} (chamável
-    diretamente, sem essa verificação) - sem esta guarda, chamar duas vezes
-    para o mesmo dia duplicava todas as entidades (confirmado em produção:
-    30 entidades duplicadas no dia 23/07, distorcendo a média móvel da
-    previsão de saldos)."""
+    Uma linha por (dia, entidade): se a entidade já tem saldo nesse dia,
+    atualiza-o quando o extrato tem outro valor, em vez de duplicar
+    (confirmado em produção: 30 entidades duplicadas no dia 23/07,
+    distorcendo a média móvel da previsão de saldos) ou de o ignorar. O CGD
+    publica uma versão provisória do dia às 14:00 e substitui a pasta pela
+    versão final na manhã seguinte - um saldo provisório nunca era
+    corrigido se a sincronização não corresse precisamente no dia a seguir
+    (ex. sexta/sábado vistos só na segunda: confirmado em 06/10/2026, com o
+    total de 02/10 igual ao de 01/10 e o de 06/10 igual ao de 05/10)."""
     saldos = ler_saldos_finais_do_dia(pasta_extratos)
     if not saldos:
         return 0
 
-    ja_registadas = {
-        s.entidade for s in db.query(SaldoDiario.entidade).filter(SaldoDiario.dia == dia)
-    }
+    existentes = {}
+    for s in db.query(SaldoDiario).filter(SaldoDiario.dia == dia):
+        existentes.setdefault(s.entidade, s)
 
-    registadas = 0
+    alteradas = 0
     for entidade, (contabilistico, disponivel) in saldos.items():
-        if entidade in ja_registadas:
-            continue
-        db.add(SaldoDiario(
-            dia=dia,
-            entidade=entidade,
-            saldo_contabilistico=contabilistico,
-            saldo_disponivel=disponivel,
-        ))
-        registadas += 1
+        atual = existentes.get(entidade)
+        if atual is None:
+            db.add(SaldoDiario(
+                dia=dia,
+                entidade=entidade,
+                saldo_contabilistico=contabilistico,
+                saldo_disponivel=disponivel,
+            ))
+            alteradas += 1
+        elif (atual.saldo_contabilistico, atual.saldo_disponivel) != (contabilistico, disponivel):
+            atual.saldo_contabilistico = contabilistico
+            atual.saldo_disponivel = disponivel
+            alteradas += 1
     db.commit()
-    return registadas
+    return alteradas

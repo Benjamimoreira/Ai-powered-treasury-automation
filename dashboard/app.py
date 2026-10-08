@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import re
 import sys
+import unicodedata
 
 dashboard_dir = str(Path(__file__).resolve().parent)
 if dashboard_dir not in sys.path:
@@ -264,6 +265,27 @@ def grafico_pizza_imputacoes(linhas: list, titulo: str):
     return grafico, cor_por_imputacao
 
 
+def _sem_acentos(texto) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", str(texto or "")) if not unicodedata.combining(c)).lower()
+
+
+def procurar_linhas_extratos(linhas: list, pesquisa: str) -> list:
+    """Linhas do Mapa que têm TODAS as palavras da pesquisa na descrição,
+    empresa, imputação, dia ou valor - sem acentos nem maiúsculas ("agua"
+    apanha "ÁGUAS"; "1500" apanha 1 500,00 €)."""
+    palavras = _sem_acentos(pesquisa).split()
+    if not palavras:
+        return linhas
+
+    def _texto(l):
+        valor = l.get("valor")
+        valores = f"{valor:.2f} {valor:.2f}".replace(".", ",", 1) if isinstance(valor, (int, float)) else ""
+        return _sem_acentos(" ".join(str(l.get(c) or "") for c in ("descricao", "empresa", "imputacao", "dia"))
+                            + " " + valores)
+
+    return [l for l in linhas if all(p in _texto(l) for p in palavras)]
+
+
 def tabela_extratos_colorida(linhas: list, cor_por_imputacao: dict, legenda_vazio: str):
     """Tabela de linhas do Mapa por baixo do gráfico circular, cada linha
     pintada com a mesma cor da fatia da sua imputação (cor_por_imputacao,
@@ -278,7 +300,10 @@ def tabela_extratos_colorida(linhas: list, cor_por_imputacao: dict, legenda_vazi
         st.info(legenda_vazio)
         return
 
-    df = pd.DataFrame(linhas)[["dia", "empresa", "imputacao", "valor", "confirmado"]].sort_values("dia", ascending=False)
+    df = pd.DataFrame(linhas)
+    if "descricao" not in df:  # API ainda sem a descrição (versão anterior)
+        df["descricao"] = None
+    df = df[["dia", "empresa", "imputacao", "descricao", "valor", "confirmado"]].sort_values("dia", ascending=False)
     df["estado"] = df["confirmado"].map({True: "Confirmado", False: "Pendente"})
     df = df.drop(columns="confirmado")
 
@@ -295,6 +320,7 @@ def tabela_extratos_colorida(linhas: list, cor_por_imputacao: dict, legenda_vazi
             "dia": st.column_config.TextColumn("Dia"),
             "empresa": st.column_config.TextColumn("Empresa"),
             "imputacao": st.column_config.TextColumn("Imputação"),
+            "descricao": st.column_config.TextColumn("Descrição"),
             "valor": st.column_config.TextColumn("Valor"),
             "estado": st.column_config.TextColumn("Estado"),
         },
@@ -469,9 +495,9 @@ with col_botao:
 
 (
     aba_visao_geral, aba_monitorizacao, aba_faturas, aba_saldos,
-    aba_analise_extratos, aba_assistente, aba_forecast,
+    aba_analise_extratos, aba_forecast,
 ) = st.tabs(
-    ["Visão Geral", "Monitorização", "Faturas", "Saldos", "Análise de Extratos", "Assistente", "Forecast"]
+    ["Visão Geral", "Monitorização", "Faturas", "Saldos", "Análise de Extratos", "Forecast"]
 )
 
 @st.cache_data(ttl=3600, show_spinner="A correr o backtest da previsão...")
@@ -482,7 +508,8 @@ def _backtest_em_cache(empresa, dias: int) -> dict:
 
 
 TIPOS_FLUXO_CONHECIDO = {
-    "renda": "Renda", "recorrente": "Recorrente", "mapa": "Mapa (planeado)", "comercial": "Comercial",
+    "renda": "Renda", "recorrente": "Recorrente", "regular": "Regular (média)", "mapa": "Mapa (planeado)",
+    "comercial": "Comercial",
 }
 
 
@@ -577,7 +604,8 @@ def _cartao_fluxos_proximos(fluxos: list, incluir_comercial: bool):
             },
         )
         st.caption(
-            "Rendas e recorrentes vêm dos extratos e do Mapa de Rendas; Mapa = linhas com "
+            "Rendas e recorrentes vêm dos extratos e do Mapa de Rendas; Regular = pagamentos de todos os "
+            "meses com valor variável (TSU, AT, fornecedores), pela média mensal; Mapa = linhas com "
             "data futura; Comercial = sinal, reforços e escritura do índice comercial."
         )
 
@@ -598,7 +626,7 @@ def _tempo_de_vida(ritmo):
 
 def _explicar_ritmo(ritmo, fluxos_previstos: list, dias_horizonte: int) -> str:
     """De onde vem a linha "previsão ao ritmo atual": os fluxos conhecidos
-    da previsão + o resto ao ritmo dos últimos 90 dias - e quanto os fluxos
+    da previsão + o resto ao ritmo dos últimos 180 dias - e quanto os fluxos
     conhecidos previstos diferem dos que se viram nesse período (é aí que a
     linha mais pode enganar: ex. rendas previstas que não aparecem nos extratos)."""
     if not ritmo:
@@ -653,22 +681,27 @@ def _kpis_painel(fc: dict, horizonte: int, incluir_comercial: bool, risco):
             f"Saldo previsto a {horizonte} dias", f"{_n(serie_fim[-1]['valor'])} €",
             f"{_n(serie_fim[-1]['valor'] - saldo_atual, sinal=True)} €", border=True, height="stretch",
             chart_data=[p["valor"] for p in serie_fim], chart_type="line",
-            help="Com recebimentos do comercial, se o interruptor estiver ligado.",
+            help="Só o que já se sabe (rendas, recorrentes, pagamentos regulares, Mapa com data futura); com "
+                 "recebimentos do comercial, se o interruptor estiver ligado."
+                 + (f" Metade das vezes o saldo fica entre {_n(fc['banda_50']['baixa'][-1]['valor'])} € e "
+                    f"{_n(fc['banda_50']['alta'][-1]['valor'])} € - os movimentos grandes (escrituras, obras, "
+                    f"impostos) não se sabem com antecedência." if fc.get("banda_50") else ""),
         )
         vida_valor, vida_delta = _tempo_de_vida(fc.get("ritmo_atual"))
+        janela = (fc.get("ritmo_atual") or {}).get("janela_dias", 180)
         indice = (fc.get("ritmo_atual") or {}).get("so_vendas_do_indice") if incluir_comercial else None
         st.metric(
             "Tempo de vida", vida_valor, vida_delta, delta_color="off", delta_arrow="off", border=True, height="stretch",
             help="Quantos dias até o saldo ficar abaixo de −1 000 € (o mesmo limite do risco de liquidez), "
                  "seguindo a linha laranja: os fluxos já conhecidos da previsão mais o resto dos recebimentos e "
-                 "pagamentos ao ritmo dos últimos 90 dias. Calculado a 1 ano, por isso não depende do horizonte.",
+                 f"pagamentos ao ritmo dos últimos {janela} dias. Calculado a 1 ano, por isso não depende do horizonte.",
         )
         if indice:
             vida_indice_valor, vida_indice_delta = _tempo_de_vida(indice)
             st.metric(
                 "Tempo de vida · só vendas do índice", vida_indice_valor, vida_indice_delta, delta_color="off",
                 delta_arrow="off", border=True, height="stretch",
-                help="O mesmo, mas sem as vendas (CPCV/escrituras) dos últimos 90 dias no ritmo e com só os "
+                help=f"O mesmo, mas sem as vendas (CPCV/escrituras) dos últimos {janela} dias no ritmo e com só os "
                      "sinais, reforços e escrituras marcados no índice comercial, nas datas marcadas - quanto "
                      "tempo dura o dinheiro se não se assinar mais nenhum negócio. Linha roxa no gráfico.",
             )
@@ -785,6 +818,7 @@ COR_RITMO_FC = "#eb6834"
 COR_INDICE_FC = "#4a3aa7"
 SERIE_TRAJETORIA_FC = "Trajetória possível"
 SERIE_INTERVALO_FC = "Intervalo provável (80%)"
+SERIE_INTERVALO_50_FC = "Metade das vezes (50%)"
 COR_TRAJETORIA_FC = "#9aa3ad"
 
 
@@ -799,11 +833,12 @@ def _regra_hoje(dia_iso: str):
 
 
 def grafico_saldo_forecast(historico_pontos, previsao_por_modelo, banda, trajetorias, y_titulo="Saldo total (EUR)",
-                           ritmo=None, dia_esgota=None, ritmo_indice=None, dia_esgota_indice=None):
+                           ritmo=None, dia_esgota=None, ritmo_indice=None, dia_esgota_indice=None,
+                           nome_banda=SERIE_INTERVALO_FC):
     """Saldo real + previsão, com UMA legenda para tudo o que está no
     gráfico (real, fluxos conhecidos, ritmo atual, trajetórias, intervalo),
-    cores distintas e a linha "Hoje". `ritmo` é a reta "ao ritmo dos últimos
-    90 dias" e `dia_esgota` o dia em que ela passa abaixo do limite de
+    cores distintas e a linha "Hoje". `ritmo` é a reta "ao ritmo atual"
+    (últimos 180 dias) e `dia_esgota` o dia em que ela passa abaixo do limite de
     descoberto (marcado se cair dentro do horizonte). `ritmo_indice` /
     `dia_esgota_indice`: o cenário "só vendas do índice" comercial."""
     ultimo = historico_pontos[-1] if historico_pontos else None
@@ -851,7 +886,7 @@ def grafico_saldo_forecast(historico_pontos, previsao_por_modelo, banda, trajeto
         symbolType="stroke", symbolStrokeWidth=3, symbolOpacity=1, symbolSize=300,
     )
     selecao = alt.selection_point(fields=["serie"], bind="legend")
-    escala_intervalo = alt.Scale(domain=[SERIE_INTERVALO_FC], range=[COR_REFERENCIA_PLANO])
+    escala_intervalo = alt.Scale(domain=[nome_banda], range=[COR_REFERENCIA_PLANO])
     legenda_intervalo = alt.Legend(
         title=None, orient="top", direction="horizontal", symbolType="square", symbolOpacity=0.3, symbolSize=200,
     )
@@ -868,7 +903,7 @@ def grafico_saldo_forecast(historico_pontos, previsao_por_modelo, banda, trajeto
         pontos_banda += [
             {"dia": b["dia"], "baixa": b["valor"], "alta": a["valor"]} for b, a in zip(banda["baixa"], banda["alta"])
         ]
-        df_banda = pd.DataFrame(pontos_banda).assign(faixa=SERIE_INTERVALO_FC)
+        df_banda = pd.DataFrame(pontos_banda).assign(faixa=nome_banda)
         camadas.append(alt.Chart(df_banda).mark_area(opacity=0.13).encode(
             x="dia:T", y="baixa:Q", y2="alta:Q",
             fill=alt.Fill("faixa:N", scale=escala_intervalo, legend=legenda_intervalo),
@@ -1067,9 +1102,10 @@ def _painel_forecast():
             with st.container(horizontal=True, vertical_alignment="center"):
                 st.markdown(f"**Saldo real e previsto · {entidade_fc}**")
                 mostrar_intervalo = st.toggle(
-                    "Mostrar intervalo provável", value=False, key="fc_intervalo",
-                    help="A faixa onde caem 80% das 1000 simulações à volta dos fluxos já conhecidos. Desligada "
-                         "por omissão: no grupo vai de -1,8 M€ a +1,8 M€ e esmagava as linhas.",
+                    "Intervalo de 80%", value=False, key="fc_intervalo",
+                    help="Por omissão a faixa mostra onde caem metade (50%) das 1000 simulações à volta dos fluxos "
+                         "já conhecidos. Ligado, mostra onde caem 80% - no grupo é muito mais larga (a 30 dias, "
+                         "~-0,5 a +0,8 M€), porque o saldo mexe com movimentos grandes que ninguém sabe com antecedência.",
                 )
                 mostrar_trajetorias = st.toggle(
                     "Mostrar trajetórias possíveis", value=False, key="fc_trajetorias",
@@ -1083,12 +1119,14 @@ def _painel_forecast():
             indice_fc = (ritmo_fc or {}).get("so_vendas_do_indice") if incluir_comercial_fc else None
             st.altair_chart(
                 grafico_saldo_forecast(
-                    fc["historico"][-90:], series_fc, fc.get("banda_incerteza") if mostrar_intervalo else None,
+                    fc["historico"][-90:], series_fc,
+                    fc.get("banda_incerteza") if mostrar_intervalo else fc.get("banda_50"),
                     fc.get("trajetorias_exemplo") if mostrar_trajetorias else None, "Saldo (EUR)",
                     ritmo=ritmo_fc["previsao"] if ritmo_fc else None,
                     dia_esgota=ritmo_fc["tempo_de_vida"]["dia"] if ritmo_fc else None,
                     ritmo_indice=indice_fc["previsao"] if indice_fc else None,
                     dia_esgota_indice=indice_fc["tempo_de_vida"]["dia"] if indice_fc else None,
+                    nome_banda=SERIE_INTERVALO_FC if mostrar_intervalo else SERIE_INTERVALO_50_FC,
                 ),
                 width="stretch",
             )
@@ -1268,9 +1306,8 @@ def _feedback_resposta(mensagem: dict, chave: str):
 
 @st.fragment
 def _painel_assistente(chave: str, altura_conversa=None):
-    """O Assistente (chat), no topo da Visão Geral e no separador próprio -
-    a mesma conversa nos dois (st.session_state["chat_mensagens"]), `chave`
-    só separa os widgets. Fragmento: uma pergunta volta a correr só isto, e
+    """O Assistente (chat), no topo da Visão Geral. `chave` dá nome aos
+    widgets (para poder ser posto noutro sítio sem colidirem). Fragmento: uma pergunta volta a correr só isto, e
     não a página toda (as respostas do modelo local demoram minutos).
     `altura_conversa`: altura fixa, com scroll, para a conversa não empurrar
     o resto da página para baixo."""
@@ -2265,9 +2302,31 @@ with aba_saldos:
         n_subiram = int((df_mapa["variacao_contabilistico"] > 0).sum())
         n_desceram = int((df_mapa["variacao_contabilistico"] < 0).sum())
         n_negativos = int((df_mapa["saldo_contabilistico"] < 0).sum())
+        # recebimentos/pagamentos do dia do mapa (o escolhido, ou o da leitura mais recente)
+        dia_fluxo = dia_mapa.isoformat() if dia_mapa else str(df_mapa["dia"].max())
+        try:
+            fluxo_dia = next((r for r in api.resumo_diario() if r["dia"] == dia_fluxo), None)
+        except Exception as e:
+            st.error(f"Erro a consultar recebimentos/pagamentos: {e}")
+            fluxo_dia = None
+        rotulo_dia_fluxo = f"{pd.to_datetime(dia_fluxo):%d/%m/%Y}"
         with st.container(horizontal=True):
             st.metric("Saldo contabilístico total", f"{_n(df_mapa['saldo_contabilistico'].sum())} €", border=True)
             st.metric("Saldo disponível total", f"{_n(df_mapa['saldo_disponivel'].sum())} €", border=True)
+            st.metric(
+                f"Recebimentos ({rotulo_dia_fluxo})", f"{_n(fluxo_dia['recebimentos'] if fluxo_dia else 0)} €",
+                f"{_n(fluxo_dia['recebimentos_externos'])} € fora do grupo" if fluxo_dia else None,
+                delta_color="off", delta_arrow="off", border=True,
+                help="Soma dos movimentos a crédito de todas as contas nesse dia. O valor pequeno exclui "
+                     "as transferências entre empresas do grupo.",
+            )
+            st.metric(
+                f"Pagamentos ({rotulo_dia_fluxo})", f"{_n(fluxo_dia['pagamentos'] if fluxo_dia else 0)} €",
+                f"{_n(fluxo_dia['pagamentos_externos'])} € fora do grupo" if fluxo_dia else None,
+                delta_color="off", delta_arrow="off", border=True,
+                help="Soma dos movimentos a débito de todas as contas nesse dia. O valor pequeno exclui "
+                     "as transferências entre empresas do grupo.",
+            )
             st.metric("Contas", len(df_mapa), border=True)
             st.metric("Subiram / desceram", f"{n_subiram} / {n_desceram}", border=True,
                       help="Face à leitura anterior de cada conta.")
@@ -2505,6 +2564,11 @@ with aba_analise_extratos:
         empresa_extratos_sel = st.selectbox(
             "Empresa", ["Todas as empresas"] + empresas_extratos, key="empresa_analise_extratos", width=380,
         )
+        pesquisa_extratos = st.text_input(
+            "Extratos", placeholder="Procurar extratos...", key="pesquisa_analise_extratos", width=320,
+            help="Filtra as tabelas por descrição, empresa, imputação ou valor (todas as palavras, sem "
+                 "acentos). Os gráficos e os totais continuam a contar o período todo.",
+        )
     empresa_extratos = None if empresa_extratos_sel == "Todas as empresas" else empresa_extratos_sel
     periodo_extratos = {"dia_inicio": dia_inicio_extratos.isoformat(), "dia_fim": dia_fim_extratos.isoformat()}
     filtro_empresa = {"empresa": empresa_extratos} if empresa_extratos else {}
@@ -2519,12 +2583,14 @@ with aba_analise_extratos:
     except Exception as e:
         st.error(f"Erro a consultar os extratos: {e}")
         linhas_extratos = []
-    linhas_receb = [l for l in linhas_extratos if l["tipo"] == "recebimento"]
-    linhas_pag = [l for l in linhas_extratos if l["tipo"] == "pagamento"]
+    linhas_encontradas = procurar_linhas_extratos(linhas_extratos, pesquisa_extratos)
+    linhas_receb = [l for l in linhas_encontradas if l["tipo"] == "recebimento"]
+    linhas_pag = [l for l in linhas_encontradas if l["tipo"] == "pagamento"]
 
     total_recebido = sum(l["valor"] for l in analise.get("recebimentos", []))
     total_pago = sum(l["valor"] for l in analise.get("pagamentos", []))
     n_pendentes = sum(1 for l in linhas_extratos if not l.get("confirmado"))
+    n_cpcv_escritura = sum(1 for l in linhas_extratos if l["tipo"] == "recebimento" and l.get("e_cpcv_escritura"))
     linhas_cpcv_escritura = [l for l in linhas_receb if l.get("e_cpcv_escritura")]
 
     # --- KPIs
@@ -2534,7 +2600,7 @@ with aba_analise_extratos:
         st.metric("Líquido", f"{_n(total_recebido - total_pago, sinal=True)} €", border=True)
         st.metric("Linhas pendentes", n_pendentes, border=True,
                   help="Linhas do Mapa ainda sem movimento correspondente no extrato.")
-        st.metric("CPCVs / escrituras", len(linhas_cpcv_escritura), border=True)
+        st.metric("CPCVs / escrituras", n_cpcv_escritura, border=True)
 
     # --- distribuição por imputação
     col_receb_pizza, col_pag_pizza = st.columns(2)
@@ -2552,6 +2618,8 @@ with aba_analise_extratos:
         else:
             st.info("Sem pagamentos registados no período.")
 
+    if pesquisa_extratos.strip():
+        st.caption(f"🔎 {len(linhas_encontradas)} de {len(linhas_extratos)} linhas com \"{pesquisa_extratos.strip()}\".")
     sep_receb, sep_pag, sep_cpcv_mapa, sep_cpcv_indice = st.tabs([
         f"Recebimentos ({len(linhas_receb)})", f"Pagamentos ({len(linhas_pag)})",
         f"CPCVs / Escrituras - Mapa ({len(linhas_cpcv_escritura)})", "Vendas - Índice comercial",
@@ -2612,9 +2680,6 @@ with aba_analise_extratos:
             st.altair_chart(grafico_ranking_pag, width="stretch")
         else:
             st.info("Sem pagamentos registados no período.")
-
-with aba_assistente:
-    _painel_assistente("aba")
 
 # Rodapé corporativo - fecha visualmente com o cabeçalho (mesma barra
 # escura, mesmo traço vermelho fino), assinala que é uma ferramenta

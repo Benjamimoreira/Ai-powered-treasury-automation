@@ -26,6 +26,16 @@ ENTRADAS grandes, não as saídas grandes, e somá-las sozinhas piorou o
 backtest (60 dias: 748k€ de erro vs 516k€ de "fica igual"; a central
 sem elas empata com "fica igual").
 
+Revisão de 07/10/2026 (backtest do grupo, 10 cortes semanais desde julho,
+30 dias): a central era assimétrica - as rendas (entradas) entravam todas e
+das ~780 k€/mês de saídas externas só ~10 k€ (os recorrentes exigiam valor
+estável): viés de +49 k€, a linha subia sempre. Com os pagamentos
+"regulares" (TSU, AT, fornecedores - fluxos_conhecidos.py) o viés passou a
+-2 k€ e o erro de 237 k€ para 225 k€ ("fica igual": 234 k€). Pôr também as
+entradas variáveis como regulares piorou (+115 k€ de viés). Nenhum método
+erra menos de ~225 k€ a 30 dias: o resto são movimentos grandes que ninguém
+sabe com antecedência, e a faixa mostra-o.
+
 A banda (percentis 10-90) vem de dias reais do histórico sorteados
 (previsao.py::_simular_dias) com a média retirada - a variabilidade real
 dos dias, sem a deriva enviesada. Serve o grupo (`empresa=None`) e cada
@@ -232,7 +242,17 @@ def _cashflow_semanal(dias_futuros: list, receb_fixos, pag_fixos, desvios_diario
     return resultado
 
 
-JANELA_RITMO_DIAS = 90
+# 180 e não 90 dias (backtest de 07/10/2026, grupo, 10 cortes desde julho,
+# 30 dias): com 90 dias a linha extrapolava o último trimestre e errava
+# 460 k€ com viés de -257 k€; com 180, 241 k€ e viés de -8 k€. Com menos
+# histórico do que isso (empresas recentes), usa-se o que houver a partir de
+# JANELA_RITMO_MINIMA dias.
+JANELA_RITMO_DIAS = 180
+JANELA_RITMO_MINIMA = 90
+# faixa mostrada por omissão no Forecast: onde caem metade das simulações (a
+# de 80% fica num interruptor - no grupo vai de -0,5 a +0,8 M€ a 30 dias e
+# esmagava as linhas)
+PERCENTIS_BANDA_50 = (25, 75)
 # os movimentos "explicam" a variação do saldo se a diferença não passar de
 # 20% (ou 5 000 €, o que for maior) - no grupo faltam entradas nos extratos
 # (ex. abril: saldo +718 k€, movimentos +133 k€) e a diferença é ~70%
@@ -259,6 +279,8 @@ def ritmo_atual(db: Session, empresa: Optional[str], historico: list, dias_futur
     DIAS_TEMPO_DE_VIDA dias, por isso é o mesmo em qualquer horizonte."""
     partida = historico[-1]
     inicio = next((h for h in reversed(historico) if h.dia <= partida.dia - timedelta(days=janela_dias)), None)
+    if inicio is None and (partida.dia - historico[0].dia).days >= JANELA_RITMO_MINIMA:
+        inicio = historico[0]  # menos histórico do que a janela: usa-se todo
     if inicio is None:
         return None
     dias = (partida.dia - inicio.dia).days
@@ -371,7 +393,7 @@ def prever_saldo_ancorado(
     central = saldo_partida + np.cumsum(receb_fixos - pag_fixos)
     com_comercial = central + np.cumsum(comercial)
 
-    banda = trajetorias = desvios = risco_negativo = None
+    banda = banda_50 = trajetorias = desvios = risco_negativo = None
     historico_cf = []
     if com_banda:
         # no grupo, as transferências entre empresas anulam-se - fora da
@@ -388,7 +410,14 @@ def prever_saldo_ancorado(
             recebimentos, pagamentos = simulado
             media = float(np.mean([s["liquido"] for s in historico_cf[-JANELA_SIMULACAO:]]))
             desvios = (recebimentos - pagamentos) - media
-            saldos = central + np.cumsum(desvios, axis=1)
+            acumulado = np.cumsum(desvios, axis=1)
+            # centrada na série central pela mediana, não pela média: os dias
+            # reais têm uma cauda de pagamentos enormes, e com a média tirada
+            # a mediana das somas ficava ~+270 k€ acima (grupo, 30 dias) - a
+            # faixa de 50% nem tocava na linha. A faixa mostra a dispersão;
+            # a posição é a dos fluxos conhecidos.
+            acumulado -= np.median(acumulado, axis=0)
+            saldos = central + acumulado
             baixa, alta = np.percentile(saldos, PERCENTIS_BANDA, axis=0)
             # risco de liquidez: em quantas trajetórias o saldo fica abaixo
             # de -DESCOBERTO_MATERIAL_EUR nalgum dia, e o 1.º dia em que isso
@@ -407,6 +436,8 @@ def prever_saldo_ancorado(
                 "saldo_pior_caso_fim": float(np.percentile(com_tendencia[:, -1], PERCENTIS_BANDA[0])),
             }
             banda = {"baixa": _serie(dias_futuros, baixa), "alta": _serie(dias_futuros, alta)}
+            baixa_50, alta_50 = np.percentile(saldos, PERCENTIS_BANDA_50, axis=0)
+            banda_50 = {"baixa": _serie(dias_futuros, baixa_50), "alta": _serie(dias_futuros, alta_50)}
             ordem = np.argsort(saldos[:, -1])
             trajetorias = [_serie(dias_futuros, saldos[ordem[int(q * (N_TRAJETORIAS - 1))]]) for q in (0.2, 0.4, 0.6, 0.8)]
 
@@ -424,6 +455,7 @@ def prever_saldo_ancorado(
         # seria igual à central)
         "previsao_com_comercial": _serie(dias_futuros, com_comercial) if comercial.any() else None,
         "banda_incerteza": banda,
+        "banda_50": banda_50,
         "risco_saldo_negativo": risco_negativo,
         "trajetorias_exemplo": trajetorias,
         "ritmo_atual": ritmo_atual(db, empresa, historico, dias_futuros, contexto, ate) if com_banda else None,
