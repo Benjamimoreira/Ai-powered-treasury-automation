@@ -148,7 +148,9 @@ dados).
 | GET | `/monitorizacao/scripts` | | Cada script conhecido: último estado, última execução, se está atrasado. |
 | POST | `/monitorizacao/scripts/{script}/executar` | ✏️ | Reportado pelo script no fim da corrida. Corpo `{"status": "ok\|erro\|warning", "erro": …, "log": [...], "duracao_segundos": …}`. |
 | POST | `/monitorizacao/scripts/{script}/eventos` | ✏️ | Erro/aviso a meio de uma corrida. Corpo `{"nivel": "erro\|aviso\|info", "mensagem": "…"}`. |
-| POST | `/monitorizacao/scripts/{script}/correr` | | Lança o script na máquina da API. **Só funciona com a API a correr nativamente no Windows**, não no container (500 com a explicação). |
+| POST | `/monitorizacao/scripts/{script}/correr` | ✏️ | Botão Correr. Com a API nativa no Windows lança o script já; em Docker grava um pedido para o agente do Windows (`scripts/agente_pedidos.py`): `{"status": "pedido", "pedido": {...}}`. Um pedido pendente do mesmo script não é duplicado. |
+| GET | `/monitorizacao/pedidos?estado=pendente&limit=20` | | Pedidos do botão Correr (`pendente`, `iniciado`, `erro`), mais recentes primeiro. |
+| POST | `/monitorizacao/pedidos/{id}/estado` | ✏️ | Usado pelo agente. Corpo `{"estado": "iniciado\|erro", "erro": …}`; 409 se já não estava pendente. |
 | GET | `/monitorizacao/logs?limit=50&dia=` | | Execuções registadas. |
 | GET | `/monitorizacao/eventos?limit=50&script=` | | Eventos em tempo real. |
 | GET | `/monitorizacao/ia?dias=30` | | Qualidade da IA: perguntas, erros, 👍/👎, tempos do Assistente; sugestões aceites/rejeitadas, regras vs LLM. |

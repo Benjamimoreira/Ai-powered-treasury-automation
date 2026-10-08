@@ -150,6 +150,36 @@ as tabelas que não conhece.
 Um script é marcado como **atrasado** quando passaram mais de 20 minutos
 da hora prevista sem execução registada.
 
+### Botão Correr da Monitorização
+
+A Monitorização tem botões **▶ Correr** para `preencher_mapa` e
+`enviar_mapa_smtp` (sempre) e para qualquer script em erro/atrasado. O envio
+pede confirmação: manda o email a sério.
+
+A API corre em Docker e os scripts no Windows, por isso o botão só grava um
+pedido (`POST /monitorizacao/scripts/{script}/correr`). Quem o lança é o
+**agente do Windows**, `scripts/agente_pedidos.py`: de 15 em 15 s vai buscar
+os pedidos pendentes e lança o script como a tarefa agendada o lança
+(`preencher_mapa` pelo painel, que ao fim de 30 s sem escolha processa ontem e
+hoje). Pedidos com mais de 15 minutos não correm (ficam "não lançado"). O log
+do agente fica em `logs/agente_pedidos.log`.
+
+Instalar o agente (uma vez, como tarefa agendada ao iniciar sessão):
+
+```powershell
+$pasta = "C:\Users\Benjamim\OneDrive - VIDÓR\Ficheiros de Helpdesk VIDÓR - api-tesouraria"
+$acao = New-ScheduledTaskAction -Execute "$env:LOCALAPPDATA\Programs\Python\Launcher\pyw.exe" `
+    -Argument '-3 "scripts\agente_pedidos.py"' -WorkingDirectory $pasta
+$definicoes = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -RestartCount 999 `
+    -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName "Tesouraria - Agente pedidos Correr" -Action $acao `
+    -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME) -Settings $definicoes
+Start-ScheduledTask -TaskName "Tesouraria - Agente pedidos Correr"
+```
+
+Se o pedido fica em "⏳ à espera do agente do Windows", o agente não está a
+correr: `Get-ScheduledTask "Tesouraria - Agente pedidos Correr"`.
+
 ## 7. Avaliações à mão
 
 ```powershell

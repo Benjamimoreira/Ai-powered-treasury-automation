@@ -245,6 +245,36 @@ def test_monitorizacao_lista_eventos_filtra_por_script(client):
     assert scripts == {"enviar_mapa_smtp"}
 
 
+def test_correr_script_em_docker_grava_pedido_para_o_agente(client, monkeypatch):
+    # API em Docker: a pasta dos scripts não existe aqui
+    monkeypatch.delenv("SCRIPTS_PREENCHIMENTO_RAIZ", raising=False)
+    monkeypatch.delenv("SCRIPTS_LOG_DIR", raising=False)
+
+    primeiro = client.post("/monitorizacao/scripts/enviar_mapa_smtp/correr")
+    segundo = client.post("/monitorizacao/scripts/enviar_mapa_smtp/correr")
+
+    assert primeiro.status_code == 200
+    assert primeiro.json()["status"] == "pedido"
+    # dois cliques seguidos = um só pedido
+    assert segundo.json()["pedido"]["id"] == primeiro.json()["pedido"]["id"]
+    pendentes = client.get("/monitorizacao/pedidos", params={"estado": "pendente"}).json()["pedidos"]
+    assert [p["script"] for p in pendentes] == ["enviar_mapa_smtp"]
+
+    pedido_id = pendentes[0]["id"]
+    marcado = client.post(f"/monitorizacao/pedidos/{pedido_id}/estado", json={"estado": "iniciado"})
+    assert marcado.status_code == 200
+    assert marcado.json()["estado"] == "iniciado"
+    assert marcado.json()["iniciado_em"]
+    # já tratado: outro agente não o volta a lançar
+    assert client.post(f"/monitorizacao/pedidos/{pedido_id}/estado", json={"estado": "iniciado"}).status_code == 409
+    assert client.get("/monitorizacao/pedidos", params={"estado": "pendente"}).json()["pedidos"] == []
+
+
+def test_correr_script_desconhecido_da_404(client):
+    assert client.post("/monitorizacao/scripts/avaliacao_online/correr").status_code == 404
+    assert client.post("/monitorizacao/scripts/nao_existe/correr").status_code == 404
+
+
 def test_monitorizacao_sinaliza_script_atrasado():
     from datetime import datetime
     from zoneinfo import ZoneInfo

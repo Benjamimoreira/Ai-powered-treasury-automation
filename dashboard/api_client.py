@@ -301,6 +301,13 @@ def correr_script(script: str) -> dict:
     return r.json()
 
 
+def listar_pedidos_corrida(limit: int = 20) -> dict:
+    """Pedidos do botão "Correr" (pendente/iniciado/erro), mais recentes primeiro."""
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/pedidos", params={"limit": limit}, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_monitorizacao_logs(limit: int = 50, dia: str = None) -> dict:
     params = {"limit": limit}
     if dia:

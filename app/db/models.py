@@ -248,6 +248,23 @@ class EventoScript(Base):
     timestamp = Column(DateTime, default=_utcnow_naive, nullable=False, index=True)
 
 
+class PedidoCorrida(Base):
+    """Um pedido para correr já um script agendado (botão "Correr" da
+    Monitorização). A API corre em Docker e os scripts no Windows, por isso
+    a API só grava o pedido; o agente do Windows (scripts/agente_pedidos.py)
+    vai buscá-lo, lança o script e marca-o "iniciado" (ou "erro", se não o
+    conseguiu lançar). O resultado da corrida chega depois pelo caminho
+    normal, POST /monitorizacao/scripts/{script}/executar."""
+    __tablename__ = "pedidos_corrida"
+
+    id = Column(Integer, primary_key=True)
+    script = Column(String, nullable=False, index=True)
+    estado = Column(String, nullable=False, default="pendente", index=True)  # pendente|iniciado|erro
+    erro = Column(String, nullable=True)
+    pedido_em = Column(DateTime, default=_utcnow_naive, nullable=False)
+    iniciado_em = Column(DateTime, nullable=True)
+
+
 def criar_tabelas(engine) -> None:
     """create_all (só cria o que falta) e, antes, CREATE EXTENSION vector no
     Postgres. Sem pgvector (imagem do Postgres sem a extensão) cria tudo

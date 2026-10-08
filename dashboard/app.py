@@ -1621,6 +1621,58 @@ def _linha_log(timestamp, titulo, nivel, mensagem, cor):
     )
 
 
+# Scripts com botão "Correr" sempre visível na Monitorização (os outros só
+# aparecem quando estão em erro/atrasados).
+SCRIPTS_SEMPRE_CORRIVEIS = ["preencher_mapa", "enviar_mapa_smtp"]
+ESTADO_PEDIDO = {"pendente": "⏳ à espera do agente do Windows", "iniciado": "▶ lançado", "erro": "❌ não lançado"}
+
+
+def _pedir_corrida(nome_script: str):
+    try:
+        resposta = api.correr_script(nome_script)
+    except Exception as e:
+        st.error(f"Não foi possível pedir '{nome_script}': {e}")
+        return
+    if resposta.get("status") == "pedido":
+        st.success(f"Pedido para correr '{nome_script}' registado - o agente do Windows lança-o dentro de "
+                   "~15 s. O estado em cima atualiza quando a corrida terminar.")
+    else:
+        st.success(f"Execução de '{nome_script}' iniciada. O estado atualiza quando terminar.")
+
+
+def _botoes_correr_scripts(nomes: list):
+    """Botões "Correr" da Monitorização. A API corre em Docker e os scripts
+    no Windows: o botão grava um pedido e o agente do Windows
+    (scripts/agente_pedidos.py) lança o script como a tarefa agendada o
+    lança. O envio do Mapa manda o email a sério, por isso pede confirmação."""
+    st.caption("Correr agora (no Windows, como a tarefa agendada):")
+    with st.container(horizontal=True):
+        for nome_script in nomes:
+            if nome_script == "enviar_mapa_smtp":
+                with st.popover(f"▶ Correr {nome_script}"):
+                    st.markdown("Isto **envia o Mapa por email** aos destinatários de sempre, agora.")
+                    if st.button("Enviar agora", key=f"botao_correr_{nome_script}", type="primary"):
+                        _pedir_corrida(nome_script)
+            elif st.button(f"▶ Correr {nome_script}", key=f"botao_correr_{nome_script}"):
+                _pedir_corrida(nome_script)
+
+    try:
+        pedidos = api.listar_pedidos_corrida(limit=20).get("pedidos", [])
+    except Exception:
+        pedidos = []
+    ultimos = {}
+    for pedido in pedidos:  # mais recentes primeiro
+        ultimos.setdefault(pedido["script"], pedido)
+    linhas = [
+        f"`{p['script']}` pedido {_hora_local(p['pedido_em'])}: {ESTADO_PEDIDO.get(p['estado'], p['estado'])}"
+        + (f" ({_hora_local(p['iniciado_em'])})" if p.get("iniciado_em") and p["estado"] == "iniciado" else "")
+        + (f" - {p['erro']}" if p.get("erro") else "")
+        for p in ultimos.values() if p["script"] in nomes
+    ]
+    if linhas:
+        st.caption("Últimos pedidos: " + " · ".join(linhas))
+
+
 with aba_monitorizacao:
     try:
         scripts = api.listar_monitorizacao_scripts().get("scripts", [])
@@ -1686,16 +1738,7 @@ with aba_monitorizacao:
             )
 
             scripts_em_falha = df_scripts.loc[(df_scripts["status"] == "erro") | atrasados_mask, "nome"].tolist()
-            if scripts_em_falha:
-                st.caption("Correr agora o(s) script(s) em falha (na máquina onde a API corre nativamente):")
-                with st.container(horizontal=True):
-                    for nome_script in scripts_em_falha:
-                        if st.button(f"▶ Correr {nome_script}", key=f"botao_correr_{nome_script}"):
-                            try:
-                                api.correr_script(nome_script)
-                                st.success(f"Execução de '{nome_script}' iniciada. O estado atualiza quando terminar.")
-                            except Exception as e:
-                                st.error(f"Não foi possível iniciar '{nome_script}': {e}")
+            _botoes_correr_scripts(SCRIPTS_SEMPRE_CORRIVEIS + [s for s in scripts_em_falha if s not in SCRIPTS_SEMPRE_CORRIVEIS])
         else:
             st.info("Sem dados de execução dos scripts.")
 

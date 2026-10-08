@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import json_log_formatter
 from sqlalchemy.orm import Session
 
-from app.db.models import EventoScript, ExecucaoScript
+from app.db.models import EventoScript, ExecucaoScript, PedidoCorrida
 
 FUSO_LOCAL = ZoneInfo("Europe/Lisbon")
 TOLERANCIA_ATRASO_MINUTOS = 20
@@ -188,6 +188,69 @@ def correr_script(nome: str) -> Dict[str, Any]:
         creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0),
     )
     return {"nome": nome, "status": "iniciado"}
+
+
+def _pedido_dict(pedido: PedidoCorrida) -> Dict[str, Any]:
+    return {
+        "id": pedido.id,
+        "script": pedido.script,
+        "estado": pedido.estado,
+        "erro": pedido.erro,
+        "pedido_em": _isoformat(pedido.pedido_em),
+        "iniciado_em": _isoformat(pedido.iniciado_em) if pedido.iniciado_em else None,
+    }
+
+
+def pedir_corrida(db: Session, nome: str) -> Dict[str, Any]:
+    """Botão "Correr" da Monitorização: se os scripts estão nesta máquina
+    (API a correr nativamente), lança-o já (correr_script); senão (API em
+    Docker) grava um pedido para o agente do Windows (scripts/
+    agente_pedidos.py) o lançar. Um pedido ainda pendente para o mesmo
+    script não é duplicado (dois cliques seguidos = uma corrida)."""
+    nome = nome.strip().lower()
+    info = SCRIPT_PADRAO.get(nome)
+    if not info or "ficheiro" not in info:
+        raise ValueError(f"Script desconhecido: {nome}")
+
+    raiz = _raiz_scripts_preenchimento()
+    if raiz and os.path.isdir(raiz):
+        return correr_script(nome)
+
+    pendente = (
+        db.query(PedidoCorrida)
+        .filter(PedidoCorrida.script == nome, PedidoCorrida.estado == "pendente")
+        .first()
+    )
+    pedido = pendente or PedidoCorrida(script=nome, estado="pendente")
+    if not pendente:
+        db.add(pedido)
+        db.commit()
+        db.refresh(pedido)
+    _logger_json.info("pedido_corrida", extra={"script": nome, "pedido": pedido.id})
+    return {"nome": nome, "status": "pedido", "pedido": _pedido_dict(pedido)}
+
+
+def listar_pedidos(db: Session, estado: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+    query = db.query(PedidoCorrida)
+    if estado:
+        query = query.filter(PedidoCorrida.estado == estado)
+    pedidos = query.order_by(PedidoCorrida.pedido_em.desc(), PedidoCorrida.id.desc()).limit(limit).all()
+    return [_pedido_dict(p) for p in pedidos]
+
+
+def marcar_pedido(db: Session, pedido_id: int, estado: str, erro: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """O agente do Windows marca o pedido como "iniciado" (lançou o script)
+    ou "erro" (não o conseguiu lançar). Só muda pedidos ainda pendentes:
+    devolve None se o pedido não existe ou já foi tratado."""
+    pedido = db.get(PedidoCorrida, pedido_id)
+    if pedido is None or pedido.estado != "pendente":
+        return None
+    pedido.estado = estado
+    pedido.erro = erro
+    pedido.iniciado_em = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.commit()
+    db.refresh(pedido)
+    return _pedido_dict(pedido)
 
 
 def listar_logs(db: Session, limit: int = 50, dia: Optional[date] = None) -> List[Dict[str, Any]]:

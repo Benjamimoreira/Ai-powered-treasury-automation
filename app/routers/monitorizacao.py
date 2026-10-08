@@ -6,7 +6,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.services.monitorizacao import correr_script, listar_eventos, listar_logs, listar_scripts, registar_evento, registar_execucao
+from app.services.monitorizacao import (
+    listar_eventos, listar_logs, listar_pedidos, listar_scripts, marcar_pedido, pedir_corrida, registar_evento,
+    registar_execucao,
+)
 from app.services.monitorizacao_ia import anotar_interacao, calibracao_juiz, listar_para_rever, metricas_ia
 
 router = APIRouter(prefix="/monitorizacao", tags=["monitorizacao"])
@@ -17,6 +20,11 @@ class ExecucaoScriptRequest(BaseModel):
     erro: Optional[str] = None
     log: Optional[List[str]] = None
     duracao_segundos: Optional[float] = None
+
+
+class PedidoCorridaEstadoRequest(BaseModel):
+    estado: str = Field(..., pattern="^(iniciado|erro)$")
+    erro: Optional[str] = None
 
 
 class EventoScriptRequest(BaseModel):
@@ -38,17 +46,35 @@ def executar_script(script: str, payload: ExecucaoScriptRequest, db: Session = D
 
 
 @router.post("/scripts/{script}/correr")
-def correr_script_endpoint(script: str):
-    """Dispara a execução do script na máquina onde a API corre nativamente
-    (fora do Docker) - usado pelo botão "Correr" do dashboard para scripts
-    em falha/atrasados. O resultado da corrida chega depois pelo caminho
-    normal, POST /scripts/{script}/executar, enviado pelo próprio script."""
+def correr_script_endpoint(script: str, db: Session = Depends(get_db)):
+    """Botão "Correr" do dashboard: lança o script já, se a API corre
+    nativamente na máquina dos scripts, ou grava um pedido para o agente do
+    Windows (scripts/agente_pedidos.py) o lançar, se a API corre em Docker.
+    O resultado da corrida chega depois pelo caminho normal,
+    POST /scripts/{script}/executar, enviado pelo próprio script."""
     try:
-        return correr_script(script)
+        return pedir_corrida(db, script)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/pedidos")
+def listar_pedidos_corrida(estado: Optional[str] = None, limit: int = 20, db: Session = Depends(get_db)):
+    """Pedidos do botão "Correr" - o agente do Windows lê os pendentes
+    (estado=pendente) e o dashboard mostra o estado do último de cada script."""
+    return {"pedidos": listar_pedidos(db, estado=estado, limit=limit)}
+
+
+@router.post("/pedidos/{pedido_id}/estado")
+def marcar_pedido_corrida(pedido_id: int, payload: PedidoCorridaEstadoRequest, db: Session = Depends(get_db)):
+    """O agente do Windows marca o pedido como iniciado/erro. 409 se o
+    pedido já não estava pendente (outro agente já o tratou)."""
+    pedido = marcar_pedido(db, pedido_id, payload.estado, erro=payload.erro)
+    if pedido is None:
+        raise HTTPException(status_code=409, detail="Pedido inexistente ou já tratado")
+    return pedido
 
 
 @router.get("/logs")
