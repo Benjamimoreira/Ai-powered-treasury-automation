@@ -408,6 +408,15 @@ def negocios_comerciais(empresa: Optional[str] = None, dia_inicio: Optional[str]
     return r.json()
 
 
+def rendas(empresa: Optional[str] = None, ate: Optional[str] = None) -> dict:
+    """Contratos do Mapa de Rendas com o estado de cada mês do ano (pago no
+    extrato, por registar no Mapa, em falta), os recebimentos e um resumo."""
+    params = {k: v for k, v in {"empresa": empresa, "ate": ate}.items() if v}
+    r = requests.get(f"{API_BASE_URL}/rendas", params=params, timeout=60)
+    r.raise_for_status()
+    return r.json()
+
+
 def espaco_fracao_por_ref() -> dict:
     r = requests.get(f"{API_BASE_URL}/comercial/espaco-fracao-por-ref")
     r.raise_for_status()

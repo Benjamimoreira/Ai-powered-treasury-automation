@@ -2593,6 +2593,100 @@ def _secao_vendas_indice(empresa, periodo: dict):
     )
 
 
+ESTADOS_RENDA = {
+    "pago": "✅", "por registar": "📝", "registado no Mapa": "☑️", "em falta": "❌",
+    "por receber": "⏳", "sem contrato": "–", "sem extrato": "❔",
+}
+MESES_ABREV = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+
+
+def _secao_rendas(empresa, periodo: dict):
+    """Mapa de Rendas cruzado com os extratos: cada recebimento "TRF/TFI
+    <nome>" é atribuído a um contrato pelo nome do arrendatário e pelo valor,
+    e cada mês do ano fica pago, por registar no Mapa ou em falta - ver
+    app/services/rendas.py."""
+    try:
+        dados = api.rendas(empresa, periodo["dia_fim"])
+    except Exception as e:
+        st.error(f"Erro a consultar as rendas: {e}")
+        return
+    contratos, resumo = dados["contratos"], dados["resumo"]
+    if not contratos:
+        st.info(dados.get("erro") or "Sem contratos de renda para este filtro.")
+        return
+
+    st.caption(
+        f"Do {dados['mapa']} (folha RENDAS), cruzado com os extratos de {dados['ano']}: cada recebimento "
+        "\"TRF/TFI <nome>\" conta para o contrato do arrendatário com esse nome quando o valor é a renda "
+        "(ou várias rendas - pagam vários meses, primeiro o do recebimento, depois os em atraso). "
+        "✅ pago e marcado no Mapa · 📝 pago no extrato mas ainda sem X no Mapa · ☑️ X no Mapa sem "
+        "recebimento identificado (outra via ou outro nome) · ❌ em falta · ⏳ mês em curso · – sem contrato · "
+        "❔ extratos do mês incompletos na base de dados (não dá para dizer se foi pago)."
+    )
+    if dados.get("meses_sem_extrato"):
+        st.warning("Extratos incompletos em " + ", ".join(MESES_ABREV[m - 1] for m in dados["meses_sem_extrato"])
+                   + ": os meses sem X no Mapa ficam ❔ em vez de ❌.")
+    with st.container(horizontal=True):
+        st.metric("Contratos", resumo["contratos"], border=True)
+        st.metric("Renda mensal", f"{_n(resumo['renda_mensal'])} €", border=True)
+        st.metric(f"Recebido em {dados['ano']}", f"{_n(resumo['recebido'])} €", border=True,
+                  help="Recebimentos dos extratos identificados como renda (nome do arrendatário + valor).")
+        st.metric("Em falta", f"{_n(resumo['valor_em_falta'])} €",
+                  f"{resumo['meses_em_falta']} mês(es) · {resumo['contratos_em_falta']} contrato(s)",
+                  delta_color="off", delta_arrow="off", border=True,
+                  help="Meses já fechados sem recebimento identificado nem X no Mapa de Rendas.")
+        st.metric("Por registar no Mapa", resumo["meses_por_registar"], border=True,
+                  help="Meses pagos segundo o extrato que ainda não têm X na folha RENDAS.")
+
+    meses_mostrar = range(1, dados["mes_atual"] + 1)
+    df = pd.DataFrame([{
+        "Empresa": c["empresa"], "Cliente": c["cliente"], "Espaço": c["espaco"], "Fração": c["fracao"],
+        "Renda": c["renda"],
+        **{MESES_ABREV[m - 1]: ESTADOS_RENDA.get(c["meses"][m - 1]["estado"], "") for m in meses_mostrar},
+        "Recebido": c["recebido"], "Em falta": c["valor_em_falta"],
+    } for c in contratos])
+    selecao = st.dataframe(
+        df, width="stretch", hide_index=True, key="tabela_rendas",
+        on_select="rerun", selection_mode="single-row",
+        column_config={
+            **{c: st.column_config.NumberColumn(format="euro") for c in ("Renda", "Recebido", "Em falta")},
+            **{MESES_ABREV[m - 1]: st.column_config.TextColumn(width=40) for m in meses_mostrar},
+        },
+    )
+
+    por_registar = [
+        {"Empresa": c["empresa"], "Cliente": c["cliente"], "Espaço": c["espaco"], "Fração": c["fracao"],
+         "Mês": MESES_ABREV[m["mes"] - 1], "Recebido em": pd.to_datetime(m["dia"]), "Valor": m["valor"]}
+        for c in contratos for m in c["meses"] if m["estado"] == "por registar"
+    ]
+    if por_registar:
+        with st.expander(f"📝 Por registar no Mapa de Rendas ({len(por_registar)})"):
+            st.dataframe(
+                pd.DataFrame(por_registar), width="stretch", hide_index=True,
+                column_config={"Valor": st.column_config.NumberColumn(format="euro"),
+                               "Recebido em": st.column_config.DateColumn(format="DD/MM/YYYY")},
+            )
+
+    linhas_sel = selecao.selection.rows if selecao else []
+    if not linhas_sel:
+        st.caption("Clica numa linha para ver os recebimentos desse contrato.")
+        return
+    c = contratos[linhas_sel[0]]
+    st.markdown(f"**Recebimentos · {c['cliente']} · {c['espaco']} {c['fracao']}**")
+    if not c["pagamentos"]:
+        st.info("Nenhum recebimento identificado nos extratos este ano.")
+        return
+    st.dataframe(
+        pd.DataFrame([{
+            "Dia": pd.to_datetime(p["dia"]), "Descrição": p["descricao"], "Valor": p["valor"],
+            "Rendas": p["n_meses"],
+        } for p in c["pagamentos"]]),
+        width="stretch", hide_index=True,
+        column_config={"Valor": st.column_config.NumberColumn(format="euro"),
+                       "Dia": st.column_config.DateColumn(format="DD/MM/YYYY")},
+    )
+
+
 with aba_analise_extratos:
     try:
         empresas_extratos = api.listar_empresas()
@@ -2663,9 +2757,9 @@ with aba_analise_extratos:
 
     if pesquisa_extratos.strip():
         st.caption(f"🔎 {len(linhas_encontradas)} de {len(linhas_extratos)} linhas com \"{pesquisa_extratos.strip()}\".")
-    sep_receb, sep_pag, sep_cpcv_mapa, sep_cpcv_indice = st.tabs([
+    sep_receb, sep_pag, sep_cpcv_mapa, sep_cpcv_indice, sep_rendas = st.tabs([
         f"Recebimentos ({len(linhas_receb)})", f"Pagamentos ({len(linhas_pag)})",
-        f"CPCVs / Escrituras - Mapa ({len(linhas_cpcv_escritura)})", "Vendas - Índice comercial",
+        f"CPCVs / Escrituras - Mapa ({len(linhas_cpcv_escritura)})", "Vendas - Índice comercial", "Rendas",
     ])
     with sep_receb:
         tabela_extratos_colorida(linhas_receb, cores_receb, "Sem recebimentos registados no período.")
@@ -2716,6 +2810,9 @@ with aba_analise_extratos:
 
     with sep_cpcv_indice:
         _secao_vendas_indice(empresa_extratos, periodo_extratos)
+
+    with sep_rendas:
+        _secao_rendas(empresa_extratos, periodo_extratos)
 
     with st.container(border=True):
         grafico_ranking_pag = grafico_ranking_imputacoes(analise.get("pagamentos", []), "Imputações que mais gastam (ranking completo)")

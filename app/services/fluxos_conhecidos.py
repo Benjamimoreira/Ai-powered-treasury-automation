@@ -66,6 +66,9 @@ class ContratoRenda:
     fracao: str
     renda: Optional[float]
     titulares: list = field(default_factory=list)
+    # {mês: marca} do bloco do ano na folha RENDAS ("X" = pago, "-" = sem
+    # contrato nesse mês, None = nada marcado) - ver _colunas_meses
+    meses_mapa: dict = field(default_factory=dict)
 
 
 def caminho_mapa_rendas(raiz_documentos: str, ano: int, mes: int) -> str:
@@ -94,6 +97,12 @@ def palavras_nome(texto) -> list:
     ]
 
 
+def _colunas_meses(cabecalho_anos: list, ano: int) -> Optional[int]:
+    """Índice (0 = A) da coluna de janeiro do bloco de `ano`: a linha 1 da
+    folha RENDAS tem o ano por cima de cada bloco de 12 meses (2026 em BJ)."""
+    return next((j for j, v in enumerate(cabecalho_anos) if v == ano), None)
+
+
 def ler_contratos_rendas(caminho: str, ano: int) -> list:
     """Contratos da folha RENDAS com renda definida para `ano` (ou o ano
     mais recente disponível) e sem data de término já passada. Lê de uma
@@ -108,6 +117,9 @@ def ler_contratos_rendas(caminho: str, ano: int) -> list:
     anos_disponiveis = sorted(a for a in COL_RENDA_POR_ANO if a <= ano) or [min(COL_RENDA_POR_ANO)]
     col_renda = COL_RENDA_POR_ANO[anos_disponiveis[-1]]
     ultima_col = max(col_renda, COL_DATA_TERMINO)
+    col_janeiro = _colunas_meses(linhas[0] if linhas else [], ano)
+    if col_janeiro is not None:
+        ultima_col = max(ultima_col, col_janeiro + 12)
     contratos = []
     for v in linhas:
         v = v + [None] * (ultima_col - len(v))
@@ -125,6 +137,10 @@ def ler_contratos_rendas(caminho: str, ano: int) -> list:
             fracao=str(v[COL_FRACAO - 1] or "").strip(),
             renda=float(renda) if isinstance(renda, (int, float)) and renda > 0 else None,
             titulares=[palavras_nome(t) for t in str(cliente).split("/") if palavras_nome(t)],
+            meses_mapa={} if col_janeiro is None else {
+                mes: (str(v[col_janeiro + mes - 1]).strip().upper() or None) if v[col_janeiro + mes - 1] else None
+                for mes in range(1, 13)
+            },
         ))
     return contratos
 

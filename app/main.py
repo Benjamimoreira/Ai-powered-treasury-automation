@@ -5,7 +5,7 @@ from fastapi import FastAPI
 
 from app.db import models  # noqa: F401  (garante que os modelos são registados antes do create_all)
 from app.db.session import engine
-from app.routers import ambiguos, anomalias, chat, comercial, faturas, monitorizacao, reconciliacao, saldos, sync
+from app.routers import ambiguos, anomalias, chat, comercial, faturas, monitorizacao, reconciliacao, rendas, saldos, sync
 
 
 @asynccontextmanager
@@ -47,6 +47,7 @@ app.include_router(faturas.router)
 app.include_router(anomalias.router)
 app.include_router(chat.router)
 app.include_router(comercial.router)
+app.include_router(rendas.router)
 
 
 @app.get("/")
