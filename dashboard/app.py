@@ -45,6 +45,9 @@ def _tema_pt():
 # 10 minutos em cache (limpa-se ao carregar em "Atualizar dados" - ver
 # _limpar_cache_previsoes). Guardado em `api` com uma marca para não voltar
 # a envolver a mesma função a cada rerun (o módulo persiste entre reruns).
+# Com refresh_mode="background", uma previsão expirada devolve logo o valor
+# anterior e recalcula em segundo plano - o risco de liquidez e o ranking
+# de risco demoram ~24 s cada, e era isso que se esperava a cada 10 minutos.
 FUNCOES_PREVISAO_EM_CACHE = (
     "previsao_saldo", "avaliar_previsao", "previsao_saldo_total", "avaliar_previsao_saldo_total",
     "previsao_risco", "previsao_risco_ranking", "previsao_cashflow", "avaliar_previsao_cashflow",
@@ -52,7 +55,7 @@ FUNCOES_PREVISAO_EM_CACHE = (
 )
 if not getattr(api, "_previsoes_em_cache", False):
     for _nome in FUNCOES_PREVISAO_EM_CACHE:
-        setattr(api, _nome, st.cache_data(ttl=600, show_spinner="A calcular a previsão...")(getattr(api, _nome)))
+        setattr(api, _nome, st.cache_data(ttl=600, refresh_mode="background", show_spinner="A calcular a previsão...")(getattr(api, _nome)))
     api._previsoes_em_cache = True
 
 
@@ -497,7 +500,11 @@ with col_botao:
     aba_visao_geral, aba_monitorizacao, aba_faturas, aba_saldos,
     aba_analise_extratos, aba_forecast,
 ) = st.tabs(
-    ["Visão Geral", "Monitorização", "Faturas", "Saldos", "Análise de Extratos", "Predição"]
+    ["Visão Geral", "Monitorização", "Faturas", "Saldos", "Análise de Extratos", "Predição"],
+    # Separadores dinâmicos: só o aberto corre (ver `if aba_*.open:` abaixo).
+    # Antes, cada clique em qualquer separador voltava a correr os seis - com
+    # todos os gráficos e pedidos à API - e a página ficava lenta.
+    key="aba_principal", on_change="rerun",
 )
 
 @st.cache_data(ttl=3600, show_spinner="A correr o backtest da previsão...")
@@ -1057,13 +1064,13 @@ def _painel_forecast():
 
     # --- barra de filtros: tudo o que está abaixo reage a estes 3 controlos
     with st.container(border=True, horizontal=True, vertical_alignment="bottom"):
-        entidade_fc = st.selectbox("Entidade", opcoes_entidade, key="fc_entidade", width=380)
+        entidade_fc = st.selectbox("Entidade", opcoes_entidade, persist_state="page", key="fc_entidade", width=380)
         horizonte_fc = st.segmented_control(
             "Horizonte", HORIZONTES_FC, default=30, format_func=lambda d: f"{d} dias",
-            key="horizonte_forecast", required=True,
+            persist_state="page", key="horizonte_forecast", required=True,
         )
         incluir_comercial_fc = st.toggle(
-            "Com recebimentos do comercial", key="fc_comercial",
+            "Com recebimentos do comercial", persist_state="page", key="fc_comercial",
             help="Soma à previsão os sinais, reforços e escrituras marcados no índice comercial. "
                  "Fica desligado por omissão: só as entradas estão marcadas, não as saídas grandes, "
                  "e no backtest somá-las piorou a previsão.",
@@ -1102,13 +1109,13 @@ def _painel_forecast():
             with st.container(horizontal=True, vertical_alignment="center"):
                 st.markdown(f"**Saldo real e previsto · {entidade_fc}**")
                 mostrar_intervalo = st.toggle(
-                    "Intervalo de 80%", value=False, key="fc_intervalo",
+                    "Intervalo de 80%", value=False, persist_state="page", key="fc_intervalo",
                     help="Por omissão a faixa mostra onde caem metade (50%) das 1000 simulações à volta dos fluxos "
                          "já conhecidos. Ligado, mostra onde caem 80% - no grupo é muito mais larga (a 30 dias, "
                          "~-0,5 a +0,8 M€), porque o saldo mexe com movimentos grandes que ninguém sabe com antecedência.",
                 )
                 mostrar_trajetorias = st.toggle(
-                    "Mostrar trajetórias possíveis", value=False, key="fc_trajetorias",
+                    "Mostrar trajetórias possíveis", value=False, persist_state="page", key="fc_trajetorias",
                     help="4 das 1000 simulações (linhas cinzentas), para ver como o saldo pode oscilar dia a dia.",
                 )
             # com o comercial ligado, o cenário "só vendas do índice" substitui a
@@ -1252,7 +1259,7 @@ def _painel_forecast():
             )
         with det_fiabilidade:
             # para uma empresa só corre quando pedido (~10 s por empresa)
-            if empresa_fc is None or st.toggle("Calcular para esta empresa", key="fc_backtest_empresa"):
+            if empresa_fc is None or st.toggle("Calcular para esta empresa", persist_state="page", key="fc_backtest_empresa"):
                 _secao_fiabilidade(empresa_fc, horizonte_fc)
         with det_extra:
             if empresa_fc:
@@ -1260,7 +1267,7 @@ def _painel_forecast():
                     st.dataframe(pd.DataFrame(historico_mov_fc), width="stretch", column_config=COLUNA_VALOR_EUR)
                 else:
                     st.info("Sem movimentos importados para esta empresa.")
-            elif st.toggle("Calcular o ranking por cobertura da despesa (~40 s)", key="fc_ranking_cobertura",
+            elif st.toggle("Calcular o ranking por cobertura da despesa (~40 s)", persist_state="page", key="fc_ranking_cobertura",
                            help="Zona de cada empresa pela cobertura da despesa média mensal (crítico < 1 "
                                 "semana, alerta < 1 mês) - complementa o risco de liquidez."):
                 with st.spinner("A calcular o ranking…"):
@@ -1374,206 +1381,208 @@ def _painel_assistente(chave: str, altura_conversa=None):
         st.session_state["chat_mensagens"].append(mensagem_nova)
 
 
-with aba_forecast:
-    _painel_forecast()
+if aba_forecast.open:
+    with aba_forecast:
+        _painel_forecast()
 
-with aba_visao_geral:
-    _painel_assistente("visao_geral", altura_conversa=360)
+if aba_visao_geral.open:
+    with aba_visao_geral:
+        _painel_assistente("visao_geral", altura_conversa=360)
 
-    with st.container(border=True, horizontal=True, vertical_alignment="bottom"):
-        dia_vg = st.date_input("Dia", value=date.today(), key="dia_visao_geral", width=220)
-        st.caption(
-            "Extratos CGD do dia escolhido, o mês até esse dia e o saldo de todas as contas. "
-            "A previsão está no separador **Predição**."
-        )
-    dia_vg_str = dia_vg.isoformat()
-
-    if st.session_state.get("dia_vg_sincronizado") != dia_vg_str:
-        with st.spinner(f"A importar dados de {dia_vg_str} do OneDrive (se ainda não existirem)..."):
-            try:
-                api.atualizar_dados_do_dia(dia_vg_str)
-            except Exception as e:
-                st.warning(f"Não foi possível sincronizar {dia_vg_str}: {e}")
-        st.session_state["dia_vg_sincronizado"] = dia_vg_str
-
-    try:
-        movimentos_vg = api.listar_movimentos(dia_vg_str)
-    except Exception as e:
-        st.error(f"Erro a ligar à API: {e}")
-        movimentos_vg = []
-    recebimentos_vg = [m for m in movimentos_vg if m["valor"] > 0]
-    pagamentos_vg = [m for m in movimentos_vg if m["valor"] < 0]
-    total_recebimentos = sum(m["valor"] for m in recebimentos_vg)
-    total_pagamentos = sum(-m["valor"] for m in pagamentos_vg)
-
-    try:
-        resumo_todos_os_dias = api.resumo_diario()
-    except Exception as e:
-        st.error(f"Erro a consultar o resumo diário: {e}")
-        resumo_todos_os_dias = []
-    resumo_mensal = [r for r in resumo_todos_os_dias if r["dia"].startswith(dia_vg_str[:7])]
-    resumo_ate_dia = [r for r in resumo_mensal if r["dia"] <= dia_vg_str]
-    balanco_ate_ao_dia = sum(r["recebimentos"] - r["pagamentos"] for r in resumo_ate_dia)
-
-    try:
-        totais = api.saldo_total(dia_vg_str)
-    except Exception as e:
-        st.error(f"Erro a consultar saldo total: {e}")
-        totais = None
-    try:
-        serie_total = api.saldo_serie_total()
-    except Exception as e:
-        st.error(f"Erro a consultar a evolução do saldo total: {e}")
-        serie_total = []
-    serie_total_ate_dia = [p for p in serie_total if p["dia"] <= dia_vg_str]
-
-    # --- KPIs
-    with st.container(horizontal=True):
-        st.metric(
-            "Recebimentos do dia", f"{_n(total_recebimentos)} €", f"{len(recebimentos_vg)} movimento(s)",
-            delta_color="off", delta_arrow="off", border=True,
-            chart_data=[r.get("recebimentos_externos", r["recebimentos"]) for r in resumo_ate_dia] or None, chart_type="bar",
-        )
-        st.metric(
-            "Pagamentos do dia", f"{_n(total_pagamentos)} €", f"{len(pagamentos_vg)} movimento(s)",
-            delta_color="off", delta_arrow="off", border=True,
-            chart_data=[r.get("pagamentos_externos", r["pagamentos"]) for r in resumo_ate_dia] or None, chart_type="bar",
-        )
-        st.metric(
-            f"Balanço de {dia_vg:%m/%Y} até ao dia", f"{_n(balanco_ate_ao_dia)} €", border=True,
-            help="Recebimentos menos pagamentos do extrato bancário, do dia 1 até ao dia escolhido.",
-        )
-        if totais:
-            st.metric(
-                "Saldo contabilístico total", f"{_n(totais['saldo_contabilistico_total'])} €",
-                (f"{_n(totais['saldo_contabilistico_total'] - serie_total_ate_dia[-31]['saldo_contabilistico_total'], sinal=True)} € em 30 dias"
-                 if len(serie_total_ate_dia) > 30 else None),
-                border=True,
-                chart_data=[p["saldo_contabilistico_total"] for p in serie_total_ate_dia[-30:]] or None,
-                chart_type="area",
-            )
-            st.metric("Saldo disponível total", f"{_n(totais['saldo_disponivel_total'])} €", border=True)
-            st.metric("Contas incluídas", totais["entidades"], border=True)
-
-    # --- saldo total + top contas
-    col_evolucao, col_top = st.columns([3, 2])
-    with col_evolucao, st.container(border=True):
-        st.markdown("**Saldo bancário de todas as contas juntas**")
-        if serie_total:
-            df_serie_total_longo = pd.DataFrame(serie_total).melt(
-                id_vars=["dia"], value_vars=["saldo_contabilistico_total", "saldo_disponivel_total"],
-                var_name="tipo", value_name="valor",
-            )
-            df_serie_total_longo["tipo"] = df_serie_total_longo["tipo"].map({
-                "saldo_contabilistico_total": "Saldo contabilístico",
-                "saldo_disponivel_total": "Saldo disponível",
-            })
-            cores_serie_total = {
-                "Saldo contabilístico": COR_SALDO_CONTABILISTICO,
-                "Saldo disponível": COR_SALDO_DISPONIVEL,
-            }
-            st.altair_chart(
-                alt.Chart(df_serie_total_longo).mark_line(strokeWidth=2).encode(
-                    x=alt.X("dia:T", title=None, axis=alt.Axis(format="%d/%m", labelAngle=-45)),
-                    y=alt.Y("valor:Q", title="EUR", axis=alt.Axis(format=",.0f"), scale=alt.Scale(zero=False)),
-                    color=alt.Color(
-                        "tipo:N",
-                        scale=alt.Scale(domain=list(cores_serie_total), range=list(cores_serie_total.values())),
-                        legend=alt.Legend(title=None, orient="top"),
-                    ),
-                    tooltip=["dia:T", "tipo:N", alt.Tooltip("valor:Q", format=",.2f")],
-                ).properties(height=320),
-                width="stretch",
-            )
-        else:
-            st.info("Sem histórico de saldos suficiente para desenhar a evolução.")
-    with col_top, st.container(border=True):
-        st.markdown("**Contas com mais saldo**")
-        try:
-            saldos_atuais = api.listar_saldos_atuais(dia_vg_str)
-        except Exception:
-            saldos_atuais = []
-        if saldos_atuais:
-            df_ranking = pd.DataFrame(saldos_atuais).sort_values("saldo_contabilistico", ascending=False).head(10)
-            df_ranking["entidade"] = [rotulo_conta(e, None, None) for e in df_ranking["entidade"]]
-            st.altair_chart(
-                alt.Chart(df_ranking).mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
-                    y=alt.Y("entidade:N", title=None, sort="-x", axis=alt.Axis(labelLimit=180)),
-                    x=alt.X("saldo_contabilistico:Q", title="Saldo contabilístico (EUR)", axis=alt.Axis(format=",.0s")),
-                    color=alt.value(COR_RANKING_SALDO),
-                    tooltip=["entidade:N", alt.Tooltip("saldo_contabilistico:Q", format=",.2f")],
-                ).properties(height=320),
-                width="stretch",
-            )
-        else:
-            st.info("Sem saldos para este dia.")
-
-    # --- mês
-    with st.container(border=True):
-        with st.container(horizontal=True, vertical_alignment="center"):
-            st.markdown(f"**Recebimentos vs pagamentos por dia · {dia_vg:%m/%Y}**")
-            incluir_internas_vg = st.toggle(
-                "Incluir transferências entre empresas do grupo", value=False, key="vg_incluir_internas",
-                help="Mútuos e transferências entre contas do grupo: saem de uma empresa e entram noutra, "
-                     "por isso contam duas vezes e anulam-se no total do grupo.",
-            )
-        if resumo_mensal:
-            sufixo = "" if incluir_internas_vg else "_externos"
-            df_mensal = pd.DataFrame(resumo_mensal)
-            df_mensal["dia"] = pd.to_datetime(df_mensal["dia"])
-            df_mensal["Recebimentos"] = df_mensal[f"recebimentos{sufixo}"]
-            df_mensal["Pagamentos"] = -df_mensal[f"pagamentos{sufixo}"]
-            df_mensal["Líquido"] = df_mensal["Recebimentos"] + df_mensal["Pagamentos"]
-            df_linhas = df_mensal.melt(
-                id_vars=["dia"], value_vars=["Recebimentos", "Pagamentos"], var_name="tipo", value_name="valor",
-            )
-            cores_mensal = {"Recebimentos": COR_RECEBIMENTOS_MES, "Pagamentos": COR_PAGAMENTOS_MES, "Líquido do dia": "#1c1f26"}
-            escala_mensal = alt.Scale(domain=list(cores_mensal), range=list(cores_mensal.values()))
-            # um tick por dia: com poucos dias o Vega punha ticks de hora em hora, e o
-            # eixo repetia "01/10 01/10 01/10…"
-            eixo_dia = alt.X("dia:T", title=None, axis=alt.Axis(
-                format="%d/%m", labelAngle=-45, tickCount={"interval": "day", "step": 1}))
-            linhas_mes = alt.Chart(df_linhas).mark_line(point=True, strokeWidth=2).encode(
-                x=eixo_dia,
-                y=alt.Y("valor:Q", title="EUR (pagamentos para baixo)", axis=alt.Axis(format=",.0f")),
-                color=alt.Color("tipo:N", scale=escala_mensal, legend=alt.Legend(title=None, orient="top")),
-                tooltip=[alt.Tooltip("dia:T", format="%d/%m"), "tipo:N", alt.Tooltip("valor:Q", format=",.2f")],
-            )
-            liquido_mes = alt.Chart(df_mensal.assign(serie="Líquido do dia")).mark_point(filled=True, size=40).encode(
-                x=eixo_dia, y="Líquido:Q",
-                color=alt.Color("serie:N", scale=escala_mensal, legend=alt.Legend(title=None, orient="top")),
-                tooltip=[alt.Tooltip("dia:T", format="%d/%m"), alt.Tooltip("Líquido:Q", format=",.2f")],
-            )
-            zero_mes = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#5c6370", strokeWidth=1).encode(y="y:Q")
-            st.altair_chart((linhas_mes + zero_mes + liquido_mes).properties(height=280), width="stretch")
-            internas_mes = (df_mensal["recebimentos"] - df_mensal["recebimentos_externos"]).sum()
+        with st.container(border=True, horizontal=True, vertical_alignment="bottom"):
+            dia_vg = st.date_input("Dia", value=date.today(), persist_state="page", key="dia_visao_geral", width=220)
             st.caption(
-                ("Só o que entrou e saiu de fora do grupo: "
-                 f"{_n(internas_mes)} € de transferências entre empresas do grupo ficam de fora este mês. "
-                 if not incluir_internas_vg else
-                 "Inclui as transferências entre empresas do grupo (contam como recebimento numa e pagamento noutra). ")
-                + "Somas do extrato bancário (CGD), não do Mapa - podem divergir num dia ainda não "
-                "conciliado (ver Monitorização > Auditoria)."
+                "Extratos CGD do dia escolhido, o mês até esse dia e o saldo de todas as contas. "
+                "A previsão está no separador **Predição**."
             )
-        else:
-            st.info(f"Sem movimentos importados em {dia_vg:%m/%Y}.")
+        dia_vg_str = dia_vg.isoformat()
 
-    # --- movimentos do dia
-    col_tab_receb, col_tab_pag = st.columns(2)
-    for coluna, titulo, linhas, vazio in (
-        (col_tab_receb, f"Recebimentos de {dia_vg:%d/%m}", recebimentos_vg, "Sem recebimentos neste dia."),
-        (col_tab_pag, f"Pagamentos de {dia_vg:%d/%m}", pagamentos_vg, "Sem pagamentos neste dia."),
-    ):
-        with coluna, st.container(border=True):
-            st.markdown(f"**{titulo}**")
-            if linhas:
-                st.dataframe(
-                    pd.DataFrame(linhas)[["empresa", "descricao", "valor"]],
-                    width="stretch", hide_index=True, height=min(320, 38 + 35 * len(linhas)),
-                    column_config={**COLUNA_VALOR_EUR, "empresa": "Empresa", "descricao": "Descrição"},
+        if st.session_state.get("dia_vg_sincronizado") != dia_vg_str:
+            with st.spinner(f"A importar dados de {dia_vg_str} do OneDrive (se ainda não existirem)..."):
+                try:
+                    api.atualizar_dados_do_dia(dia_vg_str)
+                except Exception as e:
+                    st.warning(f"Não foi possível sincronizar {dia_vg_str}: {e}")
+            st.session_state["dia_vg_sincronizado"] = dia_vg_str
+
+        try:
+            movimentos_vg = api.listar_movimentos(dia_vg_str)
+        except Exception as e:
+            st.error(f"Erro a ligar à API: {e}")
+            movimentos_vg = []
+        recebimentos_vg = [m for m in movimentos_vg if m["valor"] > 0]
+        pagamentos_vg = [m for m in movimentos_vg if m["valor"] < 0]
+        total_recebimentos = sum(m["valor"] for m in recebimentos_vg)
+        total_pagamentos = sum(-m["valor"] for m in pagamentos_vg)
+
+        try:
+            resumo_todos_os_dias = api.resumo_diario()
+        except Exception as e:
+            st.error(f"Erro a consultar o resumo diário: {e}")
+            resumo_todos_os_dias = []
+        resumo_mensal = [r for r in resumo_todos_os_dias if r["dia"].startswith(dia_vg_str[:7])]
+        resumo_ate_dia = [r for r in resumo_mensal if r["dia"] <= dia_vg_str]
+        balanco_ate_ao_dia = sum(r["recebimentos"] - r["pagamentos"] for r in resumo_ate_dia)
+
+        try:
+            totais = api.saldo_total(dia_vg_str)
+        except Exception as e:
+            st.error(f"Erro a consultar saldo total: {e}")
+            totais = None
+        try:
+            serie_total = api.saldo_serie_total()
+        except Exception as e:
+            st.error(f"Erro a consultar a evolução do saldo total: {e}")
+            serie_total = []
+        serie_total_ate_dia = [p for p in serie_total if p["dia"] <= dia_vg_str]
+
+        # --- KPIs
+        with st.container(horizontal=True):
+            st.metric(
+                "Recebimentos do dia", f"{_n(total_recebimentos)} €", f"{len(recebimentos_vg)} movimento(s)",
+                delta_color="off", delta_arrow="off", border=True,
+                chart_data=[r.get("recebimentos_externos", r["recebimentos"]) for r in resumo_ate_dia] or None, chart_type="bar",
+            )
+            st.metric(
+                "Pagamentos do dia", f"{_n(total_pagamentos)} €", f"{len(pagamentos_vg)} movimento(s)",
+                delta_color="off", delta_arrow="off", border=True,
+                chart_data=[r.get("pagamentos_externos", r["pagamentos"]) for r in resumo_ate_dia] or None, chart_type="bar",
+            )
+            st.metric(
+                f"Balanço de {dia_vg:%m/%Y} até ao dia", f"{_n(balanco_ate_ao_dia)} €", border=True,
+                help="Recebimentos menos pagamentos do extrato bancário, do dia 1 até ao dia escolhido.",
+            )
+            if totais:
+                st.metric(
+                    "Saldo contabilístico total", f"{_n(totais['saldo_contabilistico_total'])} €",
+                    (f"{_n(totais['saldo_contabilistico_total'] - serie_total_ate_dia[-31]['saldo_contabilistico_total'], sinal=True)} € em 30 dias"
+                     if len(serie_total_ate_dia) > 30 else None),
+                    border=True,
+                    chart_data=[p["saldo_contabilistico_total"] for p in serie_total_ate_dia[-30:]] or None,
+                    chart_type="area",
+                )
+                st.metric("Saldo disponível total", f"{_n(totais['saldo_disponivel_total'])} €", border=True)
+                st.metric("Contas incluídas", totais["entidades"], border=True)
+
+        # --- saldo total + top contas
+        col_evolucao, col_top = st.columns([3, 2])
+        with col_evolucao, st.container(border=True):
+            st.markdown("**Saldo bancário de todas as contas juntas**")
+            if serie_total:
+                df_serie_total_longo = pd.DataFrame(serie_total).melt(
+                    id_vars=["dia"], value_vars=["saldo_contabilistico_total", "saldo_disponivel_total"],
+                    var_name="tipo", value_name="valor",
+                )
+                df_serie_total_longo["tipo"] = df_serie_total_longo["tipo"].map({
+                    "saldo_contabilistico_total": "Saldo contabilístico",
+                    "saldo_disponivel_total": "Saldo disponível",
+                })
+                cores_serie_total = {
+                    "Saldo contabilístico": COR_SALDO_CONTABILISTICO,
+                    "Saldo disponível": COR_SALDO_DISPONIVEL,
+                }
+                st.altair_chart(
+                    alt.Chart(df_serie_total_longo).mark_line(strokeWidth=2).encode(
+                        x=alt.X("dia:T", title=None, axis=alt.Axis(format="%d/%m", labelAngle=-45)),
+                        y=alt.Y("valor:Q", title="EUR", axis=alt.Axis(format=",.0f"), scale=alt.Scale(zero=False)),
+                        color=alt.Color(
+                            "tipo:N",
+                            scale=alt.Scale(domain=list(cores_serie_total), range=list(cores_serie_total.values())),
+                            legend=alt.Legend(title=None, orient="top"),
+                        ),
+                        tooltip=["dia:T", "tipo:N", alt.Tooltip("valor:Q", format=",.2f")],
+                    ).properties(height=320),
+                    width="stretch",
                 )
             else:
-                st.info(vazio)
+                st.info("Sem histórico de saldos suficiente para desenhar a evolução.")
+        with col_top, st.container(border=True):
+            st.markdown("**Contas com mais saldo**")
+            try:
+                saldos_atuais = api.listar_saldos_atuais(dia_vg_str)
+            except Exception:
+                saldos_atuais = []
+            if saldos_atuais:
+                df_ranking = pd.DataFrame(saldos_atuais).sort_values("saldo_contabilistico", ascending=False).head(10)
+                df_ranking["entidade"] = [rotulo_conta(e, None, None) for e in df_ranking["entidade"]]
+                st.altair_chart(
+                    alt.Chart(df_ranking).mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
+                        y=alt.Y("entidade:N", title=None, sort="-x", axis=alt.Axis(labelLimit=180)),
+                        x=alt.X("saldo_contabilistico:Q", title="Saldo contabilístico (EUR)", axis=alt.Axis(format=",.0s")),
+                        color=alt.value(COR_RANKING_SALDO),
+                        tooltip=["entidade:N", alt.Tooltip("saldo_contabilistico:Q", format=",.2f")],
+                    ).properties(height=320),
+                    width="stretch",
+                )
+            else:
+                st.info("Sem saldos para este dia.")
+
+        # --- mês
+        with st.container(border=True):
+            with st.container(horizontal=True, vertical_alignment="center"):
+                st.markdown(f"**Recebimentos vs pagamentos por dia · {dia_vg:%m/%Y}**")
+                incluir_internas_vg = st.toggle(
+                    "Incluir transferências entre empresas do grupo", value=False, persist_state="page", key="vg_incluir_internas",
+                    help="Mútuos e transferências entre contas do grupo: saem de uma empresa e entram noutra, "
+                         "por isso contam duas vezes e anulam-se no total do grupo.",
+                )
+            if resumo_mensal:
+                sufixo = "" if incluir_internas_vg else "_externos"
+                df_mensal = pd.DataFrame(resumo_mensal)
+                df_mensal["dia"] = pd.to_datetime(df_mensal["dia"])
+                df_mensal["Recebimentos"] = df_mensal[f"recebimentos{sufixo}"]
+                df_mensal["Pagamentos"] = -df_mensal[f"pagamentos{sufixo}"]
+                df_mensal["Líquido"] = df_mensal["Recebimentos"] + df_mensal["Pagamentos"]
+                df_linhas = df_mensal.melt(
+                    id_vars=["dia"], value_vars=["Recebimentos", "Pagamentos"], var_name="tipo", value_name="valor",
+                )
+                cores_mensal = {"Recebimentos": COR_RECEBIMENTOS_MES, "Pagamentos": COR_PAGAMENTOS_MES, "Líquido do dia": "#1c1f26"}
+                escala_mensal = alt.Scale(domain=list(cores_mensal), range=list(cores_mensal.values()))
+                # um tick por dia: com poucos dias o Vega punha ticks de hora em hora, e o
+                # eixo repetia "01/10 01/10 01/10…"
+                eixo_dia = alt.X("dia:T", title=None, axis=alt.Axis(
+                    format="%d/%m", labelAngle=-45, tickCount={"interval": "day", "step": 1}))
+                linhas_mes = alt.Chart(df_linhas).mark_line(point=True, strokeWidth=2).encode(
+                    x=eixo_dia,
+                    y=alt.Y("valor:Q", title="EUR (pagamentos para baixo)", axis=alt.Axis(format=",.0f")),
+                    color=alt.Color("tipo:N", scale=escala_mensal, legend=alt.Legend(title=None, orient="top")),
+                    tooltip=[alt.Tooltip("dia:T", format="%d/%m"), "tipo:N", alt.Tooltip("valor:Q", format=",.2f")],
+                )
+                liquido_mes = alt.Chart(df_mensal.assign(serie="Líquido do dia")).mark_point(filled=True, size=40).encode(
+                    x=eixo_dia, y="Líquido:Q",
+                    color=alt.Color("serie:N", scale=escala_mensal, legend=alt.Legend(title=None, orient="top")),
+                    tooltip=[alt.Tooltip("dia:T", format="%d/%m"), alt.Tooltip("Líquido:Q", format=",.2f")],
+                )
+                zero_mes = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#5c6370", strokeWidth=1).encode(y="y:Q")
+                st.altair_chart((linhas_mes + zero_mes + liquido_mes).properties(height=280), width="stretch")
+                internas_mes = (df_mensal["recebimentos"] - df_mensal["recebimentos_externos"]).sum()
+                st.caption(
+                    ("Só o que entrou e saiu de fora do grupo: "
+                     f"{_n(internas_mes)} € de transferências entre empresas do grupo ficam de fora este mês. "
+                     if not incluir_internas_vg else
+                     "Inclui as transferências entre empresas do grupo (contam como recebimento numa e pagamento noutra). ")
+                    + "Somas do extrato bancário (CGD), não do Mapa - podem divergir num dia ainda não "
+                    "conciliado (ver Monitorização > Auditoria)."
+                )
+            else:
+                st.info(f"Sem movimentos importados em {dia_vg:%m/%Y}.")
+
+        # --- movimentos do dia
+        col_tab_receb, col_tab_pag = st.columns(2)
+        for coluna, titulo, linhas, vazio in (
+            (col_tab_receb, f"Recebimentos de {dia_vg:%d/%m}", recebimentos_vg, "Sem recebimentos neste dia."),
+            (col_tab_pag, f"Pagamentos de {dia_vg:%d/%m}", pagamentos_vg, "Sem pagamentos neste dia."),
+        ):
+            with coluna, st.container(border=True):
+                st.markdown(f"**{titulo}**")
+                if linhas:
+                    st.dataframe(
+                        pd.DataFrame(linhas)[["empresa", "descricao", "valor"]],
+                        width="stretch", hide_index=True, height=min(320, 38 + 35 * len(linhas)),
+                        column_config={**COLUNA_VALOR_EUR, "empresa": "Empresa", "descricao": "Descrição"},
+                    )
+                else:
+                    st.info(vazio)
 
 _PADRAO_TAREFA_COM_ERRO = re.compile(r":\s*erro\b", re.IGNORECASE)
 
@@ -1673,825 +1682,828 @@ def _botoes_correr_scripts(nomes: list):
         st.caption("Últimos pedidos: " + " · ".join(linhas))
 
 
-with aba_monitorizacao:
-    try:
-        scripts = api.listar_monitorizacao_scripts().get("scripts", [])
-        erro_scripts = None
-    except Exception as e:
-        scripts, erro_scripts = [], e
-    try:
-        logs_recentes_kpi = api.listar_monitorizacao_logs(limit=100).get("logs", [])
-    except Exception:
-        logs_recentes_kpi = []
+if aba_monitorizacao.open:
+    with aba_monitorizacao:
+        try:
+            scripts = api.listar_monitorizacao_scripts().get("scripts", [])
+            erro_scripts = None
+        except Exception as e:
+            scripts, erro_scripts = [], e
+        try:
+            logs_recentes_kpi = api.listar_monitorizacao_logs(limit=100).get("logs", [])
+        except Exception:
+            logs_recentes_kpi = []
 
-    n_ok = sum(1 for s in scripts if s.get("status") == "ok" and not s.get("atrasado"))
-    n_erro = sum(1 for s in scripts if s.get("status") == "erro")
-    n_atrasado = sum(1 for s in scripts if s.get("atrasado"))
-    n_execucoes_erro = sum(1 for l in logs_recentes_kpi if str(l.get("nivel", "")).lower() == "erro")
-    n_execucoes = len(logs_recentes_kpi)
+        n_ok = sum(1 for s in scripts if s.get("status") == "ok" and not s.get("atrasado"))
+        n_erro = sum(1 for s in scripts if s.get("status") == "erro")
+        n_atrasado = sum(1 for s in scripts if s.get("atrasado"))
+        n_execucoes_erro = sum(1 for l in logs_recentes_kpi if str(l.get("nivel", "")).lower() == "erro")
+        n_execucoes = len(logs_recentes_kpi)
 
-    # --- KPIs
-    with st.container(horizontal=True, vertical_alignment="center"):
-        st.metric("Scripts OK", n_ok, border=True)
-        st.metric("Scripts com erro", n_erro, "precisa de atenção" if n_erro else None, delta_color="inverse", border=True)
-        st.metric("Atrasados", n_atrasado, "sem execução à hora esperada" if n_atrasado else None, delta_color="inverse", border=True)
-        if n_execucoes:
-            taxa_sucesso = 100 * (n_execucoes - n_execucoes_erro) / n_execucoes
-            st.metric(f"Sucesso (últimas {n_execucoes} execuções)", f"{taxa_sucesso:.0f}%", border=True)
-        if st.button("🔄 Atualizar", key="botao_atualizar_estado_scripts"):
-            st.rerun()
-
-    # --- estado dos scripts
-    with st.container(border=True):
-        st.markdown("**Estado dos scripts**")
-        if erro_scripts:
-            st.warning(f"Não foi possível carregar a monitorização: {erro_scripts}")
-        elif scripts:
-            df_scripts = pd.DataFrame(scripts)
-            df_scripts["status_badge"] = df_scripts["status"].map({"ok": "✅ OK", "erro": "❌ Erro", "warning": "⚠️ Aviso"})
-            if "atrasado" in df_scripts.columns:
-                atrasados_mask = df_scripts["atrasado"].fillna(False)
-                df_scripts.loc[atrasados_mask, "status_badge"] = (
-                    "⏰ Atrasado (esperado " + df_scripts.loc[atrasados_mask, "hora_em_falta"] + ")"
-                )
-                nomes_atrasados = df_scripts.loc[atrasados_mask, "nome"].tolist()
-                if nomes_atrasados:
-                    st.warning(
-                        f"⏰ Script(s) sem execução reportada dentro da hora esperada: {', '.join(nomes_atrasados)}."
-                    )
-            else:
-                atrasados_mask = pd.Series(False, index=df_scripts.index)
-            df_scripts["ultima_execucao"] = df_scripts["ultima_execucao"].map(_hora_local)
-            df_scripts["ultima_erro"] = df_scripts["ultima_erro"].fillna("")
-            st.dataframe(
-                df_scripts[["nome", "descricao", "hora_execucao", "status_badge", "ultima_execucao", "ultima_erro"]],
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "nome": st.column_config.TextColumn("Script"),
-                    "descricao": st.column_config.TextColumn("Descrição"),
-                    "hora_execucao": st.column_config.TextColumn("Horas"),
-                    "ultima_execucao": st.column_config.TextColumn("Última execução"),
-                    "ultima_erro": st.column_config.TextColumn("Último erro"),
-                    "status_badge": st.column_config.TextColumn("Estado"),
-                },
-            )
-
-            scripts_em_falha = df_scripts.loc[(df_scripts["status"] == "erro") | atrasados_mask, "nome"].tolist()
-            _botoes_correr_scripts(SCRIPTS_SEMPRE_CORRIVEIS + [s for s in scripts_em_falha if s not in SCRIPTS_SEMPRE_CORRIVEIS])
-        else:
-            st.info("Sem dados de execução dos scripts.")
-
-    sep_tempo_real, sep_logs, sep_script, sep_auditoria, sep_ia = st.tabs(
-        ["⚡ Erros em tempo real", "📜 Histórico de logs", "🔎 Detalhe por script", "🧾 Auditoria", "🤖 Qualidade da IA"]
-    )
-
-    with sep_tempo_real:
+        # --- KPIs
         with st.container(horizontal=True, vertical_alignment="center"):
-            st.caption(
-                "Eventos [ERRO]/[AVISO] reportados assim que acontecem durante uma corrida "
-                "ainda a decorrer - não é preciso esperar o script terminar para os ver aqui."
-            )
-            if st.button("Atualizar", key="botao_atualizar_eventos_tempo_real"):
+            st.metric("Scripts OK", n_ok, border=True)
+            st.metric("Scripts com erro", n_erro, "precisa de atenção" if n_erro else None, delta_color="inverse", border=True)
+            st.metric("Atrasados", n_atrasado, "sem execução à hora esperada" if n_atrasado else None, delta_color="inverse", border=True)
+            if n_execucoes:
+                taxa_sucesso = 100 * (n_execucoes - n_execucoes_erro) / n_execucoes
+                st.metric(f"Sucesso (últimas {n_execucoes} execuções)", f"{taxa_sucesso:.0f}%", border=True)
+            if st.button("🔄 Atualizar", key="botao_atualizar_estado_scripts"):
                 st.rerun()
-        try:
-            eventos = api.listar_monitorizacao_eventos(limit=30).get("eventos", [])
-            if eventos:
-                with st.container(height=420):
-                    for evento in reversed(eventos):
-                        nivel = str(evento.get("nivel", "info")).lower()
-                        _linha_log(
-                            evento.get("timestamp") or "-", evento.get("script") or "script", nivel,
-                            evento.get("mensagem") or "Sem mensagem", COR_ERRO if nivel == "erro" else COR_AMBIGUOS,
-                        )
-            else:
-                st.info("Sem eventos em tempo real reportados ainda.")
-        except Exception as e:
-            st.warning(f"Não foi possível carregar os eventos em tempo real: {e}")
 
-    with sep_logs:
-        with st.container(horizontal=True, vertical_alignment="bottom"):
-            filtrar_por_dia = st.toggle("Filtrar por dia", value=False, key="filtrar_dia_monitorizacao_logs")
-            dia_logs = st.date_input("Dia", value=date.today(), key="dia_monitorizacao_logs", width=200) if filtrar_por_dia else None
-        try:
-            logs_lista = api.listar_monitorizacao_logs(
-                limit=20, dia=dia_logs.isoformat() if dia_logs else None,
-            ).get("logs", [])
-            if logs_lista:
-                with st.container(height=520):
-                    for item in reversed(logs_lista):
-                        nivel = str(item.get("nivel", "info")).lower()
-                        _linha_log(
-                            item.get("timestamp") or "-", item.get("script") or "script", nivel,
-                            item.get("mensagem") or "Sem mensagem", COR_ERRO if nivel == "erro" else COR_CASADOS,
-                        )
-                        if item.get("detalhe"):
-                            _renderizar_detalhe_tarefas(item["detalhe"])
-            else:
-                st.info("Sem logs de execução neste dia." if filtrar_por_dia else "Sem logs de execução.")
-        except Exception as e:
-            st.warning(f"Não foi possível carregar os logs: {e}")
-
-    with sep_script:
-        nomes_scripts = [item.get("nome") for item in scripts if item.get("nome")]
-        if not nomes_scripts:
-            st.info("Ainda não há scripts registados.")
-        else:
-            script_escolhido = st.selectbox("Script", nomes_scripts, index=0, key="script_monitorizacao_detalhe", width=380)
-            script_info = next((item for item in scripts if item.get("nome") == script_escolhido), None)
-            if script_info:
-                with st.container(horizontal=True):
-                    st.metric("Estado", script_info.get("status", "ok").upper(), border=True)
-                    st.metric("Última execução", _hora_local(script_info.get("ultima_execucao")) or "Nunca", border=True)
-                    st.metric("Hora esperada", script_info.get("hora_execucao") or "—", border=True)
-                if script_info.get("ultima_erro"):
-                    st.error(f"**Erro da última execução:**\n\n{script_info['ultima_erro']}")
-                else:
-                    st.success("Sem erros na última execução.")
-
-            logs_filtrados = [
-                item for item in logs_recentes_kpi
-                if str(item.get("script", "")).lower() == script_escolhido.lower()
-            ]
-            if logs_filtrados:
-                st.markdown("**Execuções registadas para este script**")
-                with st.container(height=480):
-                    for item in reversed(logs_filtrados):
-                        nivel = str(item.get("nivel", "info")).lower()
-                        _linha_log(
-                            item.get("timestamp") or "-", script_escolhido, nivel,
-                            item.get("mensagem") or "Sem mensagem", COR_ERRO if nivel == "erro" else COR_CASADOS,
-                        )
-                        if item.get("detalhe"):
-                            _renderizar_detalhe_tarefas(item["detalhe"])
-            else:
-                st.info(f"O script '{script_escolhido}' ainda não tem execuções registadas.")
-
-    with sep_auditoria:
-        st.caption(
-            "Compara os extratos bancários reais desse dia com o que está no Mapa, "
-            "nos dois sentidos - o mesmo que 'python preencher_mapa.py auditoria', "
-            "aqui já com a fonte (ficheiro de extrato) de cada movimento."
-        )
-        col_aud_dia, col_aud_geral = st.columns(2)
-        with col_aud_dia, st.container(border=True):
-            st.markdown("**Auditar um dia**")
-            with st.container(horizontal=True, vertical_alignment="bottom"):
-                dia_auditoria = st.date_input("Dia a auditar", value=date.today(), key="dia_monitorizacao_auditoria", width=200)
-                auditar_dia = st.button("Auditar (regista no histórico)", key="botao_auditoria_monitorizacao", type="primary")
-        with col_aud_geral, st.container(border=True):
-            st.markdown("**Auditoria geral**")
-            with st.container(horizontal=True, vertical_alignment="bottom"):
-                dias_atras_geral = st.number_input(
-                    "Últimos N dias", min_value=1, max_value=90, value=31, key="dias_atras_auditoria_geral", width=160,
-                )
-                auditar_geral = st.button("Sincronizar e auditar todos", key="botao_auditoria_geral")
-
-        if auditar_dia:
-            try:
-                resultado = api.registar_auditoria(dia_auditoria.isoformat())  # já sincroniza o dia antes de auditar
-            except Exception as e:
-                st.error(f"Erro a consultar a auditoria: {e}")
-            else:
-                movimentos_sem_match = resultado.get("movimentos_sem_match", [])
-                linhas_sem_match = resultado.get("linhas_sem_match", [])
-                movimentos_dia = resultado.get("movimentos_dia", [])
-                soma_extrato = resultado.get("soma_extrato", 0.0)
-                soma_mapa = resultado.get("soma_mapa", 0.0)
-                diferenca = resultado.get("diferenca_extrato_mapa", soma_extrato - soma_mapa)
-                bate_certo = abs(diferenca) <= TOLERANCIA_AUDITORIA
-
-                with st.container(horizontal=True):
-                    st.metric("Soma do extrato bancário", f"{_n(soma_extrato, 2)} €", border=True)
-                    st.metric("Soma no Mapa (confirmado)", f"{_n(soma_mapa, 2)} €", border=True)
-                    st.metric(
-                        "Diferença", f"{_n(diferenca, 2)} €", "bate certo" if bate_certo else "não bate certo",
-                        delta_color="normal" if bate_certo else "inverse", border=True,
-                    )
-                    st.metric("Extrato sem linha no Mapa", resultado["sem_match_fwd"], border=True)
-                    st.metric("Mapa sem movimento no extrato", resultado["sem_match_rev"], border=True)
-                if not bate_certo:
-                    st.warning(
-                        "As somas não batem certo - há movimento(s) do extrato ainda não refletido(s) no Mapa "
-                        "(ou vice-versa). Ver as discrepâncias abaixo."
-                    )
-
-                colunas_extrato = {
-                    **COLUNA_VALOR_EUR,
-                    "ficheiro_origem": st.column_config.TextColumn("fonte (ficheiro de extrato)"),
-                }
-                sep_sem_mapa, sep_sem_extrato, sep_extrato = st.tabs([
-                    f"Extrato sem linha no Mapa ({len(movimentos_sem_match)})",
-                    f"Mapa sem movimento no extrato ({len(linhas_sem_match)})",
-                    f"Extrato do dia ({len(movimentos_dia)})",
-                ])
-                with sep_sem_mapa:
-                    if movimentos_sem_match:
-                        st.dataframe(
-                            pd.DataFrame(movimentos_sem_match)[["empresa", "descricao", "valor", "ficheiro_origem"]],
-                            width="stretch", hide_index=True, column_config=colunas_extrato,
-                        )
-                    else:
-                        st.success("Todos os movimentos bancários deste dia já têm linha correspondente no Mapa.")
-                with sep_sem_extrato:
-                    if linhas_sem_match:
-                        st.dataframe(
-                            pd.DataFrame(linhas_sem_match)[["linha", "empresa", "previsto", "imputacao"]],
-                            width="stretch", hide_index=True,
-                            column_config={"previsto": st.column_config.NumberColumn("previsto", format="euro")},
-                        )
-                    else:
-                        st.success("Todas as linhas por confirmar deste dia têm movimento correspondente no extrato.")
-                with sep_extrato:
-                    if movimentos_dia:
-                        st.dataframe(
-                            pd.DataFrame(movimentos_dia)[["empresa", "descricao", "valor", "ficheiro_origem"]],
-                            width="stretch", hide_index=True, column_config=colunas_extrato,
-                        )
-                    else:
-                        st.info("Sem movimentos de extrato importados para este dia.")
-
-        if auditar_geral:
-            with st.spinner("A sincronizar o OneDrive e a auditar todos os dias já importados..."):
-                try:
-                    resultado_geral = api.auditoria_geral(int(dias_atras_geral))
-                except Exception as e:
-                    st.error(f"Erro na auditoria geral: {e}")
-                else:
-                    st.success(f"{resultado_geral['dias_auditados']} dia(s) auditado(s) e registado(s) no histórico.")
-                    dias_com_diferenca = {
-                        dia: r for dia, r in resultado_geral["resultados"].items()
-                        if r.get("erro") or abs(r.get("diferenca_extrato_mapa", 0)) > TOLERANCIA_AUDITORIA or r.get("sem_match_fwd") or r.get("sem_match_rev")
-                    }
-                    if dias_com_diferenca:
-                        st.warning(f"{len(dias_com_diferenca)} dia(s) com discrepância ou erro - ver tabela abaixo.")
-                        st.dataframe(pd.DataFrame.from_dict(dias_com_diferenca, orient="index"), width="stretch")
-                    else:
-                        st.success("Todos os dias auditados batem certo (extrato = Mapa, sem movimentos por confirmar).")
-
+        # --- estado dos scripts
         with st.container(border=True):
-            st.markdown("**Histórico de auditorias registadas**")
-            try:
-                historico = api.historico_auditorias(limit=100).get("historico", [])
-                if historico:
-                    st.dataframe(
-                        pd.DataFrame(historico)[["dia", "timestamp", "sem_match_fwd", "sem_match_rev", "soma_extrato", "soma_mapa", "diferenca"]],
-                        width="stretch",
-                        hide_index=True,
-                        column_config={
-                            "sem_match_fwd": st.column_config.NumberColumn("extrato sem Mapa"),
-                            "sem_match_rev": st.column_config.NumberColumn("Mapa sem extrato"),
-                            "soma_extrato": st.column_config.NumberColumn("soma extrato", format="euro"),
-                            "soma_mapa": st.column_config.NumberColumn("soma mapa", format="euro"),
-                            "diferenca": st.column_config.NumberColumn("diferença", format="euro"),
-                        },
+            st.markdown("**Estado dos scripts**")
+            if erro_scripts:
+                st.warning(f"Não foi possível carregar a monitorização: {erro_scripts}")
+            elif scripts:
+                df_scripts = pd.DataFrame(scripts)
+                df_scripts["status_badge"] = df_scripts["status"].map({"ok": "✅ OK", "erro": "❌ Erro", "warning": "⚠️ Aviso"})
+                if "atrasado" in df_scripts.columns:
+                    atrasados_mask = df_scripts["atrasado"].fillna(False)
+                    df_scripts.loc[atrasados_mask, "status_badge"] = (
+                        "⏰ Atrasado (esperado " + df_scripts.loc[atrasados_mask, "hora_em_falta"] + ")"
                     )
+                    nomes_atrasados = df_scripts.loc[atrasados_mask, "nome"].tolist()
+                    if nomes_atrasados:
+                        st.warning(
+                            f"⏰ Script(s) sem execução reportada dentro da hora esperada: {', '.join(nomes_atrasados)}."
+                        )
                 else:
-                    st.info("Ainda não há nenhuma auditoria registada - usa 'Auditar' ou 'Auditoria geral' acima.")
-            except Exception as e:
-                st.warning(f"Não foi possível carregar o histórico de auditorias: {e}")
-
-    with sep_ia:
-        st.caption(
-            "Qualidade da IA em produção, a partir do feedback que já existe: 👍/👎 e erros das perguntas ao "
-            "Assistente, e sugestões para casos ambíguos aceites ou rejeitadas por quem resolveu o caso."
-        )
-        dias_ia = st.segmented_control(
-            "Período", [7, 30, 90], default=30, format_func=lambda d: f"{d} dias", key="dias_metricas_ia",
-        ) or 30
-        try:
-            metricas = api.metricas_ia(dias_ia)
-        except Exception as e:
-            st.warning(f"Não foi possível carregar as métricas da IA: {e}")
-        else:
-            m_ass, m_amb = metricas["assistente"], metricas["ambiguos"]
-            phoenix_url = (metricas.get("phoenix_url") or "").rstrip("/")
-
-            def _pct(valor):
-                return f"{100 * valor:.0f}%" if valor is not None else "—"
-
-            def _link_trace(item):
-                if phoenix_url and item.get("trace_id"):
-                    st.markdown(f"<div style='margin:-4px 0 10px 4px;font-size:0.85em;'>"
-                                f"<a href='{escape(phoenix_url)}/redirects/traces/{escape(item['trace_id'])}' "
-                                f"target='_blank'>ver trace no Phoenix ↗</a></div>", unsafe_allow_html=True)
-
-            if phoenix_url:
-                st.link_button("Abrir o Phoenix ↗", phoenix_url,
-                               help="Traces de cada chamada ao LLM: prompt, ferramentas, resultados, tokens e tempos.")
-            else:
-                st.caption("Define PHOENIX_URL_PUBLICA no .env para ligar estas métricas aos traces no Phoenix.")
-
-            with st.container(border=True):
-                st.markdown("**Assistente**")
-                with st.container(horizontal=True):
-                    st.metric("Perguntas", m_ass["perguntas"], border=True)
-                    st.metric(
-                        "Terminadas em erro", _pct(m_ass["taxa_erro"]),
-                        f"{m_ass['erros']} conversa(s)" if m_ass["erros"] else None, delta_color="inverse", border=True,
-                        help="Ollama em baixo, ocupado ou sem resposta - a pessoa ficou sem resposta.",
-                    )
-                    st.metric(
-                        "Satisfação (👍)", _pct(m_ass["taxa_satisfacao"]),
-                        f"{m_ass['feedback_positivo']} 👍 · {m_ass['feedback_negativo']} 👎", delta_color="off", delta_arrow="off", border=True,
-                        help=f"Só conta as respostas avaliadas ({_pct(m_ass['taxa_com_feedback'])} das perguntas).",
-                    )
-                    st.metric(
-                        "Sem consultar dados", m_ass["sem_ferramentas"], border=True,
-                        help="Respostas dadas sem chamar nenhuma ferramenta - candidatas a resposta inventada.",
-                    )
-                    st.metric(
-                        "Números não verificados", m_ass["com_numeros_nao_verificados"], border=True,
-                        help="Respostas com valores que não aparecem nos resultados das ferramentas (guardrail de números).",
-                    )
-                    st.metric(
-                        "Tempo de resposta", f"{m_ass['duracao_media_s']:.0f} s" if m_ass["duracao_media_s"] else "—",
-                        f"p95 {m_ass['duracao_p95_s']:.0f} s" if m_ass["duracao_p95_s"] else None,
-                        delta_color="off", delta_arrow="off", border=True,
-                    )
-
-                if m_ass["por_dia"]:
-                    df_uso = pd.DataFrame(m_ass["por_dia"])
-                    df_uso["dia"] = pd.to_datetime(df_uso["dia"])
-                    df_uso["Respondidas"] = df_uso["perguntas"] - df_uso["erros"]
-                    df_uso["Com erro"] = df_uso["erros"]
-                    df_uso = df_uso.melt(id_vars=["dia"], value_vars=["Respondidas", "Com erro"], var_name="estado", value_name="n")
-                    cores_uso = {"Respondidas": COR_CASADOS, "Com erro": COR_ERRO}
-                    st.altair_chart(
-                        alt.Chart(df_uso).mark_bar(size=12).encode(
-                            x=alt.X("dia:T", title=None, axis=alt.Axis(format="%d/%m", labelAngle=-45)),
-                            y=alt.Y("n:Q", title="perguntas", axis=alt.Axis(tickMinStep=1)),
-                            color=alt.Color("estado:N", scale=alt.Scale(domain=list(cores_uso), range=list(cores_uso.values())),
-                                            legend=alt.Legend(title=None, orient="top")),
-                            tooltip=[alt.Tooltip("dia:T", format="%d/%m"), "estado:N", "n:Q"],
-                        ).properties(height=220),
-                        width="stretch",
-                    )
-
-                col_neg, col_err = st.columns(2)
-                with col_neg:
-                    st.markdown(f"**Respostas com 👎** ({m_ass['feedback_negativo']})")
-                    if m_ass["respostas_negativas"]:
-                        with st.container(height=320):
-                            for item in m_ass["respostas_negativas"]:
-                                _linha_log(item["criado_em"], item["pergunta"], "👎", item["resposta"] or "—", COR_AMBIGUOS)
-                                _link_trace(item)
-                    else:
-                        st.caption("Nenhuma neste período.")
-                with col_err:
-                    st.markdown(f"**Conversas terminadas em erro** ({m_ass['erros']})")
-                    if m_ass["erros_recentes"]:
-                        with st.container(height=320):
-                            for item in m_ass["erros_recentes"]:
-                                _linha_log(item["criado_em"], item["pergunta"], "erro", item["erro"] or "—", COR_ERRO)
-                                _link_trace(item)
-                    else:
-                        st.caption("Nenhuma neste período.")
-
-                if m_ass["respostas_nao_verificadas"]:
-                    with st.expander(f"Respostas com números não verificados ({m_ass['com_numeros_nao_verificados']})"):
-                        for item in m_ass["respostas_nao_verificadas"]:
-                            _linha_log(item["criado_em"], item["pergunta"], "por verificar",
-                                       f"{item['resposta'] or '—'}\n\nNão verificados: {', '.join(item['numeros_nao_verificados'])}",
-                                       COR_AMBIGUOS)
-                            _link_trace(item)
-
-            with st.container(border=True):
-                st.markdown("**Para rever**")
-                st.caption(
-                    "Respostas com 👎, com números não verificados ou chumbadas pelo juiz das avaliações online. "
-                    "Uma anotação com a resposta esperada entra no golden dataset do Assistente "
-                    "(python -m app.evals.promover_golden) e passa a ser um caso de teste."
+                    atrasados_mask = pd.Series(False, index=df_scripts.index)
+                df_scripts["ultima_execucao"] = df_scripts["ultima_execucao"].map(_hora_local)
+                df_scripts["ultima_erro"] = df_scripts["ultima_erro"].fillna("")
+                st.dataframe(
+                    df_scripts[["nome", "descricao", "hora_execucao", "status_badge", "ultima_execucao", "ultima_erro"]],
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "nome": st.column_config.TextColumn("Script"),
+                        "descricao": st.column_config.TextColumn("Descrição"),
+                        "hora_execucao": st.column_config.TextColumn("Horas"),
+                        "ultima_execucao": st.column_config.TextColumn("Última execução"),
+                        "ultima_erro": st.column_config.TextColumn("Último erro"),
+                        "status_badge": st.column_config.TextColumn("Estado"),
+                    },
                 )
-                try:
-                    para_rever = api.listar_para_rever(limit=20)
-                except Exception as e:
-                    para_rever = []
-                    st.warning(f"Não foi possível carregar a fila de revisão: {e}")
-                if not para_rever:
-                    st.caption("Nada para rever.")
-                for item in para_rever:
-                    with st.expander(f"{item['criado_em']} · {item['pergunta'][:90]}"):
-                        st.markdown(f"**Resposta:** {item['resposta'] or '—'}")
-                        st.caption("Motivo: " + " · ".join(item["motivos"]))
-                        _link_trace(item)
-                        with st.form(key=f"form_anotacao_{item['id']}"):
-                            label = st.segmented_control(
-                                "Avaliação", ["correta", "incorreta", "alucinada", "incompleta"],
-                                default="incorreta", key=f"label_anotacao_{item['id']}",
+
+                scripts_em_falha = df_scripts.loc[(df_scripts["status"] == "erro") | atrasados_mask, "nome"].tolist()
+                _botoes_correr_scripts(SCRIPTS_SEMPRE_CORRIVEIS + [s for s in scripts_em_falha if s not in SCRIPTS_SEMPRE_CORRIVEIS])
+            else:
+                st.info("Sem dados de execução dos scripts.")
+
+        sep_tempo_real, sep_logs, sep_script, sep_auditoria, sep_ia = st.tabs(
+            ["⚡ Erros em tempo real", "📜 Histórico de logs", "🔎 Detalhe por script", "🧾 Auditoria", "🤖 Qualidade da IA"]
+        )
+
+        with sep_tempo_real:
+            with st.container(horizontal=True, vertical_alignment="center"):
+                st.caption(
+                    "Eventos [ERRO]/[AVISO] reportados assim que acontecem durante uma corrida "
+                    "ainda a decorrer - não é preciso esperar o script terminar para os ver aqui."
+                )
+                if st.button("Atualizar", key="botao_atualizar_eventos_tempo_real"):
+                    st.rerun()
+            try:
+                eventos = api.listar_monitorizacao_eventos(limit=30).get("eventos", [])
+                if eventos:
+                    with st.container(height=420):
+                        for evento in reversed(eventos):
+                            nivel = str(evento.get("nivel", "info")).lower()
+                            _linha_log(
+                                evento.get("timestamp") or "-", evento.get("script") or "script", nivel,
+                                evento.get("mensagem") or "Sem mensagem", COR_ERRO if nivel == "erro" else COR_AMBIGUOS,
                             )
-                            score = st.slider("Score", 0.0, 1.0, 0.0, 0.1, key=f"score_anotacao_{item['id']}")
-                            esperada = st.text_area("Resposta esperada (vai para o golden dataset)",
-                                                    key=f"esperada_anotacao_{item['id']}")
-                            notas = st.text_input("Notas", key=f"notas_anotacao_{item['id']}")
-                            if st.form_submit_button("Guardar anotação"):
-                                try:
-                                    api.anotar_interacao(item["id"], label or "incorreta", score, notas, esperada)
-                                    st.success("Anotação guardada.")
-                                except Exception as e:
-                                    st.error(f"Não foi possível guardar: {e}")
+                else:
+                    st.info("Sem eventos em tempo real reportados ainda.")
+            except Exception as e:
+                st.warning(f"Não foi possível carregar os eventos em tempo real: {e}")
+
+        with sep_logs:
+            with st.container(horizontal=True, vertical_alignment="bottom"):
+                filtrar_por_dia = st.toggle("Filtrar por dia", value=False, persist_state="page", key="filtrar_dia_monitorizacao_logs")
+                dia_logs = st.date_input("Dia", value=date.today(), persist_state="page", key="dia_monitorizacao_logs", width=200) if filtrar_por_dia else None
+            try:
+                logs_lista = api.listar_monitorizacao_logs(
+                    limit=20, dia=dia_logs.isoformat() if dia_logs else None,
+                ).get("logs", [])
+                if logs_lista:
+                    with st.container(height=520):
+                        for item in reversed(logs_lista):
+                            nivel = str(item.get("nivel", "info")).lower()
+                            _linha_log(
+                                item.get("timestamp") or "-", item.get("script") or "script", nivel,
+                                item.get("mensagem") or "Sem mensagem", COR_ERRO if nivel == "erro" else COR_CASADOS,
+                            )
+                            if item.get("detalhe"):
+                                _renderizar_detalhe_tarefas(item["detalhe"])
+                else:
+                    st.info("Sem logs de execução neste dia." if filtrar_por_dia else "Sem logs de execução.")
+            except Exception as e:
+                st.warning(f"Não foi possível carregar os logs: {e}")
+
+        with sep_script:
+            nomes_scripts = [item.get("nome") for item in scripts if item.get("nome")]
+            if not nomes_scripts:
+                st.info("Ainda não há scripts registados.")
+            else:
+                script_escolhido = st.selectbox("Script", nomes_scripts, index=0, persist_state="page", key="script_monitorizacao_detalhe", width=380)
+                script_info = next((item for item in scripts if item.get("nome") == script_escolhido), None)
+                if script_info:
+                    with st.container(horizontal=True):
+                        st.metric("Estado", script_info.get("status", "ok").upper(), border=True)
+                        st.metric("Última execução", _hora_local(script_info.get("ultima_execucao")) or "Nunca", border=True)
+                        st.metric("Hora esperada", script_info.get("hora_execucao") or "—", border=True)
+                    if script_info.get("ultima_erro"):
+                        st.error(f"**Erro da última execução:**\n\n{script_info['ultima_erro']}")
+                    else:
+                        st.success("Sem erros na última execução.")
+
+                logs_filtrados = [
+                    item for item in logs_recentes_kpi
+                    if str(item.get("script", "")).lower() == script_escolhido.lower()
+                ]
+                if logs_filtrados:
+                    st.markdown("**Execuções registadas para este script**")
+                    with st.container(height=480):
+                        for item in reversed(logs_filtrados):
+                            nivel = str(item.get("nivel", "info")).lower()
+                            _linha_log(
+                                item.get("timestamp") or "-", script_escolhido, nivel,
+                                item.get("mensagem") or "Sem mensagem", COR_ERRO if nivel == "erro" else COR_CASADOS,
+                            )
+                            if item.get("detalhe"):
+                                _renderizar_detalhe_tarefas(item["detalhe"])
+                else:
+                    st.info(f"O script '{script_escolhido}' ainda não tem execuções registadas.")
+
+        with sep_auditoria:
+            st.caption(
+                "Compara os extratos bancários reais desse dia com o que está no Mapa, "
+                "nos dois sentidos - o mesmo que 'python preencher_mapa.py auditoria', "
+                "aqui já com a fonte (ficheiro de extrato) de cada movimento."
+            )
+            col_aud_dia, col_aud_geral = st.columns(2)
+            with col_aud_dia, st.container(border=True):
+                st.markdown("**Auditar um dia**")
+                with st.container(horizontal=True, vertical_alignment="bottom"):
+                    dia_auditoria = st.date_input("Dia a auditar", value=date.today(), persist_state="page", key="dia_monitorizacao_auditoria", width=200)
+                    auditar_dia = st.button("Auditar (regista no histórico)", key="botao_auditoria_monitorizacao", type="primary")
+            with col_aud_geral, st.container(border=True):
+                st.markdown("**Auditoria geral**")
+                with st.container(horizontal=True, vertical_alignment="bottom"):
+                    dias_atras_geral = st.number_input(
+                        "Últimos N dias", min_value=1, max_value=90, value=31, persist_state="page", key="dias_atras_auditoria_geral", width=160,
+                    )
+                    auditar_geral = st.button("Sincronizar e auditar todos", key="botao_auditoria_geral")
+
+            if auditar_dia:
+                try:
+                    resultado = api.registar_auditoria(dia_auditoria.isoformat())  # já sincroniza o dia antes de auditar
+                except Exception as e:
+                    st.error(f"Erro a consultar a auditoria: {e}")
+                else:
+                    movimentos_sem_match = resultado.get("movimentos_sem_match", [])
+                    linhas_sem_match = resultado.get("linhas_sem_match", [])
+                    movimentos_dia = resultado.get("movimentos_dia", [])
+                    soma_extrato = resultado.get("soma_extrato", 0.0)
+                    soma_mapa = resultado.get("soma_mapa", 0.0)
+                    diferenca = resultado.get("diferenca_extrato_mapa", soma_extrato - soma_mapa)
+                    bate_certo = abs(diferenca) <= TOLERANCIA_AUDITORIA
+
+                    with st.container(horizontal=True):
+                        st.metric("Soma do extrato bancário", f"{_n(soma_extrato, 2)} €", border=True)
+                        st.metric("Soma no Mapa (confirmado)", f"{_n(soma_mapa, 2)} €", border=True)
+                        st.metric(
+                            "Diferença", f"{_n(diferenca, 2)} €", "bate certo" if bate_certo else "não bate certo",
+                            delta_color="normal" if bate_certo else "inverse", border=True,
+                        )
+                        st.metric("Extrato sem linha no Mapa", resultado["sem_match_fwd"], border=True)
+                        st.metric("Mapa sem movimento no extrato", resultado["sem_match_rev"], border=True)
+                    if not bate_certo:
+                        st.warning(
+                            "As somas não batem certo - há movimento(s) do extrato ainda não refletido(s) no Mapa "
+                            "(ou vice-versa). Ver as discrepâncias abaixo."
+                        )
+
+                    colunas_extrato = {
+                        **COLUNA_VALOR_EUR,
+                        "ficheiro_origem": st.column_config.TextColumn("fonte (ficheiro de extrato)"),
+                    }
+                    sep_sem_mapa, sep_sem_extrato, sep_extrato = st.tabs([
+                        f"Extrato sem linha no Mapa ({len(movimentos_sem_match)})",
+                        f"Mapa sem movimento no extrato ({len(linhas_sem_match)})",
+                        f"Extrato do dia ({len(movimentos_dia)})",
+                    ])
+                    with sep_sem_mapa:
+                        if movimentos_sem_match:
+                            st.dataframe(
+                                pd.DataFrame(movimentos_sem_match)[["empresa", "descricao", "valor", "ficheiro_origem"]],
+                                width="stretch", hide_index=True, column_config=colunas_extrato,
+                            )
+                        else:
+                            st.success("Todos os movimentos bancários deste dia já têm linha correspondente no Mapa.")
+                    with sep_sem_extrato:
+                        if linhas_sem_match:
+                            st.dataframe(
+                                pd.DataFrame(linhas_sem_match)[["linha", "empresa", "previsto", "imputacao"]],
+                                width="stretch", hide_index=True,
+                                column_config={"previsto": st.column_config.NumberColumn("previsto", format="euro")},
+                            )
+                        else:
+                            st.success("Todas as linhas por confirmar deste dia têm movimento correspondente no extrato.")
+                    with sep_extrato:
+                        if movimentos_dia:
+                            st.dataframe(
+                                pd.DataFrame(movimentos_dia)[["empresa", "descricao", "valor", "ficheiro_origem"]],
+                                width="stretch", hide_index=True, column_config=colunas_extrato,
+                            )
+                        else:
+                            st.info("Sem movimentos de extrato importados para este dia.")
+
+            if auditar_geral:
+                with st.spinner("A sincronizar o OneDrive e a auditar todos os dias já importados..."):
+                    try:
+                        resultado_geral = api.auditoria_geral(int(dias_atras_geral))
+                    except Exception as e:
+                        st.error(f"Erro na auditoria geral: {e}")
+                    else:
+                        st.success(f"{resultado_geral['dias_auditados']} dia(s) auditado(s) e registado(s) no histórico.")
+                        dias_com_diferenca = {
+                            dia: r for dia, r in resultado_geral["resultados"].items()
+                            if r.get("erro") or abs(r.get("diferenca_extrato_mapa", 0)) > TOLERANCIA_AUDITORIA or r.get("sem_match_fwd") or r.get("sem_match_rev")
+                        }
+                        if dias_com_diferenca:
+                            st.warning(f"{len(dias_com_diferenca)} dia(s) com discrepância ou erro - ver tabela abaixo.")
+                            st.dataframe(pd.DataFrame.from_dict(dias_com_diferenca, orient="index"), width="stretch")
+                        else:
+                            st.success("Todos os dias auditados batem certo (extrato = Mapa, sem movimentos por confirmar).")
 
             with st.container(border=True):
-                st.markdown("**Calibração do juiz**")
+                st.markdown("**Histórico de auditorias registadas**")
                 try:
-                    calibracao = api.calibracao_juiz()
-                except Exception as e:
-                    calibracao = None
-                    st.warning(f"Não foi possível carregar a calibração: {e}")
-                if calibracao is not None:
-                    st.caption(
-                        "Concordância entre o juiz das avaliações online e as pessoas (anotações ou 👍/👎), nas "
-                        f"respostas que têm os dois. Com menos de {calibracao['min_pares']} pares, os scores do juiz "
-                        "são só indicativos. Kappa: 0 = concordância de acaso, acima de 0,6 = boa."
-                    )
-                    linhas_calibracao = [
-                        {"avaliador": nome, "pares": v["pares"], "concordância": v["concordancia"], "kappa": v["kappa"],
-                         "apanha respostas más": v["apanha_mas"], "falsos alarmes": v["matriz"]["falso_alarme"],
-                         "deixou passar": v["matriz"]["deixou_passar"],
-                         "estado": "calibrado" if v["calibrado"] else "por calibrar"}
-                        for nome, v in calibracao["avaliadores"].items()
-                    ]
-                    if linhas_calibracao:
+                    historico = api.historico_auditorias(limit=100).get("historico", [])
+                    if historico:
                         st.dataframe(
-                            pd.DataFrame(linhas_calibracao), hide_index=True, width="stretch",
+                            pd.DataFrame(historico)[["dia", "timestamp", "sem_match_fwd", "sem_match_rev", "soma_extrato", "soma_mapa", "diferenca"]],
+                            width="stretch",
+                            hide_index=True,
                             column_config={
-                                "concordância": st.column_config.NumberColumn(format="percent"),
-                                "apanha respostas más": st.column_config.NumberColumn(format="percent"),
+                                "sem_match_fwd": st.column_config.NumberColumn("extrato sem Mapa"),
+                                "sem_match_rev": st.column_config.NumberColumn("Mapa sem extrato"),
+                                "soma_extrato": st.column_config.NumberColumn("soma extrato", format="euro"),
+                                "soma_mapa": st.column_config.NumberColumn("soma mapa", format="euro"),
+                                "diferenca": st.column_config.NumberColumn("diferença", format="euro"),
                             },
                         )
                     else:
-                        st.caption("O juiz ainda não avaliou nenhuma resposta.")
+                        st.info("Ainda não há nenhuma auditoria registada - usa 'Auditar' ou 'Auditoria geral' acima.")
+                except Exception as e:
+                    st.warning(f"Não foi possível carregar o histórico de auditorias: {e}")
 
-            with st.container(border=True):
-                st.markdown("**Sugestões para casos ambíguos**")
-                with st.container(horizontal=True):
-                    st.metric("Casos", m_amb["casos"], f"{m_amb['pendentes']} pendente(s)" if m_amb["pendentes"] else None,
-                              delta_color="off", delta_arrow="off", border=True)
-                    st.metric(
-                        "Sugestões aceites", _pct(m_amb["taxa_aceitacao"]),
-                        f"{m_amb['aceites']} aceites · {m_amb['rejeitadas']} rejeitadas", delta_color="off", delta_arrow="off", border=True,
-                        help="Casos resolvidos em que a decisão humana foi igual à sugestão.",
+        with sep_ia:
+            st.caption(
+                "Qualidade da IA em produção, a partir do feedback que já existe: 👍/👎 e erros das perguntas ao "
+                "Assistente, e sugestões para casos ambíguos aceites ou rejeitadas por quem resolveu o caso."
+            )
+            dias_ia = st.segmented_control(
+                "Período", [7, 30, 90], default=30, format_func=lambda d: f"{d} dias", persist_state="page", key="dias_metricas_ia",
+            ) or 30
+            try:
+                metricas = api.metricas_ia(dias_ia)
+            except Exception as e:
+                st.warning(f"Não foi possível carregar as métricas da IA: {e}")
+            else:
+                m_ass, m_amb = metricas["assistente"], metricas["ambiguos"]
+                phoenix_url = (metricas.get("phoenix_url") or "").rstrip("/")
+
+                def _pct(valor):
+                    return f"{100 * valor:.0f}%" if valor is not None else "—"
+
+                def _link_trace(item):
+                    if phoenix_url and item.get("trace_id"):
+                        st.markdown(f"<div style='margin:-4px 0 10px 4px;font-size:0.85em;'>"
+                                    f"<a href='{escape(phoenix_url)}/redirects/traces/{escape(item['trace_id'])}' "
+                                    f"target='_blank'>ver trace no Phoenix ↗</a></div>", unsafe_allow_html=True)
+
+                if phoenix_url:
+                    st.link_button("Abrir o Phoenix ↗", phoenix_url,
+                                   help="Traces de cada chamada ao LLM: prompt, ferramentas, resultados, tokens e tempos.")
+                else:
+                    st.caption("Define PHOENIX_URL_PUBLICA no .env para ligar estas métricas aos traces no Phoenix.")
+
+                with st.container(border=True):
+                    st.markdown("**Assistente**")
+                    with st.container(horizontal=True):
+                        st.metric("Perguntas", m_ass["perguntas"], border=True)
+                        st.metric(
+                            "Terminadas em erro", _pct(m_ass["taxa_erro"]),
+                            f"{m_ass['erros']} conversa(s)" if m_ass["erros"] else None, delta_color="inverse", border=True,
+                            help="Ollama em baixo, ocupado ou sem resposta - a pessoa ficou sem resposta.",
+                        )
+                        st.metric(
+                            "Satisfação (👍)", _pct(m_ass["taxa_satisfacao"]),
+                            f"{m_ass['feedback_positivo']} 👍 · {m_ass['feedback_negativo']} 👎", delta_color="off", delta_arrow="off", border=True,
+                            help=f"Só conta as respostas avaliadas ({_pct(m_ass['taxa_com_feedback'])} das perguntas).",
+                        )
+                        st.metric(
+                            "Sem consultar dados", m_ass["sem_ferramentas"], border=True,
+                            help="Respostas dadas sem chamar nenhuma ferramenta - candidatas a resposta inventada.",
+                        )
+                        st.metric(
+                            "Números não verificados", m_ass["com_numeros_nao_verificados"], border=True,
+                            help="Respostas com valores que não aparecem nos resultados das ferramentas (guardrail de números).",
+                        )
+                        st.metric(
+                            "Tempo de resposta", f"{m_ass['duracao_media_s']:.0f} s" if m_ass["duracao_media_s"] else "—",
+                            f"p95 {m_ass['duracao_p95_s']:.0f} s" if m_ass["duracao_p95_s"] else None,
+                            delta_color="off", delta_arrow="off", border=True,
+                        )
+
+                    if m_ass["por_dia"]:
+                        df_uso = pd.DataFrame(m_ass["por_dia"])
+                        df_uso["dia"] = pd.to_datetime(df_uso["dia"])
+                        df_uso["Respondidas"] = df_uso["perguntas"] - df_uso["erros"]
+                        df_uso["Com erro"] = df_uso["erros"]
+                        df_uso = df_uso.melt(id_vars=["dia"], value_vars=["Respondidas", "Com erro"], var_name="estado", value_name="n")
+                        cores_uso = {"Respondidas": COR_CASADOS, "Com erro": COR_ERRO}
+                        st.altair_chart(
+                            alt.Chart(df_uso).mark_bar(size=12).encode(
+                                x=alt.X("dia:T", title=None, axis=alt.Axis(format="%d/%m", labelAngle=-45)),
+                                y=alt.Y("n:Q", title="perguntas", axis=alt.Axis(tickMinStep=1)),
+                                color=alt.Color("estado:N", scale=alt.Scale(domain=list(cores_uso), range=list(cores_uso.values())),
+                                                legend=alt.Legend(title=None, orient="top")),
+                                tooltip=[alt.Tooltip("dia:T", format="%d/%m"), "estado:N", "n:Q"],
+                            ).properties(height=220),
+                            width="stretch",
+                        )
+
+                    col_neg, col_err = st.columns(2)
+                    with col_neg:
+                        st.markdown(f"**Respostas com 👎** ({m_ass['feedback_negativo']})")
+                        if m_ass["respostas_negativas"]:
+                            with st.container(height=320):
+                                for item in m_ass["respostas_negativas"]:
+                                    _linha_log(item["criado_em"], item["pergunta"], "👎", item["resposta"] or "—", COR_AMBIGUOS)
+                                    _link_trace(item)
+                        else:
+                            st.caption("Nenhuma neste período.")
+                    with col_err:
+                        st.markdown(f"**Conversas terminadas em erro** ({m_ass['erros']})")
+                        if m_ass["erros_recentes"]:
+                            with st.container(height=320):
+                                for item in m_ass["erros_recentes"]:
+                                    _linha_log(item["criado_em"], item["pergunta"], "erro", item["erro"] or "—", COR_ERRO)
+                                    _link_trace(item)
+                        else:
+                            st.caption("Nenhuma neste período.")
+
+                    if m_ass["respostas_nao_verificadas"]:
+                        with st.expander(f"Respostas com números não verificados ({m_ass['com_numeros_nao_verificados']})"):
+                            for item in m_ass["respostas_nao_verificadas"]:
+                                _linha_log(item["criado_em"], item["pergunta"], "por verificar",
+                                           f"{item['resposta'] or '—'}\n\nNão verificados: {', '.join(item['numeros_nao_verificados'])}",
+                                           COR_AMBIGUOS)
+                                _link_trace(item)
+
+                with st.container(border=True):
+                    st.markdown("**Para rever**")
+                    st.caption(
+                        "Respostas com 👎, com números não verificados ou chumbadas pelo juiz das avaliações online. "
+                        "Uma anotação com a resposta esperada entra no golden dataset do Assistente "
+                        "(python -m app.evals.promover_golden) e passa a ser um caso de teste."
                     )
-                    st.metric(
-                        "Decididas sem LLM", _pct(m_amb["taxa_sem_llm"]),
-                        f"{m_amb['sugestoes_por_regras']} regras · {m_amb['sugestoes_por_llm']} LLM", delta_color="off", delta_arrow="off", border=True,
-                        help="Sugestões dadas pelas regras (triagem pelo texto/histórico), sem chamar o modelo.",
+                    try:
+                        para_rever = api.listar_para_rever(limit=20)
+                    except Exception as e:
+                        para_rever = []
+                        st.warning(f"Não foi possível carregar a fila de revisão: {e}")
+                    if not para_rever:
+                        st.caption("Nada para rever.")
+                    for item in para_rever:
+                        with st.expander(f"{item['criado_em']} · {item['pergunta'][:90]}"):
+                            st.markdown(f"**Resposta:** {item['resposta'] or '—'}")
+                            st.caption("Motivo: " + " · ".join(item["motivos"]))
+                            _link_trace(item)
+                            with st.form(key=f"form_anotacao_{item['id']}"):
+                                label = st.segmented_control(
+                                    "Avaliação", ["correta", "incorreta", "alucinada", "incompleta"],
+                                    default="incorreta", persist_state="page", key=f"label_anotacao_{item['id']}",
+                                )
+                                score = st.slider("Score", 0.0, 1.0, 0.0, 0.1, persist_state="page", key=f"score_anotacao_{item['id']}")
+                                esperada = st.text_area("Resposta esperada (vai para o golden dataset)",
+                                                        persist_state="page", key=f"esperada_anotacao_{item['id']}")
+                                notas = st.text_input("Notas", persist_state="page", key=f"notas_anotacao_{item['id']}")
+                                if st.form_submit_button("Guardar anotação"):
+                                    try:
+                                        api.anotar_interacao(item["id"], label or "incorreta", score, notas, esperada)
+                                        st.success("Anotação guardada.")
+                                    except Exception as e:
+                                        st.error(f"Não foi possível guardar: {e}")
+
+                with st.container(border=True):
+                    st.markdown("**Calibração do juiz**")
+                    try:
+                        calibracao = api.calibracao_juiz()
+                    except Exception as e:
+                        calibracao = None
+                        st.warning(f"Não foi possível carregar a calibração: {e}")
+                    if calibracao is not None:
+                        st.caption(
+                            "Concordância entre o juiz das avaliações online e as pessoas (anotações ou 👍/👎), nas "
+                            f"respostas que têm os dois. Com menos de {calibracao['min_pares']} pares, os scores do juiz "
+                            "são só indicativos. Kappa: 0 = concordância de acaso, acima de 0,6 = boa."
+                        )
+                        linhas_calibracao = [
+                            {"avaliador": nome, "pares": v["pares"], "concordância": v["concordancia"], "kappa": v["kappa"],
+                             "apanha respostas más": v["apanha_mas"], "falsos alarmes": v["matriz"]["falso_alarme"],
+                             "deixou passar": v["matriz"]["deixou_passar"],
+                             "estado": "calibrado" if v["calibrado"] else "por calibrar"}
+                            for nome, v in calibracao["avaliadores"].items()
+                        ]
+                        if linhas_calibracao:
+                            st.dataframe(
+                                pd.DataFrame(linhas_calibracao), hide_index=True, width="stretch",
+                                column_config={
+                                    "concordância": st.column_config.NumberColumn(format="percent"),
+                                    "apanha respostas más": st.column_config.NumberColumn(format="percent"),
+                                },
+                            )
+                        else:
+                            st.caption("O juiz ainda não avaliou nenhuma resposta.")
+
+                with st.container(border=True):
+                    st.markdown("**Sugestões para casos ambíguos**")
+                    with st.container(horizontal=True):
+                        st.metric("Casos", m_amb["casos"], f"{m_amb['pendentes']} pendente(s)" if m_amb["pendentes"] else None,
+                                  delta_color="off", delta_arrow="off", border=True)
+                        st.metric(
+                            "Sugestões aceites", _pct(m_amb["taxa_aceitacao"]),
+                            f"{m_amb['aceites']} aceites · {m_amb['rejeitadas']} rejeitadas", delta_color="off", delta_arrow="off", border=True,
+                            help="Casos resolvidos em que a decisão humana foi igual à sugestão.",
+                        )
+                        st.metric(
+                            "Decididas sem LLM", _pct(m_amb["taxa_sem_llm"]),
+                            f"{m_amb['sugestoes_por_regras']} regras · {m_amb['sugestoes_por_llm']} LLM", delta_color="off", delta_arrow="off", border=True,
+                            help="Sugestões dadas pelas regras (triagem pelo texto/histórico), sem chamar o modelo.",
+                        )
+                        st.metric(
+                            "Resolvidos sem sugestão", _pct(m_amb["taxa_passados_a_humano"]),
+                            f"{m_amb['resolvidos_sem_sugestao']} caso(s)" if m_amb["resolvidos_sem_sugestao"] else None,
+                            delta_color="inverse", border=True,
+                            help="Casos que alguém resolveu sem ter nenhuma sugestão utilizável - passados a humano.",
+                        )
+                        st.metric(
+                            "Respostas inválidas do LLM", m_amb["respostas_invalidas_llm"], border=True,
+                            help="O modelo não devolveu JSON válido - a sugestão perdeu-se.",
+                        )
+                    st.caption(
+                        f"Aceitação por origem: regras {_pct(m_amb['taxa_aceitacao_regras'])} · "
+                        f"LLM {_pct(m_amb['taxa_aceitacao_llm'])} · {m_amb['dossiers']} dossier(s) do agente preparados. "
+                        "Período pelo dia do movimento."
                     )
-                    st.metric(
-                        "Resolvidos sem sugestão", _pct(m_amb["taxa_passados_a_humano"]),
-                        f"{m_amb['resolvidos_sem_sugestao']} caso(s)" if m_amb["resolvidos_sem_sugestao"] else None,
-                        delta_color="inverse", border=True,
-                        help="Casos que alguém resolveu sem ter nenhuma sugestão utilizável - passados a humano.",
+
+if aba_faturas.open:
+    with aba_faturas:
+        # --- filtros
+        with st.container(border=True):
+            pesquisa_livre = st.text_input(
+                "🔍 Pesquisar em qualquer dia",
+                placeholder="empresa, fornecedor, NIF, assunto, remetente ou valor",
+                persist_state="page", key="faturas_pesquisa",
+            )
+            dia_faturas_str = desde_faturas_str = ate_faturas_str = None
+            with st.container(horizontal=True, vertical_alignment="bottom"):
+                filtrar_por_dia = st.toggle(
+                    "Um único dia", value=False, persist_state="page", key="faturas_filtrar_dia", disabled=bool(pesquisa_livre)
+                )
+                if filtrar_por_dia and not pesquisa_livre:
+                    dia_faturas_str = st.date_input("Dia", value=date.today(), persist_state="page", key="dia_faturas", width=200).isoformat()
+                elif not pesquisa_livre:
+                    # por omissão mostra todas as faturas desde o dia 1 do mês corrente
+                    periodo_faturas = st.date_input(
+                        "Período", value=(date.today().replace(day=1), date.today()), persist_state="page", key="faturas_periodo", width=260,
                     )
-                    st.metric(
-                        "Respostas inválidas do LLM", m_amb["respostas_invalidas_llm"], border=True,
-                        help="O modelo não devolveu JSON válido - a sugestão perdeu-se.",
+                    if isinstance(periodo_faturas, tuple) and len(periodo_faturas) == 2:
+                        desde_faturas_str = periodo_faturas[0].isoformat()
+                        ate_faturas_str = periodo_faturas[1].isoformat()
+                limite_faturas = st.number_input(
+                    "Máximo de linhas", min_value=50, max_value=5000, value=1000, step=50, persist_state="page", key="faturas_limit", width=160,
+                )
+            if pesquisa_livre:
+                st.caption("A pesquisar em todos os dias - o filtro por período fica desligado enquanto houver texto na pesquisa.")
+
+        try:
+            faturas = api.listar_faturas_recebidas(
+                dia_faturas_str,
+                desde=desde_faturas_str,
+                ate=ate_faturas_str,
+                pesquisa=pesquisa_livre or None,
+                limit=int(limite_faturas),
+            )
+        except Exception as e:
+            st.warning(f"Não foi possível carregar as faturas recebidas: {e}")
+            faturas = None
+
+        if faturas:
+            df_faturas = pd.DataFrame(faturas)
+            # Servido pela própria API (GET /faturas/recebidas/{id}/pdf), não
+            # um link file:// - o Chrome bloqueia navegação file:// a partir
+            # de uma página http:// (bug reportado, confirmado no Chrome).
+            if "pdf_relativo" in df_faturas.columns:
+                df_faturas["pdf"] = df_faturas.apply(
+                    lambda r: api.url_pdf_fatura(r["id"]) if isinstance(r["pdf_relativo"], str) and r["pdf_relativo"] else None,
+                    axis=1,
+                )
+
+            # o fornecedor extraído do PDF/email vem muitas vezes vazio ou com lixo
+            # (moradas, "do titular IBAN", o próprio cliente) - a API devolve o
+            # melhor nome em fornecedor_normalizado (ver services/faturas.py)
+            SEM_FORNECEDOR = ("(encaminhado internamente)", "(desconhecido)")
+            if "fornecedor_normalizado" in df_faturas.columns:
+                df_faturas["fornecedor_original"] = df_faturas["fornecedor"]
+                df_faturas["fornecedor"] = df_faturas["fornecedor_normalizado"].fillna("(desconhecido)")
+                df_faturas["fonte_fornecedor"] = df_faturas["fonte_fornecedor"].map(
+                    {"extraido": "documento", "nif": "NIF", "remetente": "email do remetente"}
+                ).fillna("—")
+
+            with st.container(horizontal=True, vertical_alignment="bottom"):
+                empresas_disponiveis = sorted(e for e in df_faturas["empresa"].dropna().unique() if e)
+                empresa_filtro = st.selectbox(
+                    "Empresa", ["Todas"] + empresas_disponiveis, persist_state="page", key="faturas_filtro_empresa", width=320,
+                )
+                fornecedor_filtro = st.text_input("Fornecedor contém", persist_state="page", key="faturas_filtro_fornecedor", width=240)
+                valor_filtro = st.text_input("Valor fatura contém", persist_state="page", key="faturas_filtro_valor", width=180)
+
+            if empresa_filtro != "Todas":
+                df_faturas = df_faturas[df_faturas["empresa"] == empresa_filtro]
+            if fornecedor_filtro:
+                df_faturas = df_faturas[
+                    df_faturas["fornecedor"].fillna("").str.contains(fornecedor_filtro, case=False, na=False)
+                    | df_faturas.get("fornecedor_original", df_faturas["fornecedor"]).fillna("").str.contains(
+                        fornecedor_filtro, case=False, na=False)
+                ]
+            if valor_filtro:
+                df_faturas = df_faturas[
+                    df_faturas["valor_fatura"].fillna("").str.contains(valor_filtro, case=False, na=False)
+                ]
+
+            # --- KPIs
+            with st.container(horizontal=True):
+                st.metric("Faturas", len(df_faturas), border=True)
+                st.metric("Empresas", df_faturas["empresa"].nunique(), border=True)
+                identificados = df_faturas[~df_faturas["fornecedor"].isin(SEM_FORNECEDOR)] if "fornecedor" in df_faturas else df_faturas
+                st.metric("Fornecedores", identificados["fornecedor"].nunique() if "fornecedor" in df_faturas else "—",
+                          f"{len(df_faturas) - len(identificados)} faturas sem fornecedor identificado"
+                          if len(df_faturas) > len(identificados) else None,
+                          delta_color="off", delta_arrow="off", border=True)
+                if "pdf" in df_faturas.columns:
+                    st.metric("Com PDF", int(df_faturas["pdf"].notna().sum()), border=True)
+                if "dia" in df_faturas.columns and not df_faturas.empty:
+                    st.metric("Mais recente", f"{pd.to_datetime(df_faturas['dia'].max()):%d/%m/%Y}", border=True)
+
+            col_tabela_fat, col_top_fat = st.columns([3, 1])
+            with col_tabela_fat, st.container(border=True):
+                colunas = [
+                    "dia", "hora", "empresa", "fornecedor", "fonte_fornecedor", "nif_fornecedor",
+                    "valor_fatura", "debito", "credito", "saldo",
+                    "n_anexos_pdf", "pdf", "assunto", "remetente", "fornecedor_original",
+                ]
+                colunas_existentes = [c for c in colunas if c in df_faturas.columns]
+                st.markdown(f"**Faturas recebidas (faturas@vidor.pt)** · {len(df_faturas)}")
+                if df_faturas.empty:
+                    st.info("Nenhuma fatura corresponde aos filtros escolhidos.")
+                else:
+                    # valores em texto já formatado e células vazias em branco - o
+                    # Streamlit mostrava "None" em quase todas as colunas de valores
+                    tabela_fat = df_faturas[colunas_existentes].copy()
+                    for coluna in ("valor_fatura", "debito", "credito", "saldo"):
+                        if coluna in tabela_fat:
+                            numeros = pd.to_numeric(tabela_fat[coluna], errors="coerce")
+                            tabela_fat[coluna] = [f"{_n(v, 2)} €" if pd.notna(v) else "" for v in numeros]
+                    texto = [c for c in tabela_fat.columns if c not in ("pdf", "n_anexos_pdf")]  # o link e o nº ficam
+                    tabela_fat[texto] = tabela_fat[texto].astype(object).where(tabela_fat[texto].notna(), "")
+                    if "dia" in tabela_fat:
+                        tabela_fat["dia"] = pd.to_datetime(tabela_fat["dia"]).dt.strftime("%d/%m/%Y")
+                    st.dataframe(
+                        tabela_fat,
+                        width="stretch",
+                        hide_index=True,
+                        height=520,
+                        column_config={
+                            "dia": "Dia", "hora": "Hora", "empresa": "Empresa", "fornecedor": "Fornecedor",
+                            "debito": "Débito", "credito": "Crédito", "saldo": "Saldo", "assunto": "Assunto",
+                            "remetente": "Remetente",
+                            "fonte_fornecedor": st.column_config.TextColumn(
+                                "Fornecedor vem de", help="documento (texto extraído do PDF/email), NIF (nome já conhecido "
+                                                          "para o mesmo NIF) ou email do remetente"),
+                            "fornecedor_original": st.column_config.TextColumn(
+                                "Texto extraído", help="o que o recolher_faturas_recebidas.py extraiu, sem limpeza"),
+                            "nif_fornecedor": st.column_config.TextColumn("NIF fornecedor"),
+                            "valor_fatura": st.column_config.TextColumn("Valor fatura"),
+                            "n_anexos_pdf": st.column_config.NumberColumn("Anexos PDF"),
+                            "pdf": st.column_config.LinkColumn("PDF", display_text="Abrir PDF"),
+                        },
                     )
                 st.caption(
-                    f"Aceitação por origem: regras {_pct(m_amb['taxa_aceitacao_regras'])} · "
-                    f"LLM {_pct(m_amb['taxa_aceitacao_llm'])} · {m_amb['dossiers']} dossier(s) do agente preparados. "
-                    "Período pelo dia do movimento."
+                    "Alimentado pelo recolher_faturas_recebidas.py (de hora a hora) - os mesmos dados "
+                    "do Excel mensal em Documentos a Tratar/AFaturas. Aumenta o limite se faltarem dias."
                 )
-
-with aba_faturas:
-    # --- filtros
-    with st.container(border=True):
-        pesquisa_livre = st.text_input(
-            "🔍 Pesquisar em qualquer dia",
-            placeholder="empresa, fornecedor, NIF, assunto, remetente ou valor",
-            key="faturas_pesquisa",
-        )
-        dia_faturas_str = desde_faturas_str = ate_faturas_str = None
-        with st.container(horizontal=True, vertical_alignment="bottom"):
-            filtrar_por_dia = st.toggle(
-                "Um único dia", value=False, key="faturas_filtrar_dia", disabled=bool(pesquisa_livre)
-            )
-            if filtrar_por_dia and not pesquisa_livre:
-                dia_faturas_str = st.date_input("Dia", value=date.today(), key="dia_faturas", width=200).isoformat()
-            elif not pesquisa_livre:
-                # por omissão mostra todas as faturas desde o dia 1 do mês corrente
-                periodo_faturas = st.date_input(
-                    "Período", value=(date.today().replace(day=1), date.today()), key="faturas_periodo", width=260,
-                )
-                if isinstance(periodo_faturas, tuple) and len(periodo_faturas) == 2:
-                    desde_faturas_str = periodo_faturas[0].isoformat()
-                    ate_faturas_str = periodo_faturas[1].isoformat()
-            limite_faturas = st.number_input(
-                "Máximo de linhas", min_value=50, max_value=5000, value=1000, step=50, key="faturas_limit", width=160,
-            )
-        if pesquisa_livre:
-            st.caption("A pesquisar em todos os dias - o filtro por período fica desligado enquanto houver texto na pesquisa.")
-
-    try:
-        faturas = api.listar_faturas_recebidas(
-            dia_faturas_str,
-            desde=desde_faturas_str,
-            ate=ate_faturas_str,
-            pesquisa=pesquisa_livre or None,
-            limit=int(limite_faturas),
-        )
-    except Exception as e:
-        st.warning(f"Não foi possível carregar as faturas recebidas: {e}")
-        faturas = None
-
-    if faturas:
-        df_faturas = pd.DataFrame(faturas)
-        # Servido pela própria API (GET /faturas/recebidas/{id}/pdf), não
-        # um link file:// - o Chrome bloqueia navegação file:// a partir
-        # de uma página http:// (bug reportado, confirmado no Chrome).
-        if "pdf_relativo" in df_faturas.columns:
-            df_faturas["pdf"] = df_faturas.apply(
-                lambda r: api.url_pdf_fatura(r["id"]) if isinstance(r["pdf_relativo"], str) and r["pdf_relativo"] else None,
-                axis=1,
-            )
-
-        # o fornecedor extraído do PDF/email vem muitas vezes vazio ou com lixo
-        # (moradas, "do titular IBAN", o próprio cliente) - a API devolve o
-        # melhor nome em fornecedor_normalizado (ver services/faturas.py)
-        SEM_FORNECEDOR = ("(encaminhado internamente)", "(desconhecido)")
-        if "fornecedor_normalizado" in df_faturas.columns:
-            df_faturas["fornecedor_original"] = df_faturas["fornecedor"]
-            df_faturas["fornecedor"] = df_faturas["fornecedor_normalizado"].fillna("(desconhecido)")
-            df_faturas["fonte_fornecedor"] = df_faturas["fonte_fornecedor"].map(
-                {"extraido": "documento", "nif": "NIF", "remetente": "email do remetente"}
-            ).fillna("—")
-
-        with st.container(horizontal=True, vertical_alignment="bottom"):
-            empresas_disponiveis = sorted(e for e in df_faturas["empresa"].dropna().unique() if e)
-            empresa_filtro = st.selectbox(
-                "Empresa", ["Todas"] + empresas_disponiveis, key="faturas_filtro_empresa", width=320,
-            )
-            fornecedor_filtro = st.text_input("Fornecedor contém", key="faturas_filtro_fornecedor", width=240)
-            valor_filtro = st.text_input("Valor fatura contém", key="faturas_filtro_valor", width=180)
-
-        if empresa_filtro != "Todas":
-            df_faturas = df_faturas[df_faturas["empresa"] == empresa_filtro]
-        if fornecedor_filtro:
-            df_faturas = df_faturas[
-                df_faturas["fornecedor"].fillna("").str.contains(fornecedor_filtro, case=False, na=False)
-                | df_faturas.get("fornecedor_original", df_faturas["fornecedor"]).fillna("").str.contains(
-                    fornecedor_filtro, case=False, na=False)
-            ]
-        if valor_filtro:
-            df_faturas = df_faturas[
-                df_faturas["valor_fatura"].fillna("").str.contains(valor_filtro, case=False, na=False)
-            ]
-
-        # --- KPIs
-        with st.container(horizontal=True):
-            st.metric("Faturas", len(df_faturas), border=True)
-            st.metric("Empresas", df_faturas["empresa"].nunique(), border=True)
-            identificados = df_faturas[~df_faturas["fornecedor"].isin(SEM_FORNECEDOR)] if "fornecedor" in df_faturas else df_faturas
-            st.metric("Fornecedores", identificados["fornecedor"].nunique() if "fornecedor" in df_faturas else "—",
-                      f"{len(df_faturas) - len(identificados)} faturas sem fornecedor identificado"
-                      if len(df_faturas) > len(identificados) else None,
-                      delta_color="off", delta_arrow="off", border=True)
-            if "pdf" in df_faturas.columns:
-                st.metric("Com PDF", int(df_faturas["pdf"].notna().sum()), border=True)
-            if "dia" in df_faturas.columns and not df_faturas.empty:
-                st.metric("Mais recente", f"{pd.to_datetime(df_faturas['dia'].max()):%d/%m/%Y}", border=True)
-
-        col_tabela_fat, col_top_fat = st.columns([3, 1])
-        with col_tabela_fat, st.container(border=True):
-            colunas = [
-                "dia", "hora", "empresa", "fornecedor", "fonte_fornecedor", "nif_fornecedor",
-                "valor_fatura", "debito", "credito", "saldo",
-                "n_anexos_pdf", "pdf", "assunto", "remetente", "fornecedor_original",
-            ]
-            colunas_existentes = [c for c in colunas if c in df_faturas.columns]
-            st.markdown(f"**Faturas recebidas (faturas@vidor.pt)** · {len(df_faturas)}")
-            if df_faturas.empty:
-                st.info("Nenhuma fatura corresponde aos filtros escolhidos.")
-            else:
-                # valores em texto já formatado e células vazias em branco - o
-                # Streamlit mostrava "None" em quase todas as colunas de valores
-                tabela_fat = df_faturas[colunas_existentes].copy()
-                for coluna in ("valor_fatura", "debito", "credito", "saldo"):
-                    if coluna in tabela_fat:
-                        numeros = pd.to_numeric(tabela_fat[coluna], errors="coerce")
-                        tabela_fat[coluna] = [f"{_n(v, 2)} €" if pd.notna(v) else "" for v in numeros]
-                texto = [c for c in tabela_fat.columns if c not in ("pdf", "n_anexos_pdf")]  # o link e o nº ficam
-                tabela_fat[texto] = tabela_fat[texto].astype(object).where(tabela_fat[texto].notna(), "")
-                if "dia" in tabela_fat:
-                    tabela_fat["dia"] = pd.to_datetime(tabela_fat["dia"]).dt.strftime("%d/%m/%Y")
-                st.dataframe(
-                    tabela_fat,
-                    width="stretch",
-                    hide_index=True,
-                    height=520,
-                    column_config={
-                        "dia": "Dia", "hora": "Hora", "empresa": "Empresa", "fornecedor": "Fornecedor",
-                        "debito": "Débito", "credito": "Crédito", "saldo": "Saldo", "assunto": "Assunto",
-                        "remetente": "Remetente",
-                        "fonte_fornecedor": st.column_config.TextColumn(
-                            "Fornecedor vem de", help="documento (texto extraído do PDF/email), NIF (nome já conhecido "
-                                                      "para o mesmo NIF) ou email do remetente"),
-                        "fornecedor_original": st.column_config.TextColumn(
-                            "Texto extraído", help="o que o recolher_faturas_recebidas.py extraiu, sem limpeza"),
-                        "nif_fornecedor": st.column_config.TextColumn("NIF fornecedor"),
-                        "valor_fatura": st.column_config.TextColumn("Valor fatura"),
-                        "n_anexos_pdf": st.column_config.NumberColumn("Anexos PDF"),
-                        "pdf": st.column_config.LinkColumn("PDF", display_text="Abrir PDF"),
-                    },
-                )
-            st.caption(
-                "Alimentado pelo recolher_faturas_recebidas.py (de hora a hora) - os mesmos dados "
-                "do Excel mensal em Documentos a Tratar/AFaturas. Aumenta o limite se faltarem dias."
-            )
-        with col_top_fat, st.container(border=True):
-            st.markdown("**Fornecedores mais frequentes**")
-            if "fornecedor" in df_faturas.columns and not identificados.empty:
-                top_fornecedores = (
-                    identificados["fornecedor"].value_counts().head(10)
-                    .rename_axis("fornecedor").reset_index(name="faturas")
-                )
-                st.altair_chart(
-                    alt.Chart(top_fornecedores).mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
-                        y=alt.Y("fornecedor:N", sort="-x", title=None, axis=alt.Axis(labelLimit=140)),
-                        x=alt.X("faturas:Q", title="Faturas", axis=alt.Axis(tickMinStep=1)),
-                        color=alt.value(COR_RANKING_SALDO),
-                        tooltip=["fornecedor:N", "faturas:Q"],
-                    ).properties(height=480),
-                    width="stretch",
-                )
-                sem = len(df_faturas) - len(identificados)
-                if sem:
-                    st.caption(
-                        f"{sem} fatura(s) sem fornecedor identificado - a maioria reencaminhada por um "
-                        "email interno (@vidor.pt) sem o nome no texto extraído."
+            with col_top_fat, st.container(border=True):
+                st.markdown("**Fornecedores mais frequentes**")
+                if "fornecedor" in df_faturas.columns and not identificados.empty:
+                    top_fornecedores = (
+                        identificados["fornecedor"].value_counts().head(10)
+                        .rename_axis("fornecedor").reset_index(name="faturas")
                     )
-            else:
-                st.info("Sem fornecedores identificados.")
-    elif faturas is not None:
-        st.info("Ainda não há faturas recebidas registadas para este filtro.")
+                    st.altair_chart(
+                        alt.Chart(top_fornecedores).mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
+                            y=alt.Y("fornecedor:N", sort="-x", title=None, axis=alt.Axis(labelLimit=140)),
+                            x=alt.X("faturas:Q", title="Faturas", axis=alt.Axis(tickMinStep=1)),
+                            color=alt.value(COR_RANKING_SALDO),
+                            tooltip=["fornecedor:N", "faturas:Q"],
+                        ).properties(height=480),
+                        width="stretch",
+                    )
+                    sem = len(df_faturas) - len(identificados)
+                    if sem:
+                        st.caption(
+                            f"{sem} fatura(s) sem fornecedor identificado - a maioria reencaminhada por um "
+                            "email interno (@vidor.pt) sem o nome no texto extraído."
+                        )
+                else:
+                    st.info("Sem fornecedores identificados.")
+        elif faturas is not None:
+            st.info("Ainda não há faturas recebidas registadas para este filtro.")
 
-with aba_saldos:
-    with st.container(border=True, horizontal=True, vertical_alignment="bottom"):
-        dia_mapa = st.date_input("Dia do mapa (opcional)", value=None, key="dia_mapa_saldos", width=220)
-        st.caption(
-            "Última leitura de cada conta até ao dia escolhido (hoje, se vazio). Variação face à leitura "
-            "anterior de cada conta - nem todas têm leitura todos os dias. ⚠️ = última leitura com mais de "
-            f"{DIAS_LEITURA_ANTIGA} dias (continua a contar no total) ou extrato sem o nome da empresa."
-        )
+if aba_saldos.open:
+    with aba_saldos:
+        with st.container(border=True, horizontal=True, vertical_alignment="bottom"):
+            dia_mapa = st.date_input("Dia do mapa (opcional)", value=None, persist_state="page", key="dia_mapa_saldos", width=220)
+            st.caption(
+                "Última leitura de cada conta até ao dia escolhido (hoje, se vazio). Variação face à leitura "
+                "anterior de cada conta - nem todas têm leitura todos os dias. ⚠️ = última leitura com mais de "
+                f"{DIAS_LEITURA_ANTIGA} dias (continua a contar no total) ou extrato sem o nome da empresa."
+            )
 
-    try:
-        mapa = api.mapa_saldos(dia_mapa.isoformat() if dia_mapa else None)
-    except Exception as e:
-        st.error(f"Erro a consultar o mapa de saldos: {e}")
-        mapa = []
-
-    if mapa:
-        df_mapa = pd.DataFrame(mapa).sort_values("entidade")
-        n_subiram = int((df_mapa["variacao_contabilistico"] > 0).sum())
-        n_desceram = int((df_mapa["variacao_contabilistico"] < 0).sum())
-        n_negativos = int((df_mapa["saldo_contabilistico"] < 0).sum())
-        # recebimentos/pagamentos do dia do mapa (o escolhido, ou o da leitura mais recente)
-        dia_fluxo = dia_mapa.isoformat() if dia_mapa else str(df_mapa["dia"].max())
         try:
-            fluxo_dia = next((r for r in api.resumo_diario() if r["dia"] == dia_fluxo), None)
+            mapa = api.mapa_saldos(dia_mapa.isoformat() if dia_mapa else None)
         except Exception as e:
-            st.error(f"Erro a consultar recebimentos/pagamentos: {e}")
-            fluxo_dia = None
-        rotulo_dia_fluxo = f"{pd.to_datetime(dia_fluxo):%d/%m/%Y}"
-        with st.container(horizontal=True):
-            st.metric("Saldo contabilístico total", f"{_n(df_mapa['saldo_contabilistico'].sum())} €", border=True)
-            st.metric("Saldo disponível total", f"{_n(df_mapa['saldo_disponivel'].sum())} €", border=True)
-            st.metric(
-                f"Recebimentos ({rotulo_dia_fluxo})", f"{_n(fluxo_dia['recebimentos'] if fluxo_dia else 0)} €",
-                f"{_n(fluxo_dia['recebimentos_externos'])} € fora do grupo" if fluxo_dia else None,
-                delta_color="off", delta_arrow="off", border=True,
-                help="Soma dos movimentos a crédito de todas as contas nesse dia. O valor pequeno exclui "
-                     "as transferências entre empresas do grupo.",
-            )
-            st.metric(
-                f"Pagamentos ({rotulo_dia_fluxo})", f"{_n(fluxo_dia['pagamentos'] if fluxo_dia else 0)} €",
-                f"{_n(fluxo_dia['pagamentos_externos'])} € fora do grupo" if fluxo_dia else None,
-                delta_color="off", delta_arrow="off", border=True,
-                help="Soma dos movimentos a débito de todas as contas nesse dia. O valor pequeno exclui "
-                     "as transferências entre empresas do grupo.",
-            )
-            st.metric("Contas", len(df_mapa), border=True)
-            st.metric("Subiram / desceram", f"{n_subiram} / {n_desceram}", border=True,
-                      help="Face à leitura anterior de cada conta.")
-            st.metric("Contas negativas", n_negativos, "atenção" if n_negativos else None,
-                      delta_color="inverse", border=True)
+            st.error(f"Erro a consultar o mapa de saldos: {e}")
+            mapa = []
 
-    try:
-        empresas_saldo = api.listar_empresas()
-    except Exception as e:
-        st.error(f"Erro a consultar empresas: {e}")
-        empresas_saldo = []
-
-    col_mapa, col_empresa = st.columns([3, 2])
-    with col_mapa, st.container(border=True):
-        st.markdown("**Mapa de saldos de todas as empresas**")
-        if not mapa:
-            st.info("Sem saldos guardados (precisas de correr /saldos/atualizar primeiro).")
-        else:
-            df_mapa["Var. (contab.)"] = [variacao_saldo(v, p) for v, p in
-                                         zip(df_mapa["variacao_contabilistico"], df_mapa["variacao_pct_contabilistico"])]
-            df_mapa["Var. (disp.)"] = [variacao_saldo(v, p) for v, p in
-                                       zip(df_mapa["variacao_disponivel"], df_mapa["variacao_pct_disponivel"])]
-            dia_mais_recente = df_mapa["dia"].max()
-            df_mapa["Empresa"] = [rotulo_conta(e, d, dia_mais_recente) for e, d in zip(df_mapa["entidade"], df_mapa["dia"])]
-            df_mapa["Dia"] = pd.to_datetime(df_mapa["dia"]).dt.strftime("%d/%m/%Y")
-
-            tabela_mapa = df_mapa[[
-                "Empresa", "Dia", "saldo_contabilistico", "Var. (contab.)", "saldo_disponivel", "Var. (disp.)",
-            ]].rename(columns={
-                "saldo_contabilistico": "Saldo contabilístico",
-                "saldo_disponivel": "Saldo disponível",
-            })
-
-            linha_total = pd.DataFrame([{
-                "Empresa": "Total", "Dia": "",
-                "Saldo contabilístico": df_mapa["saldo_contabilistico"].sum(), "Var. (contab.)": "",
-                "Saldo disponível": df_mapa["saldo_disponivel"].sum(), "Var. (disp.)": "",
-            }])
-            tabela_mapa_com_total = pd.concat([tabela_mapa, linha_total], ignore_index=True)
-
-            def _destacar_total(linha):
-                estilo = "font-weight: bold; border-top: 2px solid currentColor" if linha["Empresa"] == "Total" else ""
-                return [estilo] * len(linha)
-
-            st.dataframe(
-                tabela_mapa_com_total.style.apply(_destacar_total, axis=1),
-                width="stretch",
-                hide_index=True,
-                # altura calculada para caber todas as linhas sem scroll interno
-                # (linha ~35px + cabeçalho ~38px + margem) - por omissão o
-                # st.dataframe só mostra ~10 linhas e obriga a fazer scroll.
-                height=int(35 * len(tabela_mapa_com_total) + 38 + 3),
-                # colunas estreitas onde o conteúdo é curto, para caber tudo sem
-                # scroll horizontal (o "Saldo disponível" ficava cortado)
-                column_config={
-                    "Empresa": st.column_config.TextColumn(width="large"),
-                    "Dia": st.column_config.TextColumn(width="small"),
-                    "Saldo contabilístico": st.column_config.NumberColumn(format="euro", width="small"),
-                    "Var. (contab.)": st.column_config.TextColumn(width="small"),
-                    "Saldo disponível": st.column_config.NumberColumn(format="euro", width="small"),
-                    "Var. (disp.)": st.column_config.TextColumn(width="small"),
-                },
-            )
-
-    with col_empresa, st.container(border=True):
-        st.markdown("**Consultar uma empresa**")
-        if not empresas_saldo:
-            st.info("Ainda não há empresas com movimentos importados.")
-        else:
-            with st.container(horizontal=True, vertical_alignment="bottom"):
-                empresa = st.selectbox("Empresa", empresas_saldo, key="empresa_consultar_saldo")
-                dia_saldo = st.date_input("Dia (opcional)", value=None, key="dia_saldo", width=160)
+        if mapa:
+            df_mapa = pd.DataFrame(mapa).sort_values("entidade")
+            n_subiram = int((df_mapa["variacao_contabilistico"] > 0).sum())
+            n_desceram = int((df_mapa["variacao_contabilistico"] < 0).sum())
+            n_negativos = int((df_mapa["saldo_contabilistico"] < 0).sum())
+            # recebimentos/pagamentos do dia do mapa (o escolhido, ou o da leitura mais recente)
+            dia_fluxo = dia_mapa.isoformat() if dia_mapa else str(df_mapa["dia"].max())
             try:
-                saldos_mes = api.consultar_saldo(empresa)
+                fluxo_dia = next((r for r in api.resumo_diario() if r["dia"] == dia_fluxo), None)
             except Exception as e:
-                st.error(f"Erro a consultar o histórico: {e}")
-                saldos_mes = []
-            try:
-                resultado = api.consultar_saldo(empresa, dia_saldo.isoformat() if dia_saldo else None)
-            except Exception as e:
-                st.error(f"Erro: {e}")
-                resultado = []
-
-            if resultado:
-                ultimo = sorted(resultado, key=lambda r: r["dia"])[-1]
-                with st.container(horizontal=True):
-                    st.metric(f"Contabilístico ({pd.to_datetime(ultimo['dia']):%d/%m/%Y})", f"{_n(ultimo['saldo_contabilistico'], 2)} €", border=True)
-                    st.metric("Disponível", f"{_n(ultimo['saldo_disponivel'], 2)} €", border=True)
-            else:
-                st.warning("Nenhum saldo encontrado para essa empresa/dia.")
-
-            if saldos_mes:
-                df_saldos_mes_longo = pd.DataFrame(saldos_mes).sort_values("dia").melt(
-                    id_vars=["dia"],
-                    value_vars=["saldo_contabilistico", "saldo_disponivel"],
-                    var_name="tipo", value_name="valor",
+                st.error(f"Erro a consultar recebimentos/pagamentos: {e}")
+                fluxo_dia = None
+            rotulo_dia_fluxo = f"{pd.to_datetime(dia_fluxo):%d/%m/%Y}"
+            with st.container(horizontal=True):
+                st.metric("Saldo contabilístico total", f"{_n(df_mapa['saldo_contabilistico'].sum())} €", border=True)
+                st.metric("Saldo disponível total", f"{_n(df_mapa['saldo_disponivel'].sum())} €", border=True)
+                st.metric(
+                    f"Recebimentos ({rotulo_dia_fluxo})", f"{_n(fluxo_dia['recebimentos'] if fluxo_dia else 0)} €",
+                    f"{_n(fluxo_dia['recebimentos_externos'])} € fora do grupo" if fluxo_dia else None,
+                    delta_color="off", delta_arrow="off", border=True,
+                    help="Soma dos movimentos a crédito de todas as contas nesse dia. O valor pequeno exclui "
+                         "as transferências entre empresas do grupo.",
                 )
-                df_saldos_mes_longo["tipo"] = df_saldos_mes_longo["tipo"].map({
+                st.metric(
+                    f"Pagamentos ({rotulo_dia_fluxo})", f"{_n(fluxo_dia['pagamentos'] if fluxo_dia else 0)} €",
+                    f"{_n(fluxo_dia['pagamentos_externos'])} € fora do grupo" if fluxo_dia else None,
+                    delta_color="off", delta_arrow="off", border=True,
+                    help="Soma dos movimentos a débito de todas as contas nesse dia. O valor pequeno exclui "
+                         "as transferências entre empresas do grupo.",
+                )
+                st.metric("Contas", len(df_mapa), border=True)
+                st.metric("Subiram / desceram", f"{n_subiram} / {n_desceram}", border=True,
+                          help="Face à leitura anterior de cada conta.")
+                st.metric("Contas negativas", n_negativos, "atenção" if n_negativos else None,
+                          delta_color="inverse", border=True)
+
+        try:
+            empresas_saldo = api.listar_empresas()
+        except Exception as e:
+            st.error(f"Erro a consultar empresas: {e}")
+            empresas_saldo = []
+
+        col_mapa, col_empresa = st.columns([3, 2])
+        with col_mapa, st.container(border=True):
+            st.markdown("**Mapa de saldos de todas as empresas**")
+            if not mapa:
+                st.info("Sem saldos guardados (precisas de correr /saldos/atualizar primeiro).")
+            else:
+                df_mapa["Var. (contab.)"] = [variacao_saldo(v, p) for v, p in
+                                             zip(df_mapa["variacao_contabilistico"], df_mapa["variacao_pct_contabilistico"])]
+                df_mapa["Var. (disp.)"] = [variacao_saldo(v, p) for v, p in
+                                           zip(df_mapa["variacao_disponivel"], df_mapa["variacao_pct_disponivel"])]
+                dia_mais_recente = df_mapa["dia"].max()
+                df_mapa["Empresa"] = [rotulo_conta(e, d, dia_mais_recente) for e, d in zip(df_mapa["entidade"], df_mapa["dia"])]
+                df_mapa["Dia"] = pd.to_datetime(df_mapa["dia"]).dt.strftime("%d/%m/%Y")
+
+                tabela_mapa = df_mapa[[
+                    "Empresa", "Dia", "saldo_contabilistico", "Var. (contab.)", "saldo_disponivel", "Var. (disp.)",
+                ]].rename(columns={
                     "saldo_contabilistico": "Saldo contabilístico",
                     "saldo_disponivel": "Saldo disponível",
                 })
-                cores_saldo_mes = {
-                    "Saldo contabilístico": COR_SALDO_CONTABILISTICO,
-                    "Saldo disponível": COR_SALDO_DISPONIVEL,
-                }
-                st.altair_chart(
-                    alt.Chart(df_saldos_mes_longo).mark_line(strokeWidth=2).encode(
-                        x=alt.X("dia:T", title=None, axis=alt.Axis(format="%d/%m", labelAngle=-45)),
-                        y=alt.Y("valor:Q", title="EUR", axis=alt.Axis(format=",.0f")),
-                        color=alt.Color(
-                            "tipo:N",
-                            scale=alt.Scale(domain=list(cores_saldo_mes), range=list(cores_saldo_mes.values())),
-                            legend=alt.Legend(title=None, orient="top"),
-                        ),
-                        tooltip=["dia:T", "tipo:N", alt.Tooltip("valor:Q", format=",.2f")],
-                    ).properties(height=300),
+
+                linha_total = pd.DataFrame([{
+                    "Empresa": "Total", "Dia": "",
+                    "Saldo contabilístico": df_mapa["saldo_contabilistico"].sum(), "Var. (contab.)": "",
+                    "Saldo disponível": df_mapa["saldo_disponivel"].sum(), "Var. (disp.)": "",
+                }])
+                tabela_mapa_com_total = pd.concat([tabela_mapa, linha_total], ignore_index=True)
+
+                def _destacar_total(linha):
+                    estilo = "font-weight: bold; border-top: 2px solid currentColor" if linha["Empresa"] == "Total" else ""
+                    return [estilo] * len(linha)
+
+                st.dataframe(
+                    tabela_mapa_com_total.style.apply(_destacar_total, axis=1),
                     width="stretch",
+                    hide_index=True,
+                    # altura calculada para caber todas as linhas sem scroll interno
+                    # (linha ~35px + cabeçalho ~38px + margem) - por omissão o
+                    # st.dataframe só mostra ~10 linhas e obriga a fazer scroll.
+                    height=int(35 * len(tabela_mapa_com_total) + 38 + 3),
+                    # colunas estreitas onde o conteúdo é curto, para caber tudo sem
+                    # scroll horizontal (o "Saldo disponível" ficava cortado)
+                    column_config={
+                        "Empresa": st.column_config.TextColumn(width="large"),
+                        "Dia": st.column_config.TextColumn(width="small"),
+                        "Saldo contabilístico": st.column_config.NumberColumn(format="euro", width="small"),
+                        "Var. (contab.)": st.column_config.TextColumn(width="small"),
+                        "Saldo disponível": st.column_config.NumberColumn(format="euro", width="small"),
+                        "Var. (disp.)": st.column_config.TextColumn(width="small"),
+                    },
                 )
-                with st.expander("Ver leituras"):
-                    st.dataframe(resultado or saldos_mes, width="stretch", column_config=COLUNAS_SALDO_EUR)
+
+        with col_empresa, st.container(border=True):
+            st.markdown("**Consultar uma empresa**")
+            if not empresas_saldo:
+                st.info("Ainda não há empresas com movimentos importados.")
             else:
-                st.info("Sem histórico para esta empresa.")
+                with st.container(horizontal=True, vertical_alignment="bottom"):
+                    empresa = st.selectbox("Empresa", empresas_saldo, persist_state="page", key="empresa_consultar_saldo")
+                    dia_saldo = st.date_input("Dia (opcional)", value=None, persist_state="page", key="dia_saldo", width=160)
+                try:
+                    saldos_mes = api.consultar_saldo(empresa)
+                except Exception as e:
+                    st.error(f"Erro a consultar o histórico: {e}")
+                    saldos_mes = []
+                try:
+                    resultado = api.consultar_saldo(empresa, dia_saldo.isoformat() if dia_saldo else None)
+                except Exception as e:
+                    st.error(f"Erro: {e}")
+                    resultado = []
+
+                if resultado:
+                    ultimo = sorted(resultado, key=lambda r: r["dia"])[-1]
+                    with st.container(horizontal=True):
+                        st.metric(f"Contabilístico ({pd.to_datetime(ultimo['dia']):%d/%m/%Y})", f"{_n(ultimo['saldo_contabilistico'], 2)} €", border=True)
+                        st.metric("Disponível", f"{_n(ultimo['saldo_disponivel'], 2)} €", border=True)
+                else:
+                    st.warning("Nenhum saldo encontrado para essa empresa/dia.")
+
+                if saldos_mes:
+                    df_saldos_mes_longo = pd.DataFrame(saldos_mes).sort_values("dia").melt(
+                        id_vars=["dia"],
+                        value_vars=["saldo_contabilistico", "saldo_disponivel"],
+                        var_name="tipo", value_name="valor",
+                    )
+                    df_saldos_mes_longo["tipo"] = df_saldos_mes_longo["tipo"].map({
+                        "saldo_contabilistico": "Saldo contabilístico",
+                        "saldo_disponivel": "Saldo disponível",
+                    })
+                    cores_saldo_mes = {
+                        "Saldo contabilístico": COR_SALDO_CONTABILISTICO,
+                        "Saldo disponível": COR_SALDO_DISPONIVEL,
+                    }
+                    st.altair_chart(
+                        alt.Chart(df_saldos_mes_longo).mark_line(strokeWidth=2).encode(
+                            x=alt.X("dia:T", title=None, axis=alt.Axis(format="%d/%m", labelAngle=-45)),
+                            y=alt.Y("valor:Q", title="EUR", axis=alt.Axis(format=",.0f")),
+                            color=alt.Color(
+                                "tipo:N",
+                                scale=alt.Scale(domain=list(cores_saldo_mes), range=list(cores_saldo_mes.values())),
+                                legend=alt.Legend(title=None, orient="top"),
+                            ),
+                            tooltip=["dia:T", "tipo:N", alt.Tooltip("valor:Q", format=",.2f")],
+                        ).properties(height=300),
+                        width="stretch",
+                    )
+                    with st.expander("Ver leituras"):
+                        st.dataframe(resultado or saldos_mes, width="stretch", column_config=COLUNAS_SALDO_EUR)
+                else:
+                    st.info("Sem histórico para esta empresa.")
 
 ESTADOS_NEGOCIO = {"concluído": "✅ concluído", "em dia": "🟢 em dia", "por confirmar": "⚠️ por confirmar"}
 ESTADOS_PAGAMENTO = {
@@ -2511,7 +2523,7 @@ def _secao_vendas_indice(empresa, periodo: dict):
             "recebimento com a mesma Ref. na descrição, de valor e data parecidos. \"Por confirmar\" = a data "
             "já passou e não há entrada identificada - pode estar em atraso ou ter entrado numa linha sem a Ref."
         )
-        so_periodo = st.toggle("Só negócios com datas no período", value=False, key="vendas_so_periodo")
+        so_periodo = st.toggle("Só negócios com datas no período", value=False, persist_state="page", key="vendas_so_periodo")
     try:
         dados = api.negocios_comerciais(empresa, **(periodo if so_periodo else {}))
     except Exception as e:
@@ -2687,139 +2699,140 @@ def _secao_rendas(empresa, periodo: dict):
     )
 
 
-with aba_analise_extratos:
-    try:
-        empresas_extratos = api.listar_empresas()
-    except Exception as e:
-        st.error(f"Erro a consultar empresas: {e}")
-        empresas_extratos = []
+if aba_analise_extratos.open:
+    with aba_analise_extratos:
+        try:
+            empresas_extratos = api.listar_empresas()
+        except Exception as e:
+            st.error(f"Erro a consultar empresas: {e}")
+            empresas_extratos = []
 
-    hoje = date.today()
-    with st.container(border=True, horizontal=True, vertical_alignment="bottom"):
-        dia_inicio_extratos = st.date_input("De", value=hoje.replace(day=1), key="dia_inicio_extratos", width=180)
-        dia_fim_extratos = st.date_input("Até", value=hoje, key="dia_fim_extratos", width=180)
-        empresa_extratos_sel = st.selectbox(
-            "Empresa", ["Todas as empresas"] + empresas_extratos, key="empresa_analise_extratos", width=380,
-        )
-        pesquisa_extratos = st.text_input(
-            "Extratos", placeholder="Procurar extratos...", key="pesquisa_analise_extratos", width=320,
-            help="Filtra as tabelas por descrição, empresa, imputação ou valor (todas as palavras, sem "
-                 "acentos). Os gráficos e os totais continuam a contar o período todo.",
-        )
-    empresa_extratos = None if empresa_extratos_sel == "Todas as empresas" else empresa_extratos_sel
-    periodo_extratos = {"dia_inicio": dia_inicio_extratos.isoformat(), "dia_fim": dia_fim_extratos.isoformat()}
-    filtro_empresa = {"empresa": empresa_extratos} if empresa_extratos else {}
-
-    try:
-        analise = api.analise_imputacoes(**filtro_empresa, **periodo_extratos)
-    except Exception as e:
-        st.error(f"Erro a consultar a análise de extratos: {e}")
-        analise = {"recebimentos": [], "pagamentos": []}
-    try:
-        linhas_extratos = api.listar_linhas_imputacao(**filtro_empresa, **periodo_extratos)
-    except Exception as e:
-        st.error(f"Erro a consultar os extratos: {e}")
-        linhas_extratos = []
-    linhas_encontradas = procurar_linhas_extratos(linhas_extratos, pesquisa_extratos)
-    linhas_receb = [l for l in linhas_encontradas if l["tipo"] == "recebimento"]
-    linhas_pag = [l for l in linhas_encontradas if l["tipo"] == "pagamento"]
-
-    total_recebido = sum(l["valor"] for l in analise.get("recebimentos", []))
-    total_pago = sum(l["valor"] for l in analise.get("pagamentos", []))
-    n_pendentes = sum(1 for l in linhas_extratos if not l.get("confirmado"))
-    n_cpcv_escritura = sum(1 for l in linhas_extratos if l["tipo"] == "recebimento" and l.get("e_cpcv_escritura"))
-    linhas_cpcv_escritura = [l for l in linhas_receb if l.get("e_cpcv_escritura")]
-
-    # --- KPIs
-    with st.container(horizontal=True):
-        st.metric("Recebido (confirmado)", f"{_n(total_recebido)} €", border=True)
-        st.metric("Pago (confirmado)", f"{_n(total_pago)} €", border=True)
-        st.metric("Líquido", f"{_n(total_recebido - total_pago, sinal=True)} €", border=True)
-        st.metric("Linhas pendentes", n_pendentes, border=True,
-                  help="Linhas do Mapa ainda sem movimento correspondente no extrato.")
-        st.metric("CPCVs / escrituras", n_cpcv_escritura, border=True)
-
-    # --- distribuição por imputação
-    col_receb_pizza, col_pag_pizza = st.columns(2)
-    sufixo = f" - {empresa_extratos}" if empresa_extratos else ""
-    with col_receb_pizza, st.container(border=True):
-        grafico_receb, cores_receb = grafico_pizza_imputacoes(analise.get("recebimentos", []), f"Recebimentos por imputação{sufixo}")
-        if grafico_receb is not None:
-            st.altair_chart(grafico_receb, width="stretch")
-        else:
-            st.info("Sem recebimentos registados no período.")
-    with col_pag_pizza, st.container(border=True):
-        grafico_pag, cores_pag = grafico_pizza_imputacoes(analise.get("pagamentos", []), f"Pagamentos por imputação{sufixo}")
-        if grafico_pag is not None:
-            st.altair_chart(grafico_pag, width="stretch")
-        else:
-            st.info("Sem pagamentos registados no período.")
-
-    if pesquisa_extratos.strip():
-        st.caption(f"🔎 {len(linhas_encontradas)} de {len(linhas_extratos)} linhas com \"{pesquisa_extratos.strip()}\".")
-    sep_receb, sep_pag, sep_cpcv_mapa, sep_cpcv_indice, sep_rendas = st.tabs([
-        f"Recebimentos ({len(linhas_receb)})", f"Pagamentos ({len(linhas_pag)})",
-        f"CPCVs / Escrituras - Mapa ({len(linhas_cpcv_escritura)})", "Vendas - Índice comercial", "Rendas",
-    ])
-    with sep_receb:
-        tabela_extratos_colorida(linhas_receb, cores_receb, "Sem recebimentos registados no período.")
-    with sep_pag:
-        tabela_extratos_colorida(linhas_pag, cores_pag, "Sem pagamentos registados no período.")
-
-    with sep_cpcv_mapa:
-        st.caption(
-            "Do Mapa de Pagamentos e Recebimentos: conta bancária e dia do recebimento "
-            "(imputação CPCV/Escritura, ou outra imputação - ex. \"DEPOSITO\" - cuja descrição "
-            "refira o código de uma fração). Inclui escrituras ainda pendentes de confirmação no "
-            "extrato (coluna Estado) e, quando o código bate com o Índice Comercial, o espaço "
-            "físico e a fração da venda."
-        )
-        if linhas_cpcv_escritura:
-            try:
-                mapa_ref = api.espaco_fracao_por_ref()
-            except Exception:
-                mapa_ref = {}
-
-            for l in linhas_cpcv_escritura:
-                refs = l.get("refs_fracao") or []
-                l["ref"] = ", ".join(refs) if refs else "-"
-                info_ref = next((mapa_ref[r] for r in refs if r in mapa_ref), None)
-                l["espaco_fisico"] = (info_ref or {}).get("espaco_fisico") or "-"
-                l["fracao"] = (info_ref or {}).get("fracao") or "-"
-
-            df_cpcv = pd.DataFrame(linhas_cpcv_escritura)[[
-                "dia", "empresa", "imputacao", "ref", "espaco_fisico", "fracao",
-                "previsto", "valor", "confirmado",
-            ]]
-            df_cpcv["confirmado"] = df_cpcv["confirmado"].map({True: "Confirmado", False: "Pendente"})
-            df_cpcv = df_cpcv.sort_values("dia", ascending=False).rename(columns={
-                "dia": "Dia", "empresa": "Empresa", "imputacao": "Tipo", "ref": "Ref.",
-                "espaco_fisico": "Espaço Físico", "fracao": "Fração",
-                "previsto": "Valor tabelado/proposto", "valor": "Valor recebido",
-                "confirmado": "Estado",
-            })
-            st.dataframe(
-                df_cpcv, width="stretch", hide_index=True,
-                column_config={
-                    "Valor tabelado/proposto": st.column_config.NumberColumn(format="euro"),
-                    "Valor recebido": st.column_config.NumberColumn(format="euro"),
-                },
+        hoje = date.today()
+        with st.container(border=True, horizontal=True, vertical_alignment="bottom"):
+            dia_inicio_extratos = st.date_input("De", value=hoje.replace(day=1), persist_state="page", key="dia_inicio_extratos", width=180)
+            dia_fim_extratos = st.date_input("Até", value=hoje, persist_state="page", key="dia_fim_extratos", width=180)
+            empresa_extratos_sel = st.selectbox(
+                "Empresa", ["Todas as empresas"] + empresas_extratos, persist_state="page", key="empresa_analise_extratos", width=380,
             )
-        else:
-            st.info("Sem CPCVs/Escrituras recebidos registados no período.")
+            pesquisa_extratos = st.text_input(
+                "Extratos", placeholder="Procurar extratos...", persist_state="page", key="pesquisa_analise_extratos", width=320,
+                help="Filtra as tabelas por descrição, empresa, imputação ou valor (todas as palavras, sem "
+                     "acentos). Os gráficos e os totais continuam a contar o período todo.",
+            )
+        empresa_extratos = None if empresa_extratos_sel == "Todas as empresas" else empresa_extratos_sel
+        periodo_extratos = {"dia_inicio": dia_inicio_extratos.isoformat(), "dia_fim": dia_fim_extratos.isoformat()}
+        filtro_empresa = {"empresa": empresa_extratos} if empresa_extratos else {}
 
-    with sep_cpcv_indice:
-        _secao_vendas_indice(empresa_extratos, periodo_extratos)
+        try:
+            analise = api.analise_imputacoes(**filtro_empresa, **periodo_extratos)
+        except Exception as e:
+            st.error(f"Erro a consultar a análise de extratos: {e}")
+            analise = {"recebimentos": [], "pagamentos": []}
+        try:
+            linhas_extratos = api.listar_linhas_imputacao(**filtro_empresa, **periodo_extratos)
+        except Exception as e:
+            st.error(f"Erro a consultar os extratos: {e}")
+            linhas_extratos = []
+        linhas_encontradas = procurar_linhas_extratos(linhas_extratos, pesquisa_extratos)
+        linhas_receb = [l for l in linhas_encontradas if l["tipo"] == "recebimento"]
+        linhas_pag = [l for l in linhas_encontradas if l["tipo"] == "pagamento"]
 
-    with sep_rendas:
-        _secao_rendas(empresa_extratos, periodo_extratos)
+        total_recebido = sum(l["valor"] for l in analise.get("recebimentos", []))
+        total_pago = sum(l["valor"] for l in analise.get("pagamentos", []))
+        n_pendentes = sum(1 for l in linhas_extratos if not l.get("confirmado"))
+        n_cpcv_escritura = sum(1 for l in linhas_extratos if l["tipo"] == "recebimento" and l.get("e_cpcv_escritura"))
+        linhas_cpcv_escritura = [l for l in linhas_receb if l.get("e_cpcv_escritura")]
 
-    with st.container(border=True):
-        grafico_ranking_pag = grafico_ranking_imputacoes(analise.get("pagamentos", []), "Imputações que mais gastam (ranking completo)")
-        if grafico_ranking_pag is not None:
-            st.altair_chart(grafico_ranking_pag, width="stretch")
-        else:
-            st.info("Sem pagamentos registados no período.")
+        # --- KPIs
+        with st.container(horizontal=True):
+            st.metric("Recebido (confirmado)", f"{_n(total_recebido)} €", border=True)
+            st.metric("Pago (confirmado)", f"{_n(total_pago)} €", border=True)
+            st.metric("Líquido", f"{_n(total_recebido - total_pago, sinal=True)} €", border=True)
+            st.metric("Linhas pendentes", n_pendentes, border=True,
+                      help="Linhas do Mapa ainda sem movimento correspondente no extrato.")
+            st.metric("CPCVs / escrituras", n_cpcv_escritura, border=True)
+
+        # --- distribuição por imputação
+        col_receb_pizza, col_pag_pizza = st.columns(2)
+        sufixo = f" - {empresa_extratos}" if empresa_extratos else ""
+        with col_receb_pizza, st.container(border=True):
+            grafico_receb, cores_receb = grafico_pizza_imputacoes(analise.get("recebimentos", []), f"Recebimentos por imputação{sufixo}")
+            if grafico_receb is not None:
+                st.altair_chart(grafico_receb, width="stretch")
+            else:
+                st.info("Sem recebimentos registados no período.")
+        with col_pag_pizza, st.container(border=True):
+            grafico_pag, cores_pag = grafico_pizza_imputacoes(analise.get("pagamentos", []), f"Pagamentos por imputação{sufixo}")
+            if grafico_pag is not None:
+                st.altair_chart(grafico_pag, width="stretch")
+            else:
+                st.info("Sem pagamentos registados no período.")
+
+        if pesquisa_extratos.strip():
+            st.caption(f"🔎 {len(linhas_encontradas)} de {len(linhas_extratos)} linhas com \"{pesquisa_extratos.strip()}\".")
+        sep_receb, sep_pag, sep_cpcv_mapa, sep_cpcv_indice, sep_rendas = st.tabs([
+            f"Recebimentos ({len(linhas_receb)})", f"Pagamentos ({len(linhas_pag)})",
+            f"CPCVs / Escrituras - Mapa ({len(linhas_cpcv_escritura)})", "Vendas - Índice comercial", "Rendas",
+        ])
+        with sep_receb:
+            tabela_extratos_colorida(linhas_receb, cores_receb, "Sem recebimentos registados no período.")
+        with sep_pag:
+            tabela_extratos_colorida(linhas_pag, cores_pag, "Sem pagamentos registados no período.")
+
+        with sep_cpcv_mapa:
+            st.caption(
+                "Do Mapa de Pagamentos e Recebimentos: conta bancária e dia do recebimento "
+                "(imputação CPCV/Escritura, ou outra imputação - ex. \"DEPOSITO\" - cuja descrição "
+                "refira o código de uma fração). Inclui escrituras ainda pendentes de confirmação no "
+                "extrato (coluna Estado) e, quando o código bate com o Índice Comercial, o espaço "
+                "físico e a fração da venda."
+            )
+            if linhas_cpcv_escritura:
+                try:
+                    mapa_ref = api.espaco_fracao_por_ref()
+                except Exception:
+                    mapa_ref = {}
+
+                for l in linhas_cpcv_escritura:
+                    refs = l.get("refs_fracao") or []
+                    l["ref"] = ", ".join(refs) if refs else "-"
+                    info_ref = next((mapa_ref[r] for r in refs if r in mapa_ref), None)
+                    l["espaco_fisico"] = (info_ref or {}).get("espaco_fisico") or "-"
+                    l["fracao"] = (info_ref or {}).get("fracao") or "-"
+
+                df_cpcv = pd.DataFrame(linhas_cpcv_escritura)[[
+                    "dia", "empresa", "imputacao", "ref", "espaco_fisico", "fracao",
+                    "previsto", "valor", "confirmado",
+                ]]
+                df_cpcv["confirmado"] = df_cpcv["confirmado"].map({True: "Confirmado", False: "Pendente"})
+                df_cpcv = df_cpcv.sort_values("dia", ascending=False).rename(columns={
+                    "dia": "Dia", "empresa": "Empresa", "imputacao": "Tipo", "ref": "Ref.",
+                    "espaco_fisico": "Espaço Físico", "fracao": "Fração",
+                    "previsto": "Valor tabelado/proposto", "valor": "Valor recebido",
+                    "confirmado": "Estado",
+                })
+                st.dataframe(
+                    df_cpcv, width="stretch", hide_index=True,
+                    column_config={
+                        "Valor tabelado/proposto": st.column_config.NumberColumn(format="euro"),
+                        "Valor recebido": st.column_config.NumberColumn(format="euro"),
+                    },
+                )
+            else:
+                st.info("Sem CPCVs/Escrituras recebidos registados no período.")
+
+        with sep_cpcv_indice:
+            _secao_vendas_indice(empresa_extratos, periodo_extratos)
+
+        with sep_rendas:
+            _secao_rendas(empresa_extratos, periodo_extratos)
+
+        with st.container(border=True):
+            grafico_ranking_pag = grafico_ranking_imputacoes(analise.get("pagamentos", []), "Imputações que mais gastam (ranking completo)")
+            if grafico_ranking_pag is not None:
+                st.altair_chart(grafico_ranking_pag, width="stretch")
+            else:
+                st.info("Sem pagamentos registados no período.")
 
 # Rodapé corporativo - fecha visualmente com o cabeçalho (mesma barra
 # escura, mesmo traço vermelho fino), assinala que é uma ferramenta
