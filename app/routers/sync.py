@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models import AtualizarDadosResponse
+from app.services.monitorizacao import FUSO_LOCAL, pedir_corrida
 from app.services.onedrive_sync import atualizar_dados_do_dia, atualizar_dados_recentes, importar_historico
 
 router = APIRouter()
@@ -44,3 +45,34 @@ def atualizar_historico(desde: Optional[date] = None, db: Session = Depends(get_
         return importar_historico(db, desde)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.post("/extratos/prontos")
+def extratos_prontos(dia: Optional[date] = None, db: Session = Depends(get_db)):
+    """Chamado pelo script que extrai os extratos da CGD, no fim de uma
+    extração bem sucedida - dispara o resto da cadeia, em vez de esperar
+    pelas horas fixas das tarefas agendadas:
+      1. pede o preencher_mapa (que já corre o atualizar_mapa_saldos por
+         dentro) - o agente do Windows lança-o, como o botão "Correr";
+      2. importa para a BD o dia e o anterior (a versão final de ontem
+         chega com a extração da manhã), para o dashboard ficar atualizado.
+    O envio do Mapa (enviar_mapa_smtp) não entra: fica à hora fixa, senão
+    saía um email por cada extração. `dia` por omissão = hoje (Lisboa)."""
+    dia = dia or datetime.now(FUSO_LOCAL).date()
+    resultado = {"dia": dia.isoformat()}
+    try:
+        resultado["preencher_mapa"] = pedir_corrida(db, "preencher_mapa")
+    except RuntimeError as e:
+        resultado["preencher_mapa"] = {"erro": str(e)}
+
+    sincronizacao = {"dias_com_movimentos_novos": [], "dias_com_saldos_novos": [], "dias_com_mapa_novo": [], "erros": []}
+    for d in (dia - timedelta(days=1), dia):
+        try:
+            r = atualizar_dados_do_dia(db, d)
+        except RuntimeError as e:
+            sincronizacao["erros"].append(f"{d.isoformat()}: {e}")
+            continue
+        for chave in sincronizacao:
+            sincronizacao[chave] += r[chave]
+    resultado["sincronizacao"] = sincronizacao
+    return resultado

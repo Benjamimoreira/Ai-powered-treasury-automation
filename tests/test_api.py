@@ -270,6 +270,32 @@ def test_correr_script_em_docker_grava_pedido_para_o_agente(client, monkeypatch)
     assert client.get("/monitorizacao/pedidos", params={"estado": "pendente"}).json()["pedidos"] == []
 
 
+def test_extratos_prontos_pede_preencher_mapa_e_sincroniza_dia_e_anterior(client, monkeypatch):
+    from app.routers import sync
+
+    monkeypatch.delenv("SCRIPTS_PREENCHIMENTO_RAIZ", raising=False)
+    monkeypatch.delenv("SCRIPTS_LOG_DIR", raising=False)
+    sincronizados = []
+
+    def sincronizar_falso(db, dia):
+        sincronizados.append(dia.isoformat())
+        return {"dias_com_movimentos_novos": [dia.isoformat()], "dias_com_saldos_novos": [],
+                "dias_com_mapa_novo": [], "erros": []}
+
+    monkeypatch.setattr(sync, "atualizar_dados_do_dia", sincronizar_falso)
+
+    resposta = client.post("/extratos/prontos", params={"dia": "2026-10-08"})
+
+    assert resposta.status_code == 200
+    corpo = resposta.json()
+    assert corpo["preencher_mapa"]["status"] == "pedido"
+    assert sincronizados == ["2026-10-07", "2026-10-08"]
+    assert corpo["sincronizacao"]["dias_com_movimentos_novos"] == ["2026-10-07", "2026-10-08"]
+    # o envio do Mapa não entra na cadeia (fica à hora fixa)
+    pendentes = client.get("/monitorizacao/pedidos", params={"estado": "pendente"}).json()["pedidos"]
+    assert [p["script"] for p in pendentes] == ["preencher_mapa"]
+
+
 def test_correr_script_desconhecido_da_404(client):
     assert client.post("/monitorizacao/scripts/avaliacao_online/correr").status_code == 404
     assert client.post("/monitorizacao/scripts/nao_existe/correr").status_code == 404

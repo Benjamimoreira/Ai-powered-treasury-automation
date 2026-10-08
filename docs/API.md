@@ -38,6 +38,7 @@ Todos são idempotentes: podem repetir-se sem duplicar nada.
 | POST | `/atualizar-dados?dias_atras=7` | ✏️📥 | Importa os últimos `dias_atras` dias + hoje: movimentos em falta, saldos alterados, folhas do Mapa novas. Devolve os dias com novidades e os erros por dia. |
 | POST | `/atualizar-dados/{dia}` | ✏️📥 | O mesmo para um dia qualquer. |
 | POST | `/atualizar-historico?desde=` | ✏️📥 | Todo o histórico da pasta de extratos (mensais + diários) desde `desde` (omissão: 1 de janeiro). Pode demorar minutos. |
+| POST | `/extratos/prontos?dia=` | ✏️📥 | Chamado pelo script de extração dos extratos da CGD no fim de uma extração: pede o `preencher_mapa` (que já corre o `atualizar_mapa_saldos`) ao agente do Windows e importa o dia e o anterior. O `enviar_mapa_smtp` fica à hora fixa. `dia` por omissão = hoje. |
 | POST | `/saldos/atualizar/{dia}` | ✏️📥 | Corpo `{"pasta_extratos": "<caminho>"}`. Lê os saldos de uma pasta concreta (uso de migração). |
 
 ## Reconciliação e auditoria
