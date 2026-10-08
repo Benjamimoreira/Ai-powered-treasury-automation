@@ -261,6 +261,10 @@ TOLERANCIA_COBERTURA_MIN_EUR = 5000
 
 
 DIAS_TEMPO_DE_VIDA = 365  # a linha é calculada para 1 ano, para o tempo de vida não depender do horizonte
+# Com uma média diária quase nula (ex. -0,000001 €/dia), a extrapolação dava
+# milhões de anos e o timedelta rebentava (OverflowError -> 500 no risco de
+# liquidez). Para lá de 100 anos conta como "não se esgota a este ritmo".
+MAX_DIAS_TEMPO_DE_VIDA = 36500
 
 
 def ritmo_atual(db: Session, empresa: Optional[str], historico: list, dias_futuros: list,
@@ -324,7 +328,8 @@ def ritmo_atual(db: Session, empresa: Optional[str], historico: list, dias_futur
         elif len(abaixo):
             n = int(abaixo[0]) + 1
             vida = {"dias": n, "dia": dias_ano[n - 1].isoformat()}
-        elif medio < 0:  # para lá de 1 ano: em linha reta com a média desse ano
+        elif medio < 0 and len(dias_ano) + (linha[-1] - limite) / -medio < MAX_DIAS_TEMPO_DE_VIDA:
+            # para lá de 1 ano: em linha reta com a média desse ano
             n = len(dias_ano) + int((linha[-1] - limite) // -medio) + 1
             vida = {"dias": n, "dia": (partida.dia + timedelta(days=n)).isoformat()}
         else:
