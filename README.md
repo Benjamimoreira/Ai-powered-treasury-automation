@@ -69,7 +69,7 @@ modelo de dados) · [API](docs/API.md) (endpoints HTTP e tools MCP) ·
 | **Decisão sem LLM primeiro** | Regras baratas antes do LLM (`app/services/resolucao_regras.py`): triagem pelo texto sem consultar nada, histórico só se preciso, LLM só para o que sobra. Decidem ~36 % dos casos reais com 99,7 % de precisão. |
 | **Governança** | Mapa do sistema face ao AI Act e ao RGPD (nível de risco, supervisão humana, registo de decisões, transferências, lacunas): [docs/GOVERNANCA_IA.md](docs/GOVERNANCA_IA.md). |
 | **Anomalias (ML)** | `IsolationForest` por empresa (scikit-learn) - assinala movimentos fora do padrão habitual da própria conta. |
-| **Previsão de saldos** | Saldo de hoje + fluxos conhecidos (rendas, recorrentes, Mapa com data futura), com banda de incerteza por simulação de dias reais e, à parte, os recebimentos marcados no índice comercial (sinal, reforços, escritura). Mesmo motor para o grupo (Forecast) e por empresa (Análise de Contas), com backtest contra "o saldo fica igual" (`/previsao/ancorada`, `app/services/previsao_ancorada.py`). |
+| **Previsão de saldos** | Saldo de hoje + fluxos conhecidos (rendas, recorrentes, Mapa com data futura), com banda de incerteza por simulação de dias reais e, à parte, os recebimentos marcados no índice comercial (sinal, reforços, escritura). Mesmo motor para o grupo (Predição) e por empresa (Análise de Contas), com backtest contra "o saldo fica igual" (`/previsao/ancorada`, `app/services/previsao_ancorada.py`). |
 | **Modelos de séries temporais** | 5 modelos por conta (regressão linear, média móvel, suavização exponencial, ARIMA, Markov-switching) e ensemble, ainda disponíveis na API (`/previsao/saldo`, `/previsao/cashflow`) - já não usados na dashboard: no backtest erravam mais do que "o saldo fica igual". |
 | **Saldos** | Lê saldos diretamente dos extratos, histórico por conta e total geral. |
 | **Sincronização** | Importa do OneDrive (só leitura) os dias ainda não existentes localmente - sob pedido (botão) ou script. |
@@ -97,7 +97,7 @@ app/
   services/                  # lógica de negócio (reutilizada por API, MCP e scripts)
   evals/                     # avaliação das sugestões do LLM + pseudonimização
 dashboard/
-  app.py                      # Streamlit (Visão Geral com o Assistente, Monitorização, Faturas, Saldos, Análise de Extratos, Forecast)
+  app.py                      # Streamlit (Visão Geral com o Assistente, Monitorização, Faturas, Saldos, Análise de Extratos, Predição)
   api_client.py                # cliente HTTP fino - o dashboard nunca acede à BD diretamente
 mcp_server.py                # servidor MCP (tools)
 scripts/                     # scripts de migração/importação únicos + testes manuais

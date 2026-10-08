@@ -345,7 +345,7 @@ def grafico_ranking_imputacoes(linhas: list, titulo: str):
     ).properties(height=altura, title=titulo)
 
 
-st.set_page_config(page_title="Forecast Financeiro & Tesouraria", page_icon="💶", layout="wide")
+st.set_page_config(page_title="Predição Financeira & Tesouraria", page_icon="💶", layout="wide")
 
 # Cabeçalho discreto de BI executivo: barra escura, título em branco, um
 # único traço vermelho fino como assinatura de marca - o vermelho fica
@@ -497,7 +497,7 @@ with col_botao:
     aba_visao_geral, aba_monitorizacao, aba_faturas, aba_saldos,
     aba_analise_extratos, aba_forecast,
 ) = st.tabs(
-    ["Visão Geral", "Monitorização", "Faturas", "Saldos", "Análise de Extratos", "Forecast"]
+    ["Visão Geral", "Monitorização", "Faturas", "Saldos", "Análise de Extratos", "Predição"]
 )
 
 @st.cache_data(ttl=3600, show_spinner="A correr o backtest da previsão...")
@@ -1384,7 +1384,7 @@ with aba_visao_geral:
         dia_vg = st.date_input("Dia", value=date.today(), key="dia_visao_geral", width=220)
         st.caption(
             "Extratos CGD do dia escolhido, o mês até esse dia e o saldo de todas as contas. "
-            "A previsão está no separador **Forecast**."
+            "A previsão está no separador **Predição**."
         )
     dia_vg_str = dia_vg.isoformat()
 
