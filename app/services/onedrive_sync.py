@@ -65,7 +65,7 @@ def pasta_extratos_do_dia(dia: date) -> str:
 
 def caminho_mapa(dia: date) -> str:
     return os.path.join(
-        _onedrive_raiz(), "CONTABILIDADE", "13- Mapa de Pagamentos e Recebimentos", str(dia.year),
+        _onedrive_raiz(), "CONTABILIDADE", "12- Mapa de Pagamentos e Recebimentos", str(dia.year),
         f"{dia.month:02d} - Mapa de Pagamentos  e Recebimentos de {MESES_NOME[dia.month]}.xlsx",
     )
 

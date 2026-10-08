@@ -113,7 +113,7 @@ Todas por caminho de ficheiro, sob `ONEDRIVE_RAIZ` (montado em `/onedrive`):
 |---|---|---|
 | Extratos diários CGD | `FINANCEIRO/03 - Extratos Bancários/Movimentos Diários/CGD/<MM_Mês>/<dd-mm-aaaa>/*.xlsx` | Um ficheiro por empresa: movimentos e, no topo, saldo contabilístico/disponível. |
 | Extratos mensais | mesma pasta, meses sem pastas diárias (jan–mar 2026) | Movimentos com data e "saldo após movimento" — só para o histórico (`/atualizar-historico`). |
-| Mapa de Pagamentos e Recebimentos | `CONTABILIDADE/13- Mapa de Pagamentos e Recebimentos/<ano>/<MM> - Mapa de Pagamentos  e Recebimentos de <Mês>.xlsx` | Uma folha por dia (`"21"`). Recebimentos nas colunas B–F, pagamentos em H–L. |
+| Mapa de Pagamentos e Recebimentos | `CONTABILIDADE/12- Mapa de Pagamentos e Recebimentos/<ano>/<MM> - Mapa de Pagamentos  e Recebimentos de <Mês>.xlsx` | Uma folha por dia (`"21"`). Recebimentos nas colunas B–F, pagamentos em H–L. |
 | Mapa de Rendas | `FINANCEIRO/04 - Mapa de Rendas - CPCV - Condomínios a receber/<ano>/<MM>_<ano>/Mapa de Rendas - <MM> <ano>.xlsx` (o do mês ou o mais recente até 12 meses antes) | Folha `RENDAS` — contratos para a previsão. |
 | Faturas | `FORNECEDORES_RAIZ` (`/fornecedores`) | PDFs servidos por `GET /faturas/recebidas/{id}/pdf`. Os metadados chegam por `POST /faturas/recebidas`. |
 | Índice comercial | `COMERCIAL_INDICE_PATH` (`/comercial/<nome>`) | CPCVs, escrituras e agenda de pagamentos de cada fração. |
