@@ -51,6 +51,12 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
         # python -m app.evals.avaliacao_online --horas 4, neste projeto),
         # por isso o botão "Correr" da dashboard não se aplica
     },
+    "sincronizar_onedrive": {
+        "descricao": "Sincronização automática com o OneDrive (extratos, saldos, Mapa) - só reporta quando há dados novos ou erros",
+        # não é HH:MM, por isso nunca conta como "atrasado"
+        "hora_execucao": "de 15 em 15 min (07h-21h)",
+        # sem "ficheiro": corre no container "sincronizador", não no Windows
+    },
     "enviar_mapa_smtp": {
         "descricao": "Envio diário do Mapa de Pagamentos e Recebimentos por email",
         "hora_execucao": "16:30",

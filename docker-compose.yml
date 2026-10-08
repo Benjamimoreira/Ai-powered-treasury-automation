@@ -77,6 +77,22 @@ services:
       - api
     restart: unless-stopped
 
+  # Sincronização automática com o OneDrive: o mesmo que o botão "Atualizar
+  # dados", de 15 em 15 min das 7h às 21h (ver app/sincronizador.py) - para
+  # o extrato provisório das 14:00 e o final da manhã seguinte entrarem sem
+  # ninguém carregar no botão. Mesma imagem da api; fala com ela pela rede.
+  sincronizador:
+    image: ${IMAGE_PREFIX:-ghcr.io/benjamimoreira/ai-powered-treasury-automation}/api:${IMAGE_TAG:-latest}
+    environment:
+      API_BASE_URL: http://api:8000
+      SYNC_INTERVALO_MINUTOS: ${SYNC_INTERVALO_MINUTOS:-15}
+      SYNC_HORA_INICIO: ${SYNC_HORA_INICIO:-7}
+      SYNC_HORA_FIM: ${SYNC_HORA_FIM:-21}
+    command: python -m app.sincronizador
+    depends_on:
+      - api
+    restart: unless-stopped
+
   # Tracing de LLMs (Arize Phoenix, open source): cada chamada ao LLM da api
   # fica registada com prompt, resposta, latência, tokens e custo estimado.
   # Um só container, e os traces não saem desta máquina (RGPD - ver

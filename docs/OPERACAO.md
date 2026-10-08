@@ -141,7 +141,7 @@ as tabelas que não conhece.
 | 16:30 | Enviar o Mapa por email | `enviar_mapa_smtp`, agendado. |
 | 10:00, 14:00, 18:00 | Avaliações online do Assistente | Agendador do Windows: `docker exec ai-powered-treasury-automation-api-1 python -m app.evals.avaliacao_online --horas 4` |
 | De hora a hora | Arquivo de logs | `log-archiver` (automático). |
-| Ao abrir a dashboard | Sincronizar | Botão **Atualizar dados** (últimos 7 dias). |
+| De 15 em 15 min, 07h-21h | Sincronizar com o OneDrive (últimos 7 dias) | Automático: serviço `sincronizador` (`app/sincronizador.py`). Na Monitorização só aparece quando traz dados novos ou dá erro. O botão **Atualizar dados** continua a funcionar para não esperar. |
 | Diário | Reconciliar e auditar | Dashboard: reconciliar o dia, **Auditar este dia**; resolver os casos em **Ambíguos**. |
 | Semanal (sugestão) | Rever a qualidade da IA | Monitorização › Qualidade da IA: fila "para rever", anotar; depois `python -m app.evals.promover_golden` e rever o diff de `evals/assistente.json` antes do commit. |
 | Sob pedido | OCR de faturas | `docker compose run --rm faturas-ocr` |

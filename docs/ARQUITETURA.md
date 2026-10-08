@@ -52,6 +52,7 @@ Princípios que atravessam todo o desenho:
 | `db` | `…/db` (Postgres 16 Alpine + pgvector 0.8.1, `docker/db/Dockerfile`) | interna 5432 | Base de dados. Volume `postgres_data`. |
 | `api` | `…/api` (`Dockerfile`) | 8000 | FastAPI. No arranque corre `criar_tabelas.py`, lança `indexar_embeddings.py` em segundo plano e sobe o uvicorn. |
 | `dashboard` | `…/api` (a mesma imagem) | 8501 | Streamlit. `API_BASE_URL=http://api:8000`. |
+| `sincronizador` | `…/api` (a mesma imagem) | - | `POST /atualizar-dados` de 15 em 15 min, 07h-21h (`app/sincronizador.py`; `SYNC_INTERVALO_MINUTOS`, `SYNC_HORA_INICIO`, `SYNC_HORA_FIM`). |
 | `phoenix` | `arizephoenix/phoenix:version-12.0.0` | 6006 | Traces dos LLMs (OpenTelemetry/OpenInference), datasets e experiências. Volume `phoenix_data`. |
 | `log-viewer` | `amir20/dozzle` | 8080 | Logs de todos os containers no browser. |
 | `scripts-log`, `scripts-log-faturas` | `busybox` | — | `tail -F` dos `.log` dos scripts que correm fora do Docker, para aparecerem no Dozzle. |
