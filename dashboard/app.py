@@ -35,7 +35,22 @@ LOCALE_PT = {
 
 @alt.theme.register("tesouraria_pt", enable=True)
 def _tema_pt():
-    return alt.theme.ThemeConfig({"config": {"locale": LOCALE_PT}})
+    # locale português + aspeto de relatório financeiro: mesma tipografia do
+    # dashboard, grelha discreta, sem moldura à volta do gráfico
+    letra, tinta, cinza, linha = "IBM Plex Sans", "#1b2433", "#5b6577", "#e6e9ef"
+    return alt.theme.ThemeConfig({"config": {
+        "locale": LOCALE_PT,
+        "font": letra,
+        "background": "#ffffff",
+        "view": {"stroke": "transparent"},
+        "axis": {"labelColor": cinza, "titleColor": tinta, "labelFont": letra, "titleFont": letra,
+                 "labelFontSize": 11, "titleFontSize": 11, "titleFontWeight": 600,
+                 "gridColor": linha, "domainColor": "#cfd5de", "tickColor": "#cfd5de"},
+        "axisX": {"grid": False},
+        "legend": {"labelColor": tinta, "titleColor": cinza, "labelFont": letra, "titleFont": letra,
+                   "titleFontWeight": 600, "labelFontSize": 11},
+        "title": {"color": "#0b1f3a", "font": letra, "fontSize": 14, "fontWeight": 600, "anchor": "start"},
+    }})
 
 # O Streamlit volta a correr o script INTEIRO (todos os separadores) a cada
 # interação - sem cache, mexer num slider ou num toggle voltava a pedir à
@@ -350,30 +365,29 @@ def grafico_ranking_imputacoes(linhas: list, titulo: str):
 
 st.set_page_config(page_title="Predição Financeira & Tesouraria", page_icon="💶", layout="wide")
 
-# Cabeçalho discreto de BI executivo: barra escura, título em branco, um
-# único traço vermelho fino como assinatura de marca - o vermelho fica
-# reservado a alertas no resto da interface (ver COR_ERRO,
-# COR_PAGAMENTOS_MES), não usado como cor de UI genérica.
+# Cabeçalho de relatório financeiro: faixa azul-marinho, título, data e a
+# hora da última atualização dos dados (GET /sync/estado), com o traço
+# vermelho VIDÓR por baixo.
+def _hora_ultima_atualizacao() -> str:
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        marca = api.estado_sincronizacao().get("atualizado_em")
+        return datetime.fromisoformat(marca.replace("Z", "+00:00")).astimezone(ZoneInfo("Europe/Lisbon")).strftime("%H:%M")
+    except Exception:
+        return "—"
+
+
 st.markdown(
     f"""
-    <div style="border-top:2px solid #2c3440;background:#1c1f26;
-                margin:-1rem -1rem 1.5rem -1rem;padding:20px 32px;
-                border-bottom:4px solid #c8102e;">
-      <div style="display:flex;align-items:baseline;justify-content:space-between;">
-        <div style="color:#8f97a3;font-size:0.78rem;font-weight:700;letter-spacing:.12em;">
-          VIDÓR
-        </div>
-        <div style="color:#8f97a3;font-size:0.78rem;font-weight:500;letter-spacing:.04em;">
-          {date.today().strftime('%d/%m/%Y')}
-        </div>
+    <div class="cabecalho-vidor">
+      <div class="cabecalho-linha">
+        <div class="cabecalho-marca">VIDÓR · TESOURARIA</div>
+        <div class="cabecalho-meta">{date.today().strftime('%d/%m/%Y')} &nbsp;·&nbsp; Dados atualizados às {_hora_ultima_atualizacao()}</div>
       </div>
-      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-top:6px;">
-        <div style="color:#ffffff;font-size:1.4rem;font-weight:700;letter-spacing:.01em;">
-          Plataforma de Análise de Tesouraria
-        </div>
-        <div style="color:#8f97a3;font-size:0.82rem;font-weight:500;letter-spacing:.03em;">
-          Dashboard financeiro consolidado
-        </div>
+      <div class="cabecalho-linha" style="margin-top:6px;">
+        <div class="cabecalho-titulo">Plataforma de Análise de Tesouraria</div>
+        <div class="cabecalho-sub">Análise financeira consolidada · liquidez, fluxos e previsão</div>
       </div>
     </div>
     """,
@@ -398,75 +412,96 @@ def _container_com_classe(*args, border=None, key=None, **kwargs):
 
 st.container = _container_com_classe
 
-# Acabamento em tons de vermelho VIDÓR (pedido explícito 09/10/2026): caixas
-# contornadas a vermelho e fundo rosado muito leve, títulos de caixa
-# e de secção em vermelho escuro, aba ativa e KPIs com o mesmo acento. Os
-# gráficos mantêm a paleta validada (CORES_IMPUTACAO etc.) - o vermelho é
-# da moldura, não dos dados.
+# Estilo de análise financeira (pedido explícito 09/10/2026): azul-marinho
+# como cor de estrutura, vermelho VIDÓR como acento (caixas contornadas a
+# vermelho com faixa no topo, aba ativa, títulos), números tabulares em
+# IBM Plex Sans para as colunas de valores alinharem. Os gráficos usam o
+# tema "tesouraria_pt" (mesma tipografia, grelha discreta) e mantêm a
+# paleta validada (CORES_IMPUTACAO etc.) - o vermelho é da moldura, não dos
+# dados.
 st.markdown(
     """
     <style>
-    :root { --vermelho: #c8102e; --vermelho-escuro: #8e0b20; --rosa: #fdf2f3; --rosa-borda: #f0cdd1; }
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+    :root {
+        --azul: #0b1f3a; --azul-2: #16325c; --tinta: #1b2433; --cinza: #5b6577;
+        --linha: #dfe3ea; --fundo-suave: #f7f8fa;
+        --vermelho: #c8102e; --vermelho-escuro: #8e0b20; --vermelho-linha: rgba(200, 16, 46, .45);
+    }
+    html, body, .stMarkdown, button, input, textarea, select, [data-testid="stWidgetLabel"] {
+        font-family: 'IBM Plex Sans', -apple-system, 'Segoe UI', sans-serif;
+    }
+    div[data-testid="stMetricValue"], [data-testid="stDataFrame"], .stMarkdown td, .stMarkdown code {
+        font-variant-numeric: tabular-nums;
+    }
 
+    /* cabeçalho */
+    .cabecalho-vidor {
+        background: linear-gradient(100deg, var(--azul) 0%, var(--azul-2) 100%);
+        margin: -1rem -1rem 1.6rem -1rem; padding: 18px 32px 16px 32px;
+        border-bottom: 4px solid var(--vermelho);
+    }
+    .cabecalho-linha { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .cabecalho-marca { color: #ffffff; font-size: .78rem; font-weight: 700; letter-spacing: .18em; }
+    .cabecalho-marca::before { content: ""; display: inline-block; width: 10px; height: 10px; background: var(--vermelho);
+                               margin-right: 8px; vertical-align: -1px; }
+    .cabecalho-meta, .cabecalho-sub { color: #aeb9cc; font-size: .8rem; font-weight: 500; letter-spacing: .03em; }
+    .cabecalho-titulo { color: #ffffff; font-size: 1.5rem; font-weight: 600; letter-spacing: .005em; }
+
+    /* caixas */
     [class*="st-key-caixa-"] {
-        border: 2px solid var(--vermelho) !important;
-        border-radius: 10px !important; background: linear-gradient(180deg, var(--rosa) 0, #ffffff 72px);
-        box-shadow: 0 1px 4px rgba(200, 16, 46, 0.10);
+        background: #ffffff; border: 1px solid var(--vermelho-linha) !important; border-top: 3px solid var(--vermelho) !important;
+        border-radius: 6px !important; box-shadow: 0 1px 2px rgba(11, 31, 58, .06), 0 4px 14px rgba(11, 31, 58, .04);
     }
     /* títulos de caixa: parágrafo só com um **negrito** (convenção do dashboard) */
     [class*="st-key-caixa-"] [data-testid="stMarkdownContainer"] > p:only-child > strong:only-child {
-        color: var(--vermelho-escuro); font-size: 1.08rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase;
+        color: var(--azul); font-size: 1.02rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+        display: block; padding-bottom: 8px; margin-bottom: 4px; border-bottom: 1px solid var(--linha);
     }
-    [data-testid="stExpander"] details { border-color: var(--rosa-borda) !important; }
-    [data-testid="stExpander"] summary { background: var(--rosa); border-radius: 8px; }
+    [data-testid="stCaptionContainer"] { color: var(--cinza); }
+    [data-testid="stExpander"] details { border-color: var(--linha) !important; border-radius: 6px; }
+    [data-testid="stExpander"] summary { background: var(--fundo-suave); border-radius: 6px; }
+    [data-testid="stExpander"] summary p { font-weight: 600; color: var(--tinta); }
     [data-testid="stExpander"] summary:hover p { color: var(--vermelho-escuro); }
 
-    /* flex-wrap: com 8 separadores em maiúsculas a lista deixa de caber
-       na largura do ecrã e o Streamlit faz scroll horizontal sem barra
-       visível - os últimos separadores ficavam escondidos. */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 4px; background: #ffffff; border-radius: 10px 10px 0 0;
-        border-bottom: 1px solid #e4e6ea; padding: 4px 8px 0 8px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        flex-wrap: wrap; overflow: visible;
+    /* separadores - Streamlit 1.65 (react-aria): role=tablist/tab/tabpanel.
+       flex-wrap: com muitos separadores em maiúsculas não cabiam e o
+       Streamlit fazia scroll horizontal sem barra visível. O sublinhado do
+       separador ativo é o do próprio Streamlit (cor primária = vermelho). */
+    .stTabs [role="tablist"] { flex-wrap: wrap; overflow: visible; gap: 6px; border-bottom: 1px solid var(--linha); }
+    .stTabs [role="tab"] { padding: 12px 14px 10px 14px; height: auto; }
+    .stTabs [role="tab"] p {
+        font-size: .95rem; font-weight: 700; color: var(--cinza); letter-spacing: .07em; text-transform: uppercase;
     }
-    .stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"] { display: none; }
-    .stTabs [data-baseweb="tab"] { height: auto; padding: 10px 14px; }
-    .stTabs [data-baseweb="tab"] p {
-        font-size: 1rem; font-weight: 800; color: #5c6370;
-        letter-spacing: .06em; text-transform: uppercase;
-    }
-    .stTabs [data-baseweb="tab"]:hover p { color: var(--vermelho-escuro); }
-    .stTabs [aria-selected="true"] { border-bottom: 3px solid var(--vermelho); background: var(--rosa); border-radius: 8px 8px 0 0; }
-    .stTabs [aria-selected="true"] p { color: var(--vermelho-escuro) !important; }
-    .stTabs [data-baseweb="tab-panel"] {
-        background: #ffffff; border: 1px solid #e4e6ea; border-top: 2px solid var(--vermelho);
-        border-radius: 0 0 10px 10px; padding: 28px 26px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }
-    /* separadores dentro de separadores: mais leves */
-    .stTabs .stTabs [data-baseweb="tab-list"] { box-shadow: none; border-bottom: 1px solid var(--rosa-borda); }
-    .stTabs .stTabs [data-baseweb="tab-panel"] { border: none; border-top: 1px solid var(--rosa-borda); box-shadow: none; padding: 20px 4px; }
+    .stTabs [role="tab"]:hover p { color: var(--azul); }
+    .stTabs [role="tab"][aria-selected="true"] p { color: var(--azul) !important; }
+    .stTabs > div > [role="tabpanel"], .stTabs [role="tabpanel"] { padding-top: 22px; }
+    /* separadores dentro de separadores: mais pequenos */
+    .stTabs .stTabs [role="tab"] p { font-size: .85rem; }
 
+    /* títulos de secção: azul-marinho com traço vermelho curto */
     h3 {
-        color: var(--vermelho-escuro); font-weight: 800; letter-spacing: .01em; font-size: 1.6rem !important;
-        margin: 1.8rem 0 1rem 0 !important; padding-bottom: 8px;
-        border-bottom: 2px solid var(--rosa-borda);
+        color: var(--azul); font-weight: 700; letter-spacing: .005em; font-size: 1.45rem !important;
+        margin: 1.8rem 0 1rem 0 !important; padding-bottom: 10px;
+        border-bottom: 1px solid var(--linha);
+        background: linear-gradient(var(--vermelho), var(--vermelho)) left bottom / 56px 3px no-repeat;
     }
 
+    /* KPIs em cartão */
     div[data-testid="stMetric"] {
-        background: var(--rosa); border: 1px solid var(--rosa-borda); border-left: 4px solid var(--vermelho);
-        border-radius: 8px; padding: 12px 16px;
+        background: #ffffff; border: 1px solid var(--linha); border-top: 3px solid var(--azul);
+        border-radius: 6px; padding: 12px 16px 10px 16px; box-shadow: 0 1px 2px rgba(11, 31, 58, .05);
     }
-    div[data-testid="stMetricLabel"] p { color: var(--vermelho-escuro); font-weight: 600; }
-    div[data-testid="stDataFrame"], div[data-testid="stExpander"] {
-        border-radius: 8px;
+    [data-testid="stMetricLabel"] p {
+        color: var(--cinza); font-size: .74rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
     }
+    div[data-testid="stMetricValue"] { color: var(--azul); font-weight: 700; font-size: 1.7rem; }
+    div[data-testid="stDataFrame"] { border: 1px solid var(--linha); border-radius: 6px; }
 
-    button[kind="primary"] { background: var(--vermelho); border-color: var(--vermelho); border-radius: 6px; font-weight: 600; }
+    button[kind="primary"] { background: var(--vermelho); border-color: var(--vermelho); border-radius: 4px; font-weight: 600; }
     button[kind="primary"]:hover { background: var(--vermelho-escuro); border-color: var(--vermelho-escuro); }
-    button[kind="secondary"] { border-radius: 6px; font-weight: 600; border-color: var(--rosa-borda); }
-    button[kind="secondary"]:hover { border-color: var(--vermelho); color: var(--vermelho-escuro); }
+    button[kind="secondary"] { border-radius: 4px; font-weight: 600; border-color: var(--linha); color: var(--tinta); }
+    button[kind="secondary"]:hover { border-color: var(--azul); color: var(--azul); }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1962,7 +1997,7 @@ if aba_monitorizacao.open:
                         )
                 else:
                     atrasados_mask = pd.Series(False, index=df_scripts.index)
-                df_scripts["ultima_execucao"] = df_scripts["ultima_execucao"].map(_hora_local)
+                df_scripts["ultima_execucao"] = df_scripts["ultima_execucao"].map(lambda v: _hora_local(v) if isinstance(v, str) and v else "—")
                 df_scripts["ultima_erro"] = df_scripts["ultima_erro"].fillna("")
                 st.dataframe(
                     df_scripts[["nome", "descricao", "hora_execucao", "status_badge", "ultima_execucao", "ultima_erro"]],
