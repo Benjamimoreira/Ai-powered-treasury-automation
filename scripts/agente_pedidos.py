@@ -35,9 +35,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 API_URL = os.environ.get("API_TESOURARIA_URL", "http://127.0.0.1:8000").rstrip("/")
-PASTA_SCRIPTS = Path(os.environ.get(
-    "SCRIPTS_PREENCHIMENTO_RAIZ",
-    Path.home() / "OneDrive - VIDÓR" / "Ambiente de Trabalho" / "tesouraria preenchimento",
+# Instalação feita pelo deploy do repositório dos scripts
+# (Treasury-Automation-PT2: deploy/instalar_maquina.ps1) - senão, a pasta do
+# OneDrive onde os scripts sempre viveram.
+PASTA_INSTALADA = Path(r"C:\Apps\tesouraria-preenchimento")
+PASTA_SCRIPTS = Path(os.environ.get("SCRIPTS_PREENCHIMENTO_RAIZ") or (
+    PASTA_INSTALADA if PASTA_INSTALADA.is_dir()
+    else Path.home() / "OneDrive - VIDÓR" / "Ambiente de Trabalho" / "tesouraria preenchimento"
 ))
 INTERVALO_SEGUNDOS = 15
 VALIDADE_PEDIDO = timedelta(minutes=15)
@@ -65,6 +69,18 @@ def _lancador(nome: str) -> str:
     return caminho
 
 
+def _executavel(lancador: str) -> list:
+    """O Python do .venv da pasta dos scripts, quando existe (é o que as
+    tarefas agendadas instaladas pelo deploy usam, com as dependências lá
+    dentro); senão o Python Launcher ("py -3"/"pyw -3"), como antes. No PC
+    novo o "py -3" apanhava uma versão sem as dependências."""
+    nome = "pythonw.exe" if lancador == "pyw" else "python.exe"
+    venv = PASTA_SCRIPTS / ".venv" / "Scripts" / nome
+    if venv.is_file():
+        return [str(venv)]
+    return [_lancador(lancador), "-3"]
+
+
 def _api(metodo: str, caminho: str, corpo=None):
     dados = json.dumps(corpo).encode() if corpo is not None else None
     pedido = urllib.request.Request(
@@ -89,7 +105,7 @@ def lancar(script: str) -> None:
         raise RuntimeError(f"Pasta dos scripts não encontrada: {PASTA_SCRIPTS}")
     lancador, argumentos = COMANDOS[script]
     subprocess.Popen(
-        [_lancador(lancador), "-3", *argumentos],
+        [*_executavel(lancador), *argumentos],
         cwd=PASTA_SCRIPTS,
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
     )

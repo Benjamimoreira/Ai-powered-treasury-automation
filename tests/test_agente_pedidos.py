@@ -47,3 +47,17 @@ def test_agente_marca_erro_quando_nao_consegue_lancar(monkeypatch):
     agente_pedidos.tratar_pendentes()
 
     assert marcados == [{"estado": "erro", "erro": "Pasta dos scripts não encontrada"}]
+
+
+def test_usa_o_python_do_venv_da_pasta_dos_scripts(tmp_path, monkeypatch):
+    monkeypatch.setattr(agente_pedidos, "PASTA_SCRIPTS", tmp_path)
+    monkeypatch.setattr(agente_pedidos, "_lancador", lambda nome: f"{nome}.exe")
+    # sem .venv: Python Launcher, como antes
+    assert agente_pedidos._executavel("pyw") == ["pyw.exe", "-3"]
+
+    scripts = tmp_path / ".venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "pythonw.exe").write_bytes(b"")
+    (scripts / "python.exe").write_bytes(b"")
+    assert agente_pedidos._executavel("pyw") == [str(scripts / "pythonw.exe")]
+    assert agente_pedidos._executavel("py") == [str(scripts / "python.exe")]
