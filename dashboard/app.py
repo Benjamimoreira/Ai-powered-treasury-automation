@@ -1721,6 +1721,9 @@ def _barra_deploy(deploy: dict) -> None:
         + (f" · terminado {_hora_local(deploy['terminado_em'])}" if deploy.get("terminado_em") else
            f" · última notícia {_hora_local(deploy['atualizado_em'])}")
     )
+    if deploy.get("erro"):
+        st.caption("Os erros do deploy aparecem também em ⚡ Erros em tempo real, 📜 Histórico de logs e "
+                   f"🔎 Detalhe por script (script `deploy_{deploy['alvo']}`).")
     if deploy.get("log"):
         with st.expander("Log do deploy"):
             st.code("\n".join(deploy["log"][-150:]), language=None)
@@ -1743,6 +1746,59 @@ def _progresso_deploys() -> None:
     for deploy in ultimos.values():
         st.markdown(f"**{deploy['descricao']}**")
         _barra_deploy(deploy)
+
+
+def _secao_discrepancias_saldos() -> None:
+    """Discrepâncias de saldos das empresas (problemas dos DADOS, não dos
+    scripts): o que o preencher_mapa/atualizar_mapa_saldos avisam sobre os
+    saldos, uma linha por (dia, empresa, tipo) com a última ocorrência - ver
+    app/services/discrepancias_saldos.py."""
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        dias = st.selectbox("Período", [3, 7, 14, 31], index=1, format_func=lambda d: f"Últimos {d} dias",
+                            key="dias_discrepancias_saldos", width=180)
+    try:
+        discrepancias = api.listar_discrepancias_saldos(dias)
+    except Exception as e:
+        st.warning(f"Não foi possível carregar as discrepâncias de saldos: {e}")
+        return
+    if not discrepancias:
+        st.success(f"Sem discrepâncias de saldos reportadas nos últimos {dias} dias.")
+        return
+    df = pd.DataFrame(discrepancias)
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        tipos = st.multiselect("Tipo", sorted(df["tipo"].unique()), key="tipos_discrepancias_saldos", width=520,
+                               placeholder="Todos os tipos")
+        empresas = st.multiselect("Empresa", sorted(df["empresa"].unique()), key="empresas_discrepancias_saldos",
+                                  width=420, placeholder="Todas as empresas")
+    if tipos:
+        df = df[df["tipo"].isin(tipos)]
+    if empresas:
+        df = df[df["empresa"].isin(empresas)]
+
+    with st.container(horizontal=True):
+        st.metric("Discrepâncias", len(df), border=True)
+        st.metric("Empresas afetadas", df["empresa"].nunique(), border=True)
+        com_valor = df["diferenca"].dropna()
+        if not com_valor.empty:
+            st.metric("Maior diferença", f"{_n(com_valor.abs().max(), 2)} €", border=True)
+
+    df = df.assign(
+        Dia=pd.to_datetime(df["dia"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("-"),
+        visto=df["visto_em"].map(_hora_local),
+    )
+    st.dataframe(
+        df[["Dia", "empresa", "tipo", "diferenca", "mensagem", "ocorrencias", "visto", "script"]],
+        width="stretch", hide_index=True,
+        column_config={
+            "empresa": st.column_config.TextColumn("Empresa"),
+            "tipo": st.column_config.TextColumn("Tipo"),
+            "diferenca": st.column_config.NumberColumn("Diferença", format="euro"),
+            "mensagem": st.column_config.TextColumn("Detalhe", width="large"),
+            "ocorrencias": st.column_config.NumberColumn("Vezes reportada", help="Corridas que reportaram isto"),
+            "visto": st.column_config.TextColumn("Última vez"),
+            "script": st.column_config.TextColumn("Reportado por"),
+        },
+    )
 
 
 def _seccao_destinatarios_mapa() -> None:
@@ -1933,20 +1989,23 @@ if aba_monitorizacao.open:
         _seccao_destinatarios_mapa()
         _seccao_deploy_scripts()
 
-        sep_tempo_real, sep_logs, sep_script, sep_auditoria, sep_ia = st.tabs(
-            ["⚡ Erros em tempo real", "📜 Histórico de logs", "🔎 Detalhe por script", "🧾 Auditoria", "🤖 Qualidade da IA"]
+        sep_tempo_real, sep_logs, sep_script, sep_saldos, sep_auditoria, sep_ia = st.tabs(
+            ["⚡ Erros em tempo real", "📜 Histórico de logs", "🔎 Detalhe por script",
+             "🏦 Discrepâncias de saldos", "🧾 Auditoria", "🤖 Qualidade da IA"]
         )
 
         with sep_tempo_real:
             with st.container(horizontal=True, vertical_alignment="center"):
                 st.caption(
-                    "Eventos [ERRO]/[AVISO] reportados assim que acontecem durante uma corrida "
-                    "ainda a decorrer - não é preciso esperar o script terminar para os ver aqui."
+                    "Eventos [ERRO]/[AVISO] dos scripts (e dos deploys), reportados assim que acontecem "
+                    "durante uma corrida ainda a decorrer - ou, para os scripts que só reportam no fim, "
+                    "tirados do log da corrida. As discrepâncias de saldos das empresas estão no "
+                    "separador 🏦 Discrepâncias de saldos."
                 )
                 if st.button("Atualizar", key="botao_atualizar_eventos_tempo_real"):
                     st.rerun()
             try:
-                eventos = api.listar_monitorizacao_eventos(limit=30).get("eventos", [])
+                eventos = api.listar_monitorizacao_eventos(limit=30, sem_saldos=True).get("eventos", [])
                 if eventos:
                     with st.container(height=420):
                         for evento in reversed(eventos):
@@ -2000,10 +2059,25 @@ if aba_monitorizacao.open:
                     else:
                         st.success("Sem erros na última execução.")
 
-                logs_filtrados = [
-                    item for item in logs_recentes_kpi
-                    if str(item.get("script", "")).lower() == script_escolhido.lower()
-                ]
+                # pedidos à API só deste script: com os 100 últimos de todos juntos,
+                # um script que corre pouco aparecia "sem execuções"
+                try:
+                    logs_filtrados = api.listar_monitorizacao_logs(limit=30, script=script_escolhido).get("logs", [])
+                except Exception:
+                    logs_filtrados = []
+                try:
+                    eventos_script = api.listar_monitorizacao_eventos(limit=40, script=script_escolhido).get("eventos", [])
+                except Exception:
+                    eventos_script = []
+                if eventos_script:
+                    with st.expander(f"Erros/avisos recentes deste script ({len(eventos_script)})"):
+                        with st.container(height=320):
+                            for evento in eventos_script:
+                                nivel = str(evento.get("nivel", "info")).lower()
+                                _linha_log(
+                                    evento.get("timestamp") or "-", script_escolhido, nivel,
+                                    evento.get("mensagem") or "Sem mensagem", COR_ERRO if nivel == "erro" else COR_AMBIGUOS,
+                                )
                 if logs_filtrados:
                     st.markdown("**Execuções registadas para este script**")
                     with st.container(height=480):
@@ -2017,6 +2091,9 @@ if aba_monitorizacao.open:
                                 _renderizar_detalhe_tarefas(item["detalhe"])
                 else:
                     st.info(f"O script '{script_escolhido}' ainda não tem execuções registadas.")
+
+        with sep_saldos:
+            _secao_discrepancias_saldos()
 
         with sep_auditoria:
             st.caption(

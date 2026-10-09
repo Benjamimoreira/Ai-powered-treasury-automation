@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.atualizacao_dados import sincronizar_apos_script
 from app.services.deploy_scripts import ALVOS_DEPLOY, listar_deploys, obter_deploy, pedir_deploy, registar_progresso
+from app.services.discrepancias_saldos import listar_discrepancias
 from app.services.destinatarios_mapa import adicionar_destinatario, listar_destinatarios, remover_destinatario
 from app.services.monitorizacao import (
     listar_eventos, listar_logs, listar_pedidos, listar_scripts, marcar_pedido, pedir_corrida, registar_evento,
@@ -167,8 +168,9 @@ def progresso_deploy_scripts(deploy_id: int, payload: DeployProgressoRequest, db
 
 
 @router.get("/logs")
-def listar_monitorizacao_logs(limit: int = 50, dia: Optional[date] = None, db: Session = Depends(get_db)):
-    return {"logs": listar_logs(db, limit=limit, dia=dia)}
+def listar_monitorizacao_logs(limit: int = 50, dia: Optional[date] = None, script: Optional[str] = None,
+                              db: Session = Depends(get_db)):
+    return {"logs": listar_logs(db, limit=limit, dia=dia, script=script)}
 
 
 @router.post("/scripts/{script}/eventos")
@@ -184,8 +186,18 @@ def registar_evento_script(script: str, payload: EventoScriptRequest, db: Sessio
 
 
 @router.get("/eventos")
-def listar_monitorizacao_eventos(limit: int = 50, script: Optional[str] = None, db: Session = Depends(get_db)):
-    return {"eventos": listar_eventos(db, limit=limit, script=script)}
+def listar_monitorizacao_eventos(limit: int = 50, script: Optional[str] = None, sem_saldos: bool = False,
+                                 db: Session = Depends(get_db)):
+    """sem_saldos=true: sem as discrepâncias de saldos das empresas (estão
+    em /discrepancias-saldos) - para os "Erros em tempo real" dos scripts."""
+    return {"eventos": listar_eventos(db, limit=limit, script=script, sem_saldos=sem_saldos)}
+
+
+@router.get("/discrepancias-saldos")
+def listar_discrepancias_saldos(dias: int = 14, db: Session = Depends(get_db)):
+    """Discrepâncias de saldos das empresas reportadas pelos scripts nos
+    últimos `dias`, uma por (dia, empresa, tipo) - ver discrepancias_saldos.py."""
+    return {"discrepancias": listar_discrepancias(db, dias=dias)}
 
 
 @router.get("/ia")

@@ -93,6 +93,14 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
         "hora_execucao": "08:20, 15:00",
         "tolerancia_minutos": 60,
     },
+    "deploy_scripts_cgd": {
+        "descricao": "Deploy dos exes da CGD a partir do dashboard (Monitorização > Deploy dos scripts)",
+        "hora_execucao": "a pedido (dashboard)",
+    },
+    "deploy_tesouraria_preenchimento": {
+        "descricao": "Deploy dos scripts da tesouraria a partir do dashboard (Monitorização > Deploy dos scripts)",
+        "hora_execucao": "a pedido (dashboard)",
+    },
     "preencher_resumo_mensal": {
         "descricao": "Preenchimento do Resumo Mensal CGD (09:00 completa o dia anterior)",
         "hora_execucao": "09:00, 16:30",
@@ -296,13 +304,19 @@ def marcar_pedido(db: Session, pedido_id: int, estado: str, erro: Optional[str] 
     pedido.estado = estado
     pedido.erro = erro
     pedido.iniciado_em = datetime.now(timezone.utc).replace(tzinfo=None)
+    if estado == "erro":
+        db.add(EventoScript(script=pedido.script, nivel="erro",
+                            mensagem=f"[ERRO] Botão Correr: o agente do Windows não lançou o script - {erro}"))
     db.commit()
     db.refresh(pedido)
     return _pedido_dict(pedido)
 
 
-def listar_logs(db: Session, limit: int = 50, dia: Optional[date] = None) -> List[Dict[str, Any]]:
+def listar_logs(db: Session, limit: int = 50, dia: Optional[date] = None,
+                script: Optional[str] = None) -> List[Dict[str, Any]]:
     query = db.query(ExecucaoScript)
+    if script:
+        query = query.filter(ExecucaoScript.script == script.strip().lower())
     if dia is not None:
         # timestamp é guardado em UTC "naive" (datetime.utcnow); converte a
         # fronteira do dia local (Europe/Lisbon) para UTC "naive" para poder
@@ -333,12 +347,38 @@ def listar_logs(db: Session, limit: int = 50, dia: Optional[date] = None) -> Lis
     return logs
 
 
+def _eventos_a_partir_do_log(db: Session, script: str, status: str, erro: Optional[str],
+                             log: List[str], duracao_segundos: Optional[float]) -> None:
+    """Todos os scripts aparecem nos "Erros em tempo real": os que não
+    reportam eventos durante a corrida (só o resultado no fim - ex.
+    extrair_faturas, sincronizador, verificacao_logs) ficam com eventos
+    feitos das linhas [ERRO]/[AVISO] do log e do erro final. Os que já os
+    enviaram durante esta corrida não são duplicados."""
+    inicio = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=(duracao_segundos or 0) + 120)
+    if db.query(EventoScript).filter(EventoScript.script == script, EventoScript.timestamp >= inicio).first():
+        return
+    linhas = []
+    for linha in log:
+        texto = str(linha)
+        if "[ERRO]" in texto:
+            linhas.append(("erro", texto))
+        elif "[AVISO]" in texto:
+            linhas.append(("aviso", texto))
+    if status == "erro" and erro and not any(erro in texto for _, texto in linhas):
+        linhas.append(("erro", f"[ERRO] {erro}"))
+    for nivel, texto in linhas[:50]:
+        db.add(EventoScript(script=script, nivel=nivel, mensagem=texto))
+    if linhas:
+        db.commit()
+
+
 def registar_execucao(db: Session, script: str, status: str, erro: Optional[str] = None, log: Optional[List[str]] = None, duracao_segundos: Optional[float] = None) -> Dict[str, Any]:
     nome = script.strip().lower()
     execucao = ExecucaoScript(script=nome, status=status, erro=erro, log=log or [], duracao_segundos=duracao_segundos)
     db.add(execucao)
     db.commit()
     db.refresh(execucao)
+    _eventos_a_partir_do_log(db, nome, status, erro, log or [], duracao_segundos)
 
     _logger_json.info("execucao_terminada", extra={
         "script": nome,
@@ -384,11 +424,28 @@ def registar_evento(db: Session, script: str, nivel: str, mensagem: str) -> Dict
     }
 
 
-def listar_eventos(db: Session, limit: int = 50, script: Optional[str] = None) -> List[Dict[str, Any]]:
+def listar_eventos(db: Session, limit: int = 50, script: Optional[str] = None,
+                   sem_saldos: bool = False) -> List[Dict[str, Any]]:
+    """sem_saldos=True deixa de fora as discrepâncias de saldos das
+    empresas (têm secção própria, ver discrepancias_saldos.py) - os "Erros
+    em tempo real" ficam só com erros dos scripts."""
+    from app.services.discrepancias_saldos import e_discrepancia_saldo
+
     query = db.query(EventoScript)
     if script:
         query = query.filter(EventoScript.script == script.strip().lower())
-    eventos = query.order_by(EventoScript.timestamp.desc()).limit(limit).all()
+    query = query.order_by(EventoScript.timestamp.desc())
+    if sem_saldos:
+        eventos = []
+        # as discrepâncias são a maioria dos eventos: lê em blocos até ter `limit`
+        for inicio in range(0, 50 * limit, 5 * limit):
+            bloco = query.offset(inicio).limit(5 * limit).all()
+            eventos += [e for e in bloco if not e_discrepancia_saldo(e.mensagem)]
+            if len(eventos) >= limit or len(bloco) < 5 * limit:
+                break
+        eventos = eventos[:limit]
+    else:
+        eventos = query.limit(limit).all()
     return [
         {
             "id": evento.id,

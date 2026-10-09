@@ -4,7 +4,44 @@ backend/frontend do roteiro)."""
 import os
 from typing import Optional
 
-import requests
+import requests as _requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+
+class _RequestsComRetentativas:
+    """requests.get/post/... com novas tentativas quando a API ainda não
+    aceita ligações (ex.: a reiniciar num deploy - "Connection refused"
+    aparecia no dashboard, 09/10/2026). Só repete erros de LIGAÇÃO: o pedido
+    nunca chegou à API, por isso repetir um POST é seguro. ~10 s no total."""
+
+    def __init__(self):
+        self._sessao = _requests.Session()
+        tentativas = Retry(total=None, connect=5, read=0, status=0, other=0,
+                           backoff_factor=0.6, allowed_methods=None, raise_on_status=False)
+        for prefixo in ("http://", "https://"):
+            self._sessao.mount(prefixo, HTTPAdapter(max_retries=tentativas))
+
+    def get(self, *args, **kwargs):
+        return self._sessao.get(*args, **kwargs)
+
+    def post(self, *args, **kwargs):
+        return self._sessao.post(*args, **kwargs)
+
+    def put(self, *args, **kwargs):
+        return self._sessao.put(*args, **kwargs)
+
+    def patch(self, *args, **kwargs):
+        return self._sessao.patch(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        return self._sessao.delete(*args, **kwargs)
+
+    def __getattr__(self, nome):  # requests.HTTPError, requests.exceptions, ...
+        return getattr(_requests, nome)
+
+
+requests = _RequestsComRetentativas()
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000")
 # URL que o BROWSER do utilizador consegue alcançar (não o container) -
@@ -361,21 +398,30 @@ def listar_deploys(limit: int = 10) -> list:
     return r.json()["deploys"]
 
 
-def listar_monitorizacao_logs(limit: int = 50, dia: str = None) -> dict:
+def listar_monitorizacao_logs(limit: int = 50, dia: str = None, script: Optional[str] = None) -> dict:
     params = {"limit": limit}
     if dia:
         params["dia"] = dia
+    if script:
+        params["script"] = script
     r = requests.get(f"{API_BASE_URL}/monitorizacao/logs", params=params)
     r.raise_for_status()
     return r.json()
 
 
-def listar_monitorizacao_eventos(limit: int = 50, script: Optional[str] = None) -> dict:
+def listar_discrepancias_saldos(dias: int = 14) -> list:
+    """Discrepâncias de saldos das empresas, uma por (dia, empresa, tipo)."""
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/discrepancias-saldos", params={"dias": dias}, timeout=30)
+    r.raise_for_status()
+    return r.json()["discrepancias"]
+
+
+def listar_monitorizacao_eventos(limit: int = 50, script: Optional[str] = None, sem_saldos: bool = False) -> dict:
     """Eventos de log reportados em tempo real, a meio de corridas ainda a
     decorrer (ver _HandlerEventoDashboard em monitorizacao_client.py) -
     diferente de listar_monitorizacao_logs(), que só tem o resultado final
     de corridas já terminadas."""
-    params = {"limit": limit}
+    params = {"limit": limit, "sem_saldos": sem_saldos}
     if script:
         params["script"] = script
     r = requests.get(f"{API_BASE_URL}/monitorizacao/eventos", params=params)

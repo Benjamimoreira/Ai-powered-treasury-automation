@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.db.models import DeployScripts
+from app.db.models import DeployScripts, EventoScript
 
 # O que se pode instalar - as chaves têm de existir em ALVOS de
 # scripts/deploy_windows.py (é lá que estão os passos).
@@ -115,6 +115,24 @@ def registar_progresso(db: Session, deploy_id: int, estado: str, passo: Optional
         deploy.terminado_em = deploy.atualizado_em
         if estado == "ok" and deploy.total_passos:
             deploy.passo = deploy.total_passos
+    # O deploy aparece também nos separadores da Monitorização como o
+    # script "deploy_<alvo>": [ERRO]/[AVISO] nos "Erros em tempo real" e o
+    # resultado no "Histórico de logs"/"Detalhe por script".
+    nome_script = f"deploy_{deploy.alvo}"
+    for linha in linhas or []:
+        nivel = "erro" if "[ERRO]" in linha else "aviso" if "[AVISO]" in linha else None
+        if nivel:
+            db.add(EventoScript(script=nome_script, nivel=nivel, mensagem=linha))
     db.commit()
     db.refresh(deploy)
+    if estado in ESTADOS_FINAIS:
+        from app.services.monitorizacao import registar_execucao
+
+        duracao = (deploy.terminado_em - deploy.pedido_em).total_seconds() if deploy.pedido_em else None
+        registar_execucao(
+            db, nome_script, "ok" if estado == "ok" else "erro",
+            erro=deploy.erro if estado == "erro" else None,
+            log=[deploy.mensagem or ""] + [l for l in (deploy.log or []) if l.startswith(("==", "[ERRO]", "[AVISO]"))][-40:],
+            duracao_segundos=duracao,
+        )
     return _deploy_dict(deploy)
