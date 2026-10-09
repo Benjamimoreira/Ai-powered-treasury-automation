@@ -21,6 +21,9 @@ services:
       - "8501:8501"
     environment:
       API_BASE_URL: ${API_PRODUCAO_URL:?define API_PRODUCAO_URL=http://<ip-do-pc-de-producao>:8000}
+      # links que o browser abre (PDFs, ficheiros): também a API do PC de produção
+      API_PUBLIC_URL: ${API_PRODUCAO_URL}
+      TZ: Europe/Lisbon
     env_file:
       - path: .env
         required: false
