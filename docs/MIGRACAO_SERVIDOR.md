@@ -75,9 +75,16 @@ A pasta `migracao` tem passwords (`.env`): apagar no fim.
    docker restart ai-powered-treasury-automation-api-1
    ```
 4. Scripts do Windows (`tesouraria preenchimento` + agente dos botões Correr):
-   - se correm na máquina nova (Windows): importar as tarefas
-     (`Register-ScheduledTask -TaskName <nome> -Xml (Get-Content <nome>.xml -Raw)`,
-     corrigir utilizador/caminhos no XML antes);
+   - se correm na máquina nova (Windows): importar as tarefas. Os XML trazem
+     o utilizador da máquina antiga (`WKS15\Benjamim` e o SID dele) e os
+     caminhos `C:\Users\Benjamim\...` - isto troca-os pelos desta máquina:
+     ```powershell
+     $eu = "$env:USERDOMAIN\$env:USERNAME"
+     Get-ChildItem "$env:OneDrive\migracao\*.xml" | ForEach-Object {
+         $xml = (Get-Content $_.FullName -Raw) -replace '<UserId>[^<]*</UserId>', "<UserId>$eu</UserId>" `
+                                               -replace 'C:\\Users\\Benjamim\\', "$env:USERPROFILE\"
+         Register-ScheduledTask -TaskName $_.BaseName -Xml $xml }
+     ```
    - se ficam noutro Windows: `setx API_TESOURARIA_URL "http://<ip-da-maquina-nova>:8000"`
      nesse Windows (os scripts e o agente reportam/leem pedidos a este endereço).
    - O script que extrai os extratos da CGD chama `POST /extratos/prontos` no
