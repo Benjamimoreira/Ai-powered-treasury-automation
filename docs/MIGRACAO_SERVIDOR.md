@@ -116,7 +116,7 @@ A pasta `migracao` tem passwords (`.env`): apagar no fim.
 | Dashboard | `http://<máquina>:8501` - saldos de hoje |
 | Sincronização | `docker logs ai-powered-treasury-automation-sincronizador-1` |
 | MCP + Ollama | uma pergunta ao Assistente (Visão Geral) |
-| Scripts do Windows | Monitorização › **▶ Correr preencher_mapa** passa a "lançado" em ~15 s |
+| Scripts do Windows | Monitorização › **▶ Atualizar Mapa Tesouraria** passa a "lançado" em ~15 s |
 | Traces / logs | `:6006` (Phoenix), `:8080` (Dozzle) |
 
 ## 6. Segurança

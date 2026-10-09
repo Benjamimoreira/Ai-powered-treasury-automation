@@ -152,9 +152,11 @@ da hora prevista sem execução registada.
 
 ### Botão Correr da Monitorização
 
-A Monitorização tem botões **▶ Correr** para `preencher_mapa` e
-`enviar_mapa_smtp` (sempre) e para qualquer script em erro/atrasado. O envio
-pede confirmação: manda o email a sério.
+A Monitorização tem sempre os botões **▶ Atualizar Mapa Tesouraria**
+(`preencher_mapa`), **▶ Enviar Mapa Tesouraria** (`enviar_mapa_smtp`) e
+**▶ Atualizar Mapa Saldos** (`atualizar_mapa_saldos`), e **▶ Correr <script>**
+para qualquer outro script em erro/atrasado. O envio pede confirmação: manda
+o email a sério.
 
 A API corre em Docker e os scripts no Windows, por isso o botão só grava um
 pedido (`POST /monitorizacao/scripts/{script}/correr`). Quem o lança é o

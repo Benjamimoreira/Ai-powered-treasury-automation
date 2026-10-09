@@ -1630,7 +1630,13 @@ def _linha_log(timestamp, titulo, nivel, mensagem, cor):
 
 # Scripts com botão "Correr" sempre visível na Monitorização (os outros só
 # aparecem quando estão em erro/atrasados).
-SCRIPTS_SEMPRE_CORRIVEIS = ["preencher_mapa", "enviar_mapa_smtp"]
+SCRIPTS_SEMPRE_CORRIVEIS = ["preencher_mapa", "enviar_mapa_smtp", "atualizar_mapa_saldos"]
+# Nome do botão (pedido explícito 09/10/2026); os outros mostram o nome do script.
+NOMES_BOTAO_CORRER = {
+    "preencher_mapa": "Atualizar Mapa Tesouraria",
+    "enviar_mapa_smtp": "Enviar Mapa Tesouraria",
+    "atualizar_mapa_saldos": "Atualizar Mapa Saldos",
+}
 ESTADO_PEDIDO = {"pendente": "⏳ à espera do agente do Windows", "iniciado": "▶ lançado", "erro": "❌ não lançado"}
 ESTADO_DEPLOY = {"pendente": "⏳ À espera do agente do Windows", "a_correr": "🔄 A instalar",
                  "ok": "✅ Concluído", "erro": "❌ Falhou"}
@@ -1743,7 +1749,7 @@ def _pedir_corrida(nome_script: str):
         st.error(f"Não foi possível pedir '{nome_script}': {e}")
         return
     if resposta.get("status") == "pedido":
-        st.success(f"Pedido para correr '{nome_script}' registado - o agente do Windows lança-o dentro de "
+        st.success(f"Pedido '{NOMES_BOTAO_CORRER.get(nome_script, nome_script)}' registado - o agente do Windows lança-o dentro de "
                    "~15 s. O estado em cima atualiza quando a corrida terminar.")
     else:
         st.success(f"Execução de '{nome_script}' iniciada. O estado atualiza quando terminar.")
@@ -1757,13 +1763,14 @@ def _botoes_correr_scripts(nomes: list):
     st.caption("Correr agora (no Windows, como a tarefa agendada):")
     with st.container(horizontal=True):
         for nome_script in nomes:
+            rotulo = f"▶ {NOMES_BOTAO_CORRER.get(nome_script, f'Correr {nome_script}')}"
             if nome_script == "enviar_mapa_smtp":
-                with st.popover(f"▶ Correr {nome_script}"):
+                with st.popover(rotulo):
                     st.markdown("Isto **envia o Mapa por email** agora, aos destinatários da caixa "
                                 "\"Destinatários do Mapa\" (mais abaixo).")
                     if st.button("Enviar agora", key=f"botao_correr_{nome_script}", type="primary"):
                         _pedir_corrida(nome_script)
-            elif st.button(f"▶ Correr {nome_script}", key=f"botao_correr_{nome_script}"):
+            elif st.button(rotulo, key=f"botao_correr_{nome_script}"):
                 _pedir_corrida(nome_script)
 
     try:
@@ -1774,7 +1781,8 @@ def _botoes_correr_scripts(nomes: list):
     for pedido in pedidos:  # mais recentes primeiro
         ultimos.setdefault(pedido["script"], pedido)
     linhas = [
-        f"`{p['script']}` pedido {_hora_local(p['pedido_em'])}: {ESTADO_PEDIDO.get(p['estado'], p['estado'])}"
+        f"{NOMES_BOTAO_CORRER.get(p['script'], p['script'])} pedido {_hora_local(p['pedido_em'])}: "
+        f"{ESTADO_PEDIDO.get(p['estado'], p['estado'])}"
         + (f" ({_hora_local(p['iniciado_em'])})" if p.get("iniciado_em") and p["estado"] == "iniciado" else "")
         + (f" - {p['erro']}" if p.get("erro") else "")
         for p in ultimos.values() if p["script"] in nomes
