@@ -18,12 +18,20 @@ O projeto já está preparado para Windows **e** Linux:
 ## 1. Máquina antiga: preparar
 
 ```powershell
-mkdir "$env:OneDrive\migracao"
-# base de dados
-docker exec ai-powered-treasury-automation-db-1 pg_dump -U tesouraria -Fc tesouraria > "$env:OneDrive\migracao\tesouraria.dump"
-# tarefas agendadas (Tesouraria - ..., incluindo o agente dos botões Correr)
-Get-ScheduledTask -TaskName "Tesouraria*" | ForEach-Object {
-    Export-ScheduledTask -TaskName $_.TaskName | Out-File "$env:OneDrive\migracao\$($_.TaskName).xml" }
+$m = "$env:OneDrive\migracao"; mkdir "$m\volumes" -Force
+$p = "ai-powered-treasury-automation"
+# base de dados (dump no container + docker cp: ">" no PowerShell corrompe binários)
+docker exec "$p-db-1" pg_dump -U tesouraria -Fc -f /tmp/tesouraria.dump tesouraria
+docker cp "$p-db-1:/tmp/tesouraria.dump" "$m\tesouraria.dump"
+# volumes com dados que não estão na BD (OCR das faturas, logs, Phoenix - parado durante a cópia)
+foreach ($v in "faturas_extraidas","logs","logs_archive") {
+    docker run --rm -v "${p}_${v}:/v:ro" -v "$m\volumes:/b" alpine tar czf "/b/$v.tar.gz" -C /v . }
+docker stop "$p-phoenix-1"
+docker run --rm -v "${p}_phoenix_data:/v:ro" -v "$m\volumes:/b" alpine tar czf /b/phoenix_data.tar.gz -C /v .
+docker start "$p-phoenix-1"
+# tarefas agendadas (Tesouraria - ..., agente dos botões Correr, recolha de faturas)
+Get-ScheduledTask | Where-Object { $_.TaskName -like "Tesouraria*" -or $_.TaskName -eq "Faturas Recebidas - Recolha Horaria" } | ForEach-Object {
+    Export-ScheduledTask -TaskName $_.TaskName | Out-File -Encoding utf8 "$m\$($_.TaskName).xml" }
 # .env de produção (está na pasta de trabalho do runner)
 copy C:\actions-runner\_work\Ai-powered-treasury-automation\Ai-powered-treasury-automation\.env "$env:OneDrive\migracao\.env"
 ```
@@ -74,6 +82,16 @@ A pasta `migracao` tem passwords (`.env`): apagar no fim.
    docker exec ai-powered-treasury-automation-db-1 pg_restore -U tesouraria -d tesouraria --clean --if-exists /tmp/tesouraria.dump
    docker restart ai-powered-treasury-automation-api-1
    ```
+   E os volumes (com os serviços que os usam parados):
+   ```powershell
+   $m = "$env:OneDrive\migracao"; $p = "ai-powered-treasury-automation"
+   docker stop "$p-phoenix-1" "$p-log-archiver-1"
+   foreach ($v in "faturas_extraidas","logs_archive","phoenix_data") {
+       docker run --rm -v "${p}_${v}:/v" -v "$m\volumes:/b:ro" alpine tar xzf "/b/$v.tar.gz" -C /v }
+   docker start "$p-phoenix-1" "$p-log-archiver-1"
+   ```
+   Números para comparar com a máquina antiga (dump de 09/10/2026):
+   5 532 movimentos, 3 070 linhas do Mapa, 5 205 saldos, 204 faturas.
 4. Scripts do Windows (`tesouraria preenchimento` + agente dos botões Correr):
    - se correm na máquina nova (Windows): importar as tarefas. Os XML trazem
      o utilizador da máquina antiga (`WKS15\Benjamim` e o SID dele) e os
