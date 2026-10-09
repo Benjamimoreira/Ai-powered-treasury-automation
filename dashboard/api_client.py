@@ -308,6 +308,26 @@ def listar_pedidos_corrida(limit: int = 20) -> dict:
     return r.json()
 
 
+def listar_alvos_deploy() -> list:
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/deploys/alvos", timeout=10)
+    r.raise_for_status()
+    return r.json()["alvos"]
+
+
+def pedir_deploy(alvo: str) -> dict:
+    """Botão "Deploy": o agente do Windows corre-o e reporta o progresso."""
+    r = requests.post(f"{API_BASE_URL}/monitorizacao/deploys", json={"alvo": alvo}, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+def listar_deploys(limit: int = 10) -> list:
+    """Deploys dos scripts, mais recentes primeiro (com passo/total_passos)."""
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/deploys", params={"limit": limit}, timeout=10)
+    r.raise_for_status()
+    return r.json()["deploys"]
+
+
 def listar_monitorizacao_logs(limit: int = 50, dia: str = None) -> dict:
     params = {"limit": limit}
     if dia:

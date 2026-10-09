@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.services.deploy_scripts import ALVOS_DEPLOY, listar_deploys, obter_deploy, pedir_deploy, registar_progresso
 from app.services.monitorizacao import (
     listar_eventos, listar_logs, listar_pedidos, listar_scripts, marcar_pedido, pedir_corrida, registar_evento,
     registar_execucao,
@@ -30,6 +31,19 @@ class PedidoCorridaEstadoRequest(BaseModel):
 class EventoScriptRequest(BaseModel):
     nivel: str = Field(..., description="erro|aviso|info")
     mensagem: str
+
+
+class DeployRequest(BaseModel):
+    alvo: str = Field(..., description="|".join(ALVOS_DEPLOY))
+
+
+class DeployProgressoRequest(BaseModel):
+    estado: str = Field(..., pattern="^(a_correr|ok|erro)$")
+    passo: Optional[int] = Field(None, ge=0)
+    total_passos: Optional[int] = Field(None, ge=0)
+    mensagem: Optional[str] = None
+    erro: Optional[str] = None
+    linhas: Optional[List[str]] = None
 
 
 @router.get("/scripts")
@@ -75,6 +89,49 @@ def marcar_pedido_corrida(pedido_id: int, payload: PedidoCorridaEstadoRequest, d
     if pedido is None:
         raise HTTPException(status_code=409, detail="Pedido inexistente ou já tratado")
     return pedido
+
+
+@router.get("/deploys/alvos")
+def listar_alvos_deploy():
+    return {"alvos": [{"alvo": alvo, "descricao": descricao} for alvo, descricao in ALVOS_DEPLOY.items()]}
+
+
+@router.post("/deploys")
+def pedir_deploy_scripts(payload: DeployRequest, db: Session = Depends(get_db)):
+    """Botão "Deploy" do dashboard: grava o pedido para o agente do Windows
+    (scripts/agente_pedidos.py) o correr. Se já há um pendente/a correr
+    para o mesmo alvo, devolve esse."""
+    try:
+        return pedir_deploy(db, payload.alvo)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/deploys")
+def listar_deploys_scripts(estado: Optional[str] = None, limit: int = 10, db: Session = Depends(get_db)):
+    """Deploys mais recentes primeiro - o agente lê os pendentes
+    (estado=pendente) e o dashboard mostra o progresso."""
+    return {"deploys": listar_deploys(db, estado=estado, limit=limit)}
+
+
+@router.get("/deploys/{deploy_id}")
+def obter_deploy_scripts(deploy_id: int, db: Session = Depends(get_db)):
+    deploy = obter_deploy(db, deploy_id)
+    if deploy is None:
+        raise HTTPException(status_code=404, detail="Deploy inexistente")
+    return deploy
+
+
+@router.post("/deploys/{deploy_id}/progresso")
+def progresso_deploy_scripts(deploy_id: int, payload: DeployProgressoRequest, db: Session = Depends(get_db)):
+    """O agente do Windows reporta cada passo. 409 se o deploy não existe ou
+    já terminou."""
+    deploy = registar_progresso(db, deploy_id, payload.estado, passo=payload.passo,
+                                total_passos=payload.total_passos, mensagem=payload.mensagem,
+                                erro=payload.erro, linhas=payload.linhas)
+    if deploy is None:
+        raise HTTPException(status_code=409, detail="Deploy inexistente ou já terminado")
+    return deploy
 
 
 @router.get("/logs")

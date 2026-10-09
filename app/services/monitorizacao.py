@@ -62,6 +62,32 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
         "hora_execucao": "16:30",
         "ficheiro": "enviar_mapa_smtp.py",
     },
+    # Scripts CGD (projeto script-extratos): exes PyInstaller em
+    # Desktop\Programas\Scripts CGD, lançados pelas tarefas agendadas do
+    # Windows; reportam via monitorizacao_cgd.py. Sem "ficheiro": não há
+    # botão "Correr" (o banco só aceita uma sessão por utilizador e o exe
+    # anual fica aberto com agendador próprio). Uma extração da CGD demora
+    # bem mais que TOLERANCIA_ATRASO_MINUTOS, daí "tolerancia_minutos".
+    "extratos_cgd": {
+        "descricao": "Extratos CGD do mês corrente (MovimentosCGD.exe, tarefa \"Extratos CGD\")",
+        "hora_execucao": "08:00",
+        "tolerancia_minutos": 60,
+    },
+    "extratos_cgd_noite": {
+        "descricao": "Extratos CGD do mês corrente, 2.ª corrida (tarefa \"Extratos CGD (Noite)\")",
+        "hora_execucao": "15:15",
+        "tolerancia_minutos": 60,
+    },
+    "extratos_cgd_anual": {
+        "descricao": "Extratos CGD do ano corrente (MovimentosCGD.exe --anual, agendador interno)",
+        "hora_execucao": "00:00, 12:00",
+        "tolerancia_minutos": 120,
+    },
+    "preencher_resumo_mensal": {
+        "descricao": "Preenchimento do Resumo Mensal CGD (09:00 completa o dia anterior)",
+        "hora_execucao": "09:00, 16:30",
+        "tolerancia_minutos": 30,
+    },
 }
 
 
@@ -87,7 +113,8 @@ def _horas_esperadas_hoje(hora_execucao: str) -> List[Any]:
     return horas
 
 
-def _verificar_atraso(hora_execucao: str, ultima_execucao_iso: Optional[str], agora: Optional[datetime] = None) -> Dict[str, Any]:
+def _verificar_atraso(hora_execucao: str, ultima_execucao_iso: Optional[str], agora: Optional[datetime] = None,
+                      tolerancia_minutos: int = TOLERANCIA_ATRASO_MINUTOS) -> Dict[str, Any]:
     """Compara os horários esperados (hora_execucao) com a última execução
     conhecida e sinaliza "atrasado" quando algum horário de hoje já devia
     ter corrido - com TOLERANCIA_ATRASO_MINUTOS de folga, para não acusar
@@ -98,7 +125,7 @@ def _verificar_atraso(hora_execucao: str, ultima_execucao_iso: Optional[str], ag
     próximo horário ainda não chegou não é "atrasado" só por a última
     execução ter sido ontem."""
     agora = agora or datetime.now(FUSO_LOCAL)
-    limite = agora - timedelta(minutes=TOLERANCIA_ATRASO_MINUTOS)
+    limite = agora - timedelta(minutes=tolerancia_minutos)
 
     horas_devidas_hoje = [
         datetime.combine(agora.date(), datetime.min.time(), tzinfo=FUSO_LOCAL).replace(hour=h, minute=m)
@@ -136,11 +163,16 @@ def listar_scripts(db: Session) -> List[Dict[str, Any]]:
             .first()
         )
         ultima_execucao_iso = _isoformat(ultima.timestamp) if ultima else None
-        atraso = _verificar_atraso(hora_execucao, ultima_execucao_iso)
+        atraso = _verificar_atraso(
+            hora_execucao, ultima_execucao_iso,
+            tolerancia_minutos=info.get("tolerancia_minutos", TOLERANCIA_ATRASO_MINUTOS),
+        )
         resultado.append({
             "nome": nome,
             "descricao": info.get("descricao", f"Script {nome}"),
             "hora_execucao": hora_execucao,
+            # só estes têm botão "Correr" (pedir_corrida recusa os outros)
+            "corrivel": "ficheiro" in info,
             "status": ultima.status if ultima else "ok",
             "ultima_execucao": ultima_execucao_iso,
             "ultima_erro": ultima.erro if ultima else None,

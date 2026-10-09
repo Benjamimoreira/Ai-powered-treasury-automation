@@ -1632,6 +1632,76 @@ def _linha_log(timestamp, titulo, nivel, mensagem, cor):
 # aparecem quando estão em erro/atrasados).
 SCRIPTS_SEMPRE_CORRIVEIS = ["preencher_mapa", "enviar_mapa_smtp"]
 ESTADO_PEDIDO = {"pendente": "⏳ à espera do agente do Windows", "iniciado": "▶ lançado", "erro": "❌ não lançado"}
+ESTADO_DEPLOY = {"pendente": "⏳ À espera do agente do Windows", "a_correr": "🔄 A instalar",
+                 "ok": "✅ Concluído", "erro": "❌ Falhou"}
+
+
+def _barra_deploy(deploy: dict) -> None:
+    total = deploy.get("total_passos") or 0
+    passo = deploy.get("passo") or 0
+    fracao = 1.0 if deploy["estado"] == "ok" else (passo / total if total else 0.0)
+    texto = f"{ESTADO_DEPLOY.get(deploy['estado'], deploy['estado'])} · {deploy.get('mensagem') or ''}"
+    st.progress(min(max(fracao, 0.0), 1.0), text=texto)
+    if deploy.get("erro"):
+        st.error(deploy["erro"])
+    st.caption(
+        f"Pedido {_hora_local(deploy['pedido_em'])}"
+        + (f" · terminado {_hora_local(deploy['terminado_em'])}" if deploy.get("terminado_em") else
+           f" · última notícia {_hora_local(deploy['atualizado_em'])}")
+    )
+    if deploy.get("log"):
+        with st.expander("Log do deploy"):
+            st.code("\n".join(deploy["log"][-150:]), language=None)
+
+
+@st.fragment(run_every=3)
+def _progresso_deploys() -> None:
+    """Atualiza sozinho de 3 em 3 s (só este bloco, não a página toda),
+    para a barra andar enquanto o agente do Windows instala."""
+    try:
+        deploys = api.listar_deploys(limit=10)
+    except Exception as e:
+        st.warning(f"Não foi possível carregar os deploys: {e}")
+        return
+    ultimos = {}
+    for deploy in deploys:  # mais recentes primeiro
+        ultimos.setdefault(deploy["alvo"], deploy)
+    if not ultimos:
+        st.caption("Ainda não houve deploys a partir do dashboard.")
+    for deploy in ultimos.values():
+        st.markdown(f"**{deploy['descricao']}**")
+        _barra_deploy(deploy)
+
+
+def _seccao_deploy_scripts() -> None:
+    """Deploy dos scripts do Windows (máquina de produção) a partir do
+    dashboard, que pode estar noutra máquina: a API grava o pedido e o agente
+    do Windows (scripts/agente_pedidos.py) corre os passos de
+    scripts/deploy_windows.py, reportando cada um para a barra."""
+    with st.container(border=True):
+        st.markdown("**Deploy dos scripts do Windows**")
+        try:
+            alvos = api.listar_alvos_deploy()
+        except Exception as e:
+            st.warning(f"Não foi possível carregar os alvos de deploy: {e}")
+            return
+        descricoes = {a["alvo"]: a["descricao"] for a in alvos}
+        with st.container(horizontal=True, vertical_alignment="bottom"):
+            alvo = st.selectbox("O que instalar", list(descricoes), format_func=descricoes.get,
+                                key="alvo_deploy_scripts", width=480)
+            with st.popover("🚀 Deploy"):
+                st.markdown(
+                    f"Instala **{descricoes[alvo]}** na máquina de produção. Os scripts CGD só são "
+                    "trocados quando nenhuma extração está a usar o banco, e a extração anual é "
+                    "reiniciada no fim."
+                )
+                if st.button("Fazer deploy agora", key="botao_confirmar_deploy", type="primary"):
+                    try:
+                        api.pedir_deploy(alvo)
+                        st.success("Deploy pedido - o agente do Windows começa dentro de ~15 s.")
+                    except Exception as e:
+                        st.error(f"Não foi possível pedir o deploy: {e}")
+        _progresso_deploys()
 
 
 def _pedir_corrida(nome_script: str):
@@ -1745,10 +1815,15 @@ if aba_monitorizacao.open:
                     },
                 )
 
-                scripts_em_falha = df_scripts.loc[(df_scripts["status"] == "erro") | atrasados_mask, "nome"].tolist()
+                # Scripts sem botão "Correr" (ex.: os da CGD, avaliacao_online)
+                # não entram - a API recusaria o pedido.
+                corriveis_mask = df_scripts["corrivel"].fillna(True).astype(bool) if "corrivel" in df_scripts.columns else True
+                scripts_em_falha = df_scripts.loc[((df_scripts["status"] == "erro") | atrasados_mask) & corriveis_mask, "nome"].tolist()
                 _botoes_correr_scripts(SCRIPTS_SEMPRE_CORRIVEIS + [s for s in scripts_em_falha if s not in SCRIPTS_SEMPRE_CORRIVEIS])
             else:
                 st.info("Sem dados de execução dos scripts.")
+
+        _seccao_deploy_scripts()
 
         sep_tempo_real, sep_logs, sep_script, sep_auditoria, sep_ia = st.tabs(
             ["⚡ Erros em tempo real", "📜 Histórico de logs", "🔎 Detalhe por script", "🧾 Auditoria", "🤖 Qualidade da IA"]

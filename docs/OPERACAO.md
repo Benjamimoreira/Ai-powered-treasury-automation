@@ -164,21 +164,67 @@ os pedidos pendentes e lança o script como a tarefa agendada o lança
 hoje). Pedidos com mais de 15 minutos não correm (ficam "não lançado"). O log
 do agente fica em `logs/agente_pedidos.log`.
 
-Instalar o agente (uma vez, como tarefa agendada ao iniciar sessão):
+Instalar o agente (uma vez, como tarefa agendada ao iniciar sessão, numa
+consola PowerShell **como administrador**). `-RunLevel Highest` é preciso para
+o deploy dos scripts CGD, que param e reiniciam exes que correm elevados:
 
 ```powershell
-$pasta = "C:\Users\Benjamim\OneDrive - VIDÓR\Ficheiros de Helpdesk VIDÓR - api-tesouraria"
-$acao = New-ScheduledTaskAction -Execute "$env:LOCALAPPDATA\Programs\Python\Launcher\pyw.exe" `
+$pasta = "C:\tesouraria"   # o clone deste repositório na máquina de produção
+$acao = New-ScheduledTaskAction -Execute (Get-Command pyw).Source `
     -Argument '-3 "scripts\agente_pedidos.py"' -WorkingDirectory $pasta
 $definicoes = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-Register-ScheduledTask -TaskName "Tesouraria - Agente pedidos Correr" -Action $acao `
-    -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME) -Settings $definicoes
+$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
+Register-ScheduledTask -TaskName "Tesouraria - Agente pedidos Correr" -Action $acao -Principal $principal `
+    -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME) -Settings $definicoes -Force
 Start-ScheduledTask -TaskName "Tesouraria - Agente pedidos Correr"
 ```
 
 Se o pedido fica em "⏳ à espera do agente do Windows", o agente não está a
 correr: `Get-ScheduledTask "Tesouraria - Agente pedidos Correr"`.
+
+### Deploy dos scripts (Monitorização)
+
+Monitorização › **Deploy dos scripts do Windows** › escolher o alvo ›
+**🚀 Deploy**. Como o botão Correr, a API só grava o pedido
+(`POST /monitorizacao/deploys`); o agente do Windows corre os passos de
+`scripts/deploy_windows.py` numa thread e reporta cada um
+(`POST /monitorizacao/deploys/{id}/progresso`). A barra atualiza sozinha
+de 3 em 3 s, com o log de cada passo por baixo.
+
+| Alvo | Passos |
+|---|---|
+| `scripts_cgd` | `py_compile` de `Desktop\Code\script-extratos` · PyInstaller de cada `.spec` (MovimentosCGD, MovimentosDiaAtualCGD, MovimentosDiariosCGD, MovimentosEscolherDiaCGD, PreencherResumoMensalCGD) · espera pelo lock do banco (`bloqueio_sessao.py` - nenhuma extração é cortada a meio) · pára os exes abertos · instala em `Desktop\Programas\Scripts CGD` (o anterior fica `.bak_AAAAMMDD_HHMMSS`) · `schtasks /Run "Extratos CGD (Anual)"` |
+| `tesouraria_preenchimento` | o mesmo que o deploy do GitHub Actions do Treasury-Automation-PT2: `git pull` em `C:\Apps\pt2-instalador` · testes · `robocopy /MIR` para `C:\Apps\tesouraria-preenchimento` · dependências |
+
+Os `.spec` dos exes CGD não estão no git, por isso o deploy compila a partir
+da pasta de desenvolvimento (o que lá estiver gravado). Pastas e Python
+podem mudar-se com `SCRIPTS_CGD_RAIZ`, `SCRIPTS_CGD_INSTALACAO`,
+`SCRIPTS_CGD_PYTHON` e `SCRIPTS_PT2_REPO` no ambiente do agente.
+
+Um deploy pedido fica "⏳ À espera do agente do Windows" até o agente o
+apanhar (~15 s); com mais de 30 min sem o agente o ver, fica "Falhou"
+(expirado). Só corre um de cada vez. "Não foi possível parar ... (corre
+como administrador)" = o agente não foi instalado com `-RunLevel Highest`.
+
+### Dashboard no servidor
+
+O servidor só corre o dashboard (`docker-compose.dashboard.yml`); a produção
+continua neste PC. No servidor:
+
+```bash
+echo "API_PRODUCAO_URL=http://<ip-do-pc-de-producao>:8000" > .env
+docker compose -f docker-compose.dashboard.yml pull
+docker compose -f docker-compose.dashboard.yml up -d
+```
+
+No PC de produção, abrir a porta 8000 só para o servidor (a API não tem
+autenticação - ver secção 10):
+
+```powershell
+New-NetFirewallRule -DisplayName "API tesouraria (servidor)" -Direction Inbound -Protocol TCP `
+    -LocalPort 8000 -RemoteAddress <ip-do-servidor> -Action Allow
+```
 
 ## 7. Avaliações à mão
 

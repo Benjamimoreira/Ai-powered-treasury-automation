@@ -265,6 +265,27 @@ class PedidoCorrida(Base):
     iniciado_em = Column(DateTime, nullable=True)
 
 
+class DeployScripts(Base):
+    """Um deploy dos scripts do Windows pedido no dashboard (Monitorização >
+    Deploy dos scripts). Como os PedidoCorrida: a API só grava o pedido e o
+    agente do Windows (scripts/agente_pedidos.py + scripts/deploy_windows.py)
+    corre os passos, reportando cada um (passo/total_passos/mensagem) para a
+    barra de progresso do dashboard."""
+    __tablename__ = "deploys_scripts"
+
+    id = Column(Integer, primary_key=True)
+    alvo = Column(String, nullable=False, index=True)
+    estado = Column(String, nullable=False, default="pendente", index=True)  # pendente|a_correr|ok|erro
+    passo = Column(Integer, nullable=False, default=0)
+    total_passos = Column(Integer, nullable=False, default=0)
+    mensagem = Column(String, nullable=True)
+    erro = Column(String, nullable=True)
+    log = Column(JSON, nullable=False, default=list)
+    pedido_em = Column(DateTime, default=_utcnow_naive, nullable=False)
+    atualizado_em = Column(DateTime, default=_utcnow_naive, nullable=False)
+    terminado_em = Column(DateTime, nullable=True)
+
+
 def criar_tabelas(engine) -> None:
     """create_all (só cria o que falta) e, antes, CREATE EXTENSION vector no
     Postgres. Sem pgvector (imagem do Postgres sem a extensão) cria tudo

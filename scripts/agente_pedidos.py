@@ -13,6 +13,11 @@ Pedidos com mais de 15 minutos quando o agente os vê (ex.: o PC estava
 desligado) não são corridos - um envio do Mapa às tantas da noite seria
 pior que nada - e ficam marcados "erro" com a razão.
 
+Também corre os deploys dos scripts pedidos no dashboard (Monitorização >
+Deploy dos scripts): um de cada vez, numa thread (compilar os exes demora
+minutos e os botões "Correr" continuam a funcionar entretanto), com os
+passos de scripts/deploy_windows.py a reportar o progresso à API.
+
 Só usa a biblioteca padrão (corre com qualquer Python do Windows).
 
 Uso:
@@ -28,11 +33,17 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+try:  # a correr como script (pasta scripts/ no sys.path)
+    import deploy_windows
+except ImportError:  # importado como scripts.agente_pedidos (testes)
+    from scripts import deploy_windows
 
 API_URL = os.environ.get("API_TESOURARIA_URL", "http://127.0.0.1:8000").rstrip("/")
 # Instalação feita pelo deploy do repositório dos scripts
@@ -45,6 +56,7 @@ PASTA_SCRIPTS = Path(os.environ.get("SCRIPTS_PREENCHIMENTO_RAIZ") or (
 ))
 INTERVALO_SEGUNDOS = 15
 VALIDADE_PEDIDO = timedelta(minutes=15)
+VALIDADE_DEPLOY = timedelta(minutes=30)
 
 # Como cada script é lançado - o mesmo que a tarefa agendada correspondente
 # ("Tesouraria - ..." no Agendador de Tarefas). O preencher_mapa corre pelo
@@ -133,6 +145,60 @@ def tratar_pendentes() -> int:
     return len(pedidos)
 
 
+_deploy_em_curso = None  # threading.Thread do deploy a correr (um de cada vez)
+
+
+def _reportar_deploy(deploy_id: int):
+    def reportar(**campos):
+        try:
+            _api("POST", f"/monitorizacao/deploys/{deploy_id}/progresso", campos)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 409:  # 409 = já terminado - nada a fazer
+                log.warning("deploy %s: progresso recusado (%s)", deploy_id, exc)
+        except (urllib.error.URLError, OSError) as exc:
+            # API em baixo: o deploy continua, só a barra fica parada
+            log.warning("deploy %s: progresso não enviado (%s)", deploy_id, exc)
+    return reportar
+
+
+def correr_deploy(deploy: dict) -> bool:
+    log.info("deploy %s (%s) a começar", deploy["id"], deploy["alvo"])
+    ok = deploy_windows.correr(deploy["alvo"], _reportar_deploy(deploy["id"]))
+    log.info("deploy %s (%s) %s", deploy["id"], deploy["alvo"], "concluído" if ok else "falhou")
+    return ok
+
+
+def tratar_deploys() -> int:
+    """Pega no deploy pendente mais antigo e corre-o numa thread. Enquanto
+    um corre, os outros ficam pendentes (dois deploys ao mesmo tempo
+    compilariam/copiariam por cima um do outro)."""
+    global _deploy_em_curso
+    if _deploy_em_curso is not None and _deploy_em_curso.is_alive():
+        return 0
+    deploys = _api("GET", "/monitorizacao/deploys?estado=pendente&limit=20")["deploys"]
+    agora = datetime.now(timezone.utc)
+    for deploy in reversed(deploys):  # mais antigo primeiro
+        pedido_em = datetime.fromisoformat(deploy["pedido_em"].replace("Z", "+00:00"))
+        if pedido_em.tzinfo is None:
+            pedido_em = pedido_em.replace(tzinfo=timezone.utc)
+        if agora - pedido_em > VALIDADE_DEPLOY:
+            log.warning("deploy %s (%s) expirado - pedido às %s", deploy["id"], deploy["alvo"], deploy["pedido_em"])
+            _reportar_deploy(deploy["id"])(
+                estado="erro", erro=f"Expirado: o agente do Windows só o viu {agora - pedido_em} depois")
+            continue
+        try:
+            _api("POST", f"/monitorizacao/deploys/{deploy['id']}/progresso",
+                 {"estado": "a_correr", "passo": 0, "mensagem": "Iniciado pelo agente do Windows"})
+        except urllib.error.HTTPError as exc:
+            if exc.code == 409:  # outro agente já pegou nele
+                continue
+            raise
+        _deploy_em_curso = threading.Thread(target=correr_deploy, args=(deploy,), name=f"deploy-{deploy['id']}")
+        _deploy_em_curso.start()
+        break
+    return len(deploys)
+
+
 def main() -> None:
     pasta_logs = Path(__file__).resolve().parent.parent / "logs"
     pasta_logs.mkdir(exist_ok=True)
@@ -144,14 +210,17 @@ def main() -> None:
     uma_vez = "--uma-vez" in sys.argv
     log.info("agente a correr (API %s, scripts em %s)", API_URL, PASTA_SCRIPTS)
     while True:
-        try:
-            tratar_pendentes()
-        except (urllib.error.URLError, OSError) as exc:
-            # API em baixo (ex.: durante um deploy) - tenta outra vez a seguir
-            log.debug("API indisponível: %s", exc)
-        except Exception:
-            log.exception("erro inesperado")
+        for tratar in (tratar_pendentes, tratar_deploys):
+            try:
+                tratar()
+            except (urllib.error.URLError, OSError) as exc:
+                # API em baixo (ex.: durante um deploy) - tenta outra vez a seguir
+                log.debug("API indisponível: %s", exc)
+            except Exception:
+                log.exception("erro inesperado")
         if uma_vez:
+            if _deploy_em_curso is not None:
+                _deploy_em_curso.join()
             break
         time.sleep(INTERVALO_SEGUNDOS)
 
