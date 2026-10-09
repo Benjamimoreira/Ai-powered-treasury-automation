@@ -110,14 +110,66 @@ def _marcar(pedido_id: int, estado: str, erro=None) -> None:
             raise
 
 
+def _elevado() -> bool:
+    """O agente corre com privilégios de administrador (tarefa com
+    -RunLevel Highest, precisa disso para o deploy dos exes da CGD)?"""
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+# Regista e corre uma tarefa agendada só desta vez, com os privilégios
+# normais do utilizador (RunLevel Limited) na sessão dele - os valores vêm
+# por variáveis de ambiente, para não ter de escapar aspas/acentos.
+_PS_LANCAR_SEM_ELEVACAO = (
+    "$a = New-ScheduledTaskAction -Execute $env:AG_EXE -Argument $env:AG_ARGS -WorkingDirectory $env:AG_DIR; "
+    "$p = New-ScheduledTaskPrincipal -UserId \"$env:USERDOMAIN\\$env:USERNAME\" -LogonType Interactive -RunLevel Limited; "
+    "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
+    "-ExecutionTimeLimit (New-TimeSpan -Hours 2); "
+    "Register-ScheduledTask -TaskName $env:AG_TAREFA -Action $a -Principal $p -Settings $s -Force | Out-Null; "
+    "Start-ScheduledTask -TaskName $env:AG_TAREFA"
+)
+
+
+def _lancar_sem_elevacao(script: str, comando: list, cwd: Path) -> None:
+    """Com o agente elevado, um Popen direto lançava o script também como
+    administrador - e o Excel aberto por ele (enviar_mapa_smtp,
+    preencher_mapa) ficava elevado, sem conseguir falar com o Excel normal
+    e a prender o Mapa (09/10/2026: um envio deixou um Excel elevado preso
+    e os seguintes falharam todos com "Permission denied"). Por isso lança
+    pela tarefa "Tesouraria - Agente correr <script>", como as tarefas
+    agendadas "Tesouraria - ..." sempre lançaram."""
+    ambiente = {
+        **os.environ,
+        "AG_EXE": str(comando[0]),
+        "AG_ARGS": subprocess.list2cmdline([str(c) for c in comando[1:]]),
+        "AG_DIR": str(cwd),
+        "AG_TAREFA": f"Tesouraria - Agente correr {script}",
+    }
+    resultado = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_LANCAR_SEM_ELEVACAO],
+        env=ambiente, capture_output=True, text=True, errors="replace", timeout=60,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if resultado.returncode != 0:
+        raise RuntimeError(f"Não foi possível lançar sem privilégios de administrador: "
+                           f"{(resultado.stderr or resultado.stdout).strip()[:300]}")
+
+
 def lancar(script: str) -> None:
     if script not in COMANDOS:
         raise RuntimeError(f"Sem comando para o script '{script}'")
     if not PASTA_SCRIPTS.is_dir():
         raise RuntimeError(f"Pasta dos scripts não encontrada: {PASTA_SCRIPTS}")
     lancador, argumentos = COMANDOS[script]
+    comando = [*_executavel(lancador), *argumentos]
+    if _elevado():
+        _lancar_sem_elevacao(script, comando, PASTA_SCRIPTS)
+        return
     subprocess.Popen(
-        [*_executavel(lancador), *argumentos],
+        comando,
         cwd=PASTA_SCRIPTS,
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
     )

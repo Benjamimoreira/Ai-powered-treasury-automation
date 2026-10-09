@@ -61,3 +61,34 @@ def test_usa_o_python_do_venv_da_pasta_dos_scripts(tmp_path, monkeypatch):
     (scripts / "python.exe").write_bytes(b"")
     assert agente_pedidos._executavel("pyw") == [str(scripts / "pythonw.exe")]
     assert agente_pedidos._executavel("py") == [str(scripts / "python.exe")]
+
+
+def test_agente_elevado_lanca_os_scripts_sem_privilegios_de_administrador(tmp_path, monkeypatch):
+    """Com o agente como administrador (precisa para o deploy da CGD), o
+    script não pode herdar a elevação: o Excel abria elevado e prendia o
+    Mapa (09/10/2026). Vai por uma tarefa agendada com RunLevel Limited."""
+    monkeypatch.setattr(agente_pedidos, "PASTA_SCRIPTS", tmp_path)
+    monkeypatch.setattr(agente_pedidos, "_executavel", lambda lancador: ["C:/venv/python.exe"])
+    monkeypatch.setattr(agente_pedidos, "_elevado", lambda: True)
+    chamadas = []
+
+    class Resultado:
+        returncode, stdout, stderr = 0, "", ""
+
+    def run_falso(comando, env=None, **kwargs):
+        chamadas.append((comando, env))
+        return Resultado()
+
+    def popen_proibido(*args, **kwargs):
+        raise AssertionError("não pode lançar diretamente (herdava a elevação)")
+
+    monkeypatch.setattr(agente_pedidos.subprocess, "run", run_falso)
+    monkeypatch.setattr(agente_pedidos.subprocess, "Popen", popen_proibido)
+
+    agente_pedidos.lancar("enviar_mapa_smtp")
+
+    comando, env = chamadas[0]
+    assert comando[0] == "powershell" and "-RunLevel Limited" in comando[-1]
+    assert env["AG_EXE"] == "C:/venv/python.exe" and env["AG_ARGS"] == "enviar_mapa_smtp.py"
+    assert env["AG_DIR"] == str(tmp_path)
+    assert env["AG_TAREFA"] == "Tesouraria - Agente correr enviar_mapa_smtp"
