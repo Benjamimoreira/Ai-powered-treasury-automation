@@ -399,7 +399,7 @@ def _container_com_classe(*args, border=None, key=None, **kwargs):
 st.container = _container_com_classe
 
 # Acabamento em tons de vermelho VIDÓR (pedido explícito 09/10/2026): caixas
-# com traço vermelho à esquerda e fundo rosado muito leve, títulos de caixa
+# contornadas a vermelho e fundo rosado muito leve, títulos de caixa
 # e de secção em vermelho escuro, aba ativa e KPIs com o mesmo acento. Os
 # gráficos mantêm a paleta validada (CORES_IMPUTACAO etc.) - o vermelho é
 # da moldura, não dos dados.
@@ -409,13 +409,13 @@ st.markdown(
     :root { --vermelho: #c8102e; --vermelho-escuro: #8e0b20; --rosa: #fdf2f3; --rosa-borda: #f0cdd1; }
 
     [class*="st-key-caixa-"] {
-        border: 1px solid var(--rosa-borda) !important; border-left: 4px solid var(--vermelho) !important;
+        border: 2px solid var(--vermelho) !important;
         border-radius: 10px !important; background: linear-gradient(180deg, var(--rosa) 0, #ffffff 72px);
-        box-shadow: 0 1px 4px rgba(200, 16, 46, 0.07);
+        box-shadow: 0 1px 4px rgba(200, 16, 46, 0.10);
     }
     /* títulos de caixa: parágrafo só com um **negrito** (convenção do dashboard) */
     [class*="st-key-caixa-"] [data-testid="stMarkdownContainer"] > p:only-child > strong:only-child {
-        color: var(--vermelho-escuro); font-size: 0.86rem; letter-spacing: .06em; text-transform: uppercase;
+        color: var(--vermelho-escuro); font-size: 1.08rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase;
     }
     [data-testid="stExpander"] details { border-color: var(--rosa-borda) !important; }
     [data-testid="stExpander"] summary { background: var(--rosa); border-radius: 8px; }
@@ -433,7 +433,7 @@ st.markdown(
     .stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"] { display: none; }
     .stTabs [data-baseweb="tab"] { height: auto; padding: 10px 14px; }
     .stTabs [data-baseweb="tab"] p {
-        font-size: 0.85rem; font-weight: 700; color: #5c6370;
+        font-size: 1rem; font-weight: 800; color: #5c6370;
         letter-spacing: .06em; text-transform: uppercase;
     }
     .stTabs [data-baseweb="tab"]:hover p { color: var(--vermelho-escuro); }
@@ -449,7 +449,7 @@ st.markdown(
     .stTabs .stTabs [data-baseweb="tab-panel"] { border: none; border-top: 1px solid var(--rosa-borda); box-shadow: none; padding: 20px 4px; }
 
     h3 {
-        color: var(--vermelho-escuro); font-weight: 700; letter-spacing: .01em;
+        color: var(--vermelho-escuro); font-weight: 800; letter-spacing: .01em; font-size: 1.6rem !important;
         margin: 1.8rem 0 1rem 0 !important; padding-bottom: 8px;
         border-bottom: 2px solid var(--rosa-borda);
     }
