@@ -83,6 +83,16 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
         "hora_execucao": "00:00, 12:00",
         "tolerancia_minutos": 120,
     },
+    "movimentos_diarios_cgd": {
+        "descricao": "Movimentos CGD de ontem, versão final (MovimentosDiariosCGD.exe) - no fim a API importa o dia",
+        "hora_execucao": "08:30",
+        "tolerancia_minutos": 60,
+    },
+    "movimentos_dia_atual_cgd": {
+        "descricao": "Movimentos CGD de hoje (MovimentosDiaAtualCGD.exe) - no fim a API importa o dia",
+        "hora_execucao": "08:20, 15:00",
+        "tolerancia_minutos": 60,
+    },
     "preencher_resumo_mensal": {
         "descricao": "Preenchimento do Resumo Mensal CGD (09:00 completa o dia anterior)",
         "hora_execucao": "09:00, 16:30",

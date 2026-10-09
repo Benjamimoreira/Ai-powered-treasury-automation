@@ -308,6 +308,13 @@ def listar_pedidos_corrida(limit: int = 20) -> dict:
     return r.json()
 
 
+def estado_sincronizacao() -> dict:
+    """Quando entraram dados novos na BD pela última vez ({"atualizado_em", "dias", "origem"})."""
+    r = requests.get(f"{API_BASE_URL}/sync/estado", timeout=5)
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_destinatarios_mapa() -> list:
     r = requests.get(f"{API_BASE_URL}/monitorizacao/destinatarios-mapa", timeout=10)
     r.raise_for_status()

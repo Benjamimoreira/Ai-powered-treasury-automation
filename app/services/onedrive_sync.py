@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 from sqlalchemy.orm import Session
 
 from app.db.models import LinhaMapa, MovimentoBancario, SaldoDiario
-from app.services.mapa_importer import importar_dia_do_mapa
+from app.services.mapa_importer import importar_dia_do_mapa, sincronizar_dia_do_mapa
 from app.services.reconciliador import (
     abrir_workbook_com_retry,
     chave_empresa,
@@ -20,6 +20,10 @@ from app.services.reconciliador import (
     nome_empresa_do_ficheiro,
 )
 from app.services.saldos import parse_valor_eur, registar_saldos_do_dia
+
+# Dias (contando hoje) cuja folha do Mapa é comparada outra vez com a BD
+# mesmo já importada - ver sincronizar_dia_do_mapa.
+DIAS_MAPA_A_ACOMPANHAR = 1
 
 MESES_PASTA = {
     1: "01_Janeiro", 2: "02_Fevereiro", 3: "03_Março", 4: "04_Abril",
@@ -182,6 +186,19 @@ def _importar_dia(db: Session, dia: date) -> dict:
                     resultado["mapa"] = dia.isoformat()
             except KeyError:
                 pass  # folha do dia ainda não existe no Mapa - normal para o dia de hoje
+            except Exception as e:
+                resultado["erro"] = f"mapa {dia.isoformat()}: {e}"
+    elif dia >= date.today() - timedelta(days=DIAS_MAPA_A_ACOMPANHAR):
+        # Hoje e ontem o preencher_mapa ainda mexe na folha (várias vezes por
+        # dia): sem isto a BD ficava com a primeira versão importada e o
+        # dashboard não mostrava as linhas que entretanto apareceram.
+        caminho_mapa_ficheiro = caminho_mapa(dia)
+        if os.path.isfile(caminho_mapa_ficheiro):
+            try:
+                if sincronizar_dia_do_mapa(db, caminho_mapa_ficheiro, dia) > 0:
+                    resultado["mapa"] = dia.isoformat()
+            except KeyError:
+                pass
             except Exception as e:
                 resultado["erro"] = f"mapa {dia.isoformat()}: {e}"
 

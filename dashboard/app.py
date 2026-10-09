@@ -380,15 +380,47 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Acabamento "BI executivo": fundo neutro (config.toml) com cada
-# separador a funcionar como um cartão branco bem definido; navegação
-# sóbria (cinzento, sublinhado vermelho fino só na aba ativa); títulos de
-# secção discretos, sem cor de marca - o vermelho só aparece em
-# KPIs/alertas (cartões de estado, zonas de risco), nunca como cor de UI
-# genérica.
+# Caixas (st.container(border=True)) com a classe "st-key-caixa-N", para o
+# CSS abaixo as conseguir pintar: o Streamlit 1.65 não marca no HTML quais
+# os contentores com borda. O contador volta a 0 em cada execução da página,
+# por isso as chaves são estáveis entre reruns.
+_container_original = getattr(st, "_container_original", st.container)
+st._container_original = _container_original
+_contador_caixas = [0]
+
+
+def _container_com_classe(*args, border=None, key=None, **kwargs):
+    if border and key is None:
+        _contador_caixas[0] += 1
+        key = f"caixa-{_contador_caixas[0]}"
+    return _container_original(*args, border=border, key=key, **kwargs)
+
+
+st.container = _container_com_classe
+
+# Acabamento em tons de vermelho VIDÓR (pedido explícito 09/10/2026): caixas
+# com traço vermelho à esquerda e fundo rosado muito leve, títulos de caixa
+# e de secção em vermelho escuro, aba ativa e KPIs com o mesmo acento. Os
+# gráficos mantêm a paleta validada (CORES_IMPUTACAO etc.) - o vermelho é
+# da moldura, não dos dados.
 st.markdown(
     """
     <style>
+    :root { --vermelho: #c8102e; --vermelho-escuro: #8e0b20; --rosa: #fdf2f3; --rosa-borda: #f0cdd1; }
+
+    [class*="st-key-caixa-"] {
+        border: 1px solid var(--rosa-borda) !important; border-left: 4px solid var(--vermelho) !important;
+        border-radius: 10px !important; background: linear-gradient(180deg, var(--rosa) 0, #ffffff 72px);
+        box-shadow: 0 1px 4px rgba(200, 16, 46, 0.07);
+    }
+    /* títulos de caixa: parágrafo só com um **negrito** (convenção do dashboard) */
+    [class*="st-key-caixa-"] [data-testid="stMarkdownContainer"] > p:only-child > strong:only-child {
+        color: var(--vermelho-escuro); font-size: 0.86rem; letter-spacing: .06em; text-transform: uppercase;
+    }
+    [data-testid="stExpander"] details { border-color: var(--rosa-borda) !important; }
+    [data-testid="stExpander"] summary { background: var(--rosa); border-radius: 8px; }
+    [data-testid="stExpander"] summary:hover p { color: var(--vermelho-escuro); }
+
     /* flex-wrap: com 8 separadores em maiúsculas a lista deixa de caber
        na largura do ecrã e o Streamlit faz scroll horizontal sem barra
        visível - os últimos separadores ficavam escondidos. */
@@ -404,34 +436,68 @@ st.markdown(
         font-size: 0.85rem; font-weight: 700; color: #5c6370;
         letter-spacing: .06em; text-transform: uppercase;
     }
-    .stTabs [aria-selected="true"] { border-bottom: 3px solid #c8102e; }
-    .stTabs [aria-selected="true"] p { color: #1c1f26 !important; }
+    .stTabs [data-baseweb="tab"]:hover p { color: var(--vermelho-escuro); }
+    .stTabs [aria-selected="true"] { border-bottom: 3px solid var(--vermelho); background: var(--rosa); border-radius: 8px 8px 0 0; }
+    .stTabs [aria-selected="true"] p { color: var(--vermelho-escuro) !important; }
     .stTabs [data-baseweb="tab-panel"] {
-        background: #ffffff; border: 1px solid #e4e6ea; border-top: none;
+        background: #ffffff; border: 1px solid #e4e6ea; border-top: 2px solid var(--vermelho);
         border-radius: 0 0 10px 10px; padding: 28px 26px;
         box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
+    /* separadores dentro de separadores: mais leves */
+    .stTabs .stTabs [data-baseweb="tab-list"] { box-shadow: none; border-bottom: 1px solid var(--rosa-borda); }
+    .stTabs .stTabs [data-baseweb="tab-panel"] { border: none; border-top: 1px solid var(--rosa-borda); box-shadow: none; padding: 20px 4px; }
 
     h3 {
-        color: #1c1f26; font-weight: 700; letter-spacing: .01em;
+        color: var(--vermelho-escuro); font-weight: 700; letter-spacing: .01em;
         margin: 1.8rem 0 1rem 0 !important; padding-bottom: 8px;
-        border-bottom: 1px solid #e4e6ea;
+        border-bottom: 2px solid var(--rosa-borda);
     }
 
     div[data-testid="stMetric"] {
-        background: #f8f9fb; border: 1px solid #e4e6ea; border-radius: 8px;
-        padding: 12px 16px;
+        background: var(--rosa); border: 1px solid var(--rosa-borda); border-left: 4px solid var(--vermelho);
+        border-radius: 8px; padding: 12px 16px;
     }
+    div[data-testid="stMetricLabel"] p { color: var(--vermelho-escuro); font-weight: 600; }
     div[data-testid="stDataFrame"], div[data-testid="stExpander"] {
         border-radius: 8px;
     }
 
-    button[kind="primary"] { background: #1c1f26; border-radius: 6px; font-weight: 600; }
-    button[kind="secondary"] { border-radius: 6px; font-weight: 600; }
+    button[kind="primary"] { background: var(--vermelho); border-color: var(--vermelho); border-radius: 6px; font-weight: 600; }
+    button[kind="primary"]:hover { background: var(--vermelho-escuro); border-color: var(--vermelho-escuro); }
+    button[kind="secondary"] { border-radius: 6px; font-weight: 600; border-color: var(--rosa-borda); }
+    button[kind="secondary"]:hover { border-color: var(--vermelho); color: var(--vermelho-escuro); }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+
+@st.fragment(run_every=30)
+def _vigiar_dados_novos() -> None:
+    """De 30 em 30 s pergunta à API se entraram dados novos (fim de um
+    script, sincronizador, ...) e, se sim, recarrega a página toda - para o
+    dashboard aberto mostrar os dados de hoje sem ninguém carregar em nada.
+    Ver app/services/atualizacao_dados.py."""
+    try:
+        estado = api.estado_sincronizacao()
+    except Exception:
+        return  # API em baixo - tenta outra vez daqui a 30 s
+    marca = estado.get("atualizado_em")
+    anterior = st.session_state.get("_dados_atualizados_em")
+    st.session_state["_dados_atualizados_em"] = marca
+    if anterior is not None and marca != anterior:
+        st.session_state["_aviso_dados_novos"] = estado
+        _limpar_cache_previsoes()
+        st.rerun(scope="app")
+
+
+_vigiar_dados_novos()
+if "_aviso_dados_novos" in st.session_state:
+    _aviso = st.session_state.pop("_aviso_dados_novos")
+    _dias = ", ".join(date.fromisoformat(d).strftime("%d/%m") for d in _aviso.get("dias") or [])
+    st.toast(f"Dados atualizados ({_aviso.get('origem')}){': ' + _dias if _dias else ''}", icon="🔄")
+
 
 def _n(valor, casas: int = 0, sinal: bool = False) -> str:
     """Número no formato português: 170 249 / 1 234,56 / +7 885 (espaço
@@ -2728,6 +2794,8 @@ MESES_ABREV = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "O
 
 
 MESES_NOME_CURTO = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+MESES_NOME_COMPLETO = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto",
+                       "Setembro", "Outubro", "Novembro", "Dezembro"]
 # Recebimentos de vendas: slots categóricos 1-3 (mesma ordem validada de
 # CORES_IMPUTACAO), sempre a mesma cor para o mesmo tipo em todos os gráficos.
 TIPOS_VENDA_RESUMO = {"cpcv": "CPCV", "reforco_sinal": "Reforço de sinal", "escritura": "Escritura"}
@@ -2744,13 +2812,20 @@ def _secao_resumo_mensal_saldos():
     app/services/resumo_saldos.py. Usa o ano todo, não o filtro De/Até, e
     todas as empresas (os saldos são por conta, não por empresa do Mapa)."""
     hoje = date.today()
-    ano = st.selectbox("Ano", list(range(hoje.year, 2025, -1)), key="ano_resumo_mensal_saldos", width=120)
-    try:
-        dados = api.resumo_mensal_saldos(ano)
-    except Exception as e:
-        st.error(f"Erro a consultar o resumo mensal: {e}")
-        return
-    meses, diario = dados["meses"], dados["diario"]
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        ano = st.selectbox("Ano", list(range(hoje.year, 2025, -1)), key="ano_resumo_mensal_saldos", width=120)
+        try:
+            dados = api.resumo_mensal_saldos(ano)
+        except Exception as e:
+            st.error(f"Erro a consultar o resumo mensal: {e}")
+            return
+        meses, diario = dados["meses"], dados["diario"]
+        # "Todos os meses" = tabela do ano inteiro + liquidez diária do último mês
+        mes_escolhido = st.selectbox(
+            "Mês", [None] + [m["mes"] for m in meses],
+            format_func=lambda m: "Todos os meses" if m is None else f"{MESES_NOME_COMPLETO[m - 1]}",
+            key="mes_resumo_mensal_saldos", width=180,
+        )
     if not meses:
         st.info(f"Sem saldos nem vendas registados em {ano}.")
         return
@@ -2764,31 +2839,22 @@ def _secao_resumo_mensal_saldos():
 
     df = pd.DataFrame(meses)
     df["Mês"] = df["mes"].map(lambda m: f"{MESES_NOME_CURTO[m - 1]} {ano}")
-    def _euro_dia(valor, dia):
-        if valor is None:
-            return "-"
-        texto = f"{valor:,.2f}".replace(",", " ").replace(".", ",")
-        return f"{texto} € (dia {dia[8:10]})"
-
-    df["Mínima"] = [_euro_dia(m.get("liquidez_minima"), m.get("dia_minimo")) for m in meses]
-    df["Máxima"] = [_euro_dia(m.get("liquidez_maxima"), m.get("dia_maximo")) for m in meses]
     for chave, nome in TIPOS_VENDA_RESUMO.items():
         df[nome] = df[chave]
         df[f"N.º {nome}"] = df[f"n_{chave}"]
     df["Por confirmar"] = sum(df[f"pendente_{chave}"] for chave in TIPOS_VENDA_RESUMO)
-    colunas = ["Mês", "saldo_inicio", "saldo_fim", "variacao", "liquidez_media", "Mínima", "Máxima",
+    colunas = ["Mês", "saldo_inicio", "saldo_fim", "variacao", "liquidez_media",
                "CPCV", "N.º CPCV", "Reforço de sinal", "N.º Reforço de sinal", "Escritura", "N.º Escritura",
                "total_vendas", "Por confirmar"]
     euro = st.column_config.NumberColumn(format="euro")
+    df_tabela = df if mes_escolhido is None else df[df["mes"] == mes_escolhido]
     st.dataframe(
-        df[[c for c in colunas if c in df.columns]], width="stretch", hide_index=True,
+        df_tabela[[c for c in colunas if c in df.columns]], width="stretch", hide_index=True,
         column_config={
             "saldo_inicio": st.column_config.NumberColumn("Saldo início", format="euro"),
             "saldo_fim": st.column_config.NumberColumn("Saldo fim", format="euro"),
             "variacao": st.column_config.NumberColumn("Variação", format="euro"),
             "liquidez_media": st.column_config.NumberColumn("Liquidez média", format="euro"),
-            "Mínima": st.column_config.TextColumn("Liquidez mínima (dia)"),
-            "Máxima": st.column_config.TextColumn("Liquidez máxima (dia)"),
             "CPCV": euro, "Reforço de sinal": euro, "Escritura": euro,
             "total_vendas": st.column_config.NumberColumn("Total vendas", format="euro"),
             "Por confirmar": euro,
@@ -2831,10 +2897,9 @@ def _secao_resumo_mensal_saldos():
     meses_com_saldo = [m["mes"] for m in meses if m.get("dias_com_saldo")]
     if not diario or not meses_com_saldo:
         return
+    mes = mes_escolhido if mes_escolhido in meses_com_saldo else meses_com_saldo[-1]
     with st.container(border=True):
-        mes = st.selectbox("Liquidez diária de", meses_com_saldo, index=len(meses_com_saldo) - 1,
-                           format_func=lambda m: f"{MESES_NOME_CURTO[m - 1]} {ano}",
-                           key="mes_liquidez_diaria", width=200)
+        st.markdown(f"**Liquidez diária - {MESES_NOME_COMPLETO[mes - 1]} {ano}**")
         df_dia = pd.DataFrame([d for d in diario if int(d["dia"][5:7]) == mes])
         df_dia["dia"] = pd.to_datetime(df_dia["dia"])
         linha = alt.Chart(df_dia).mark_line(point=True, color=COR_SALDO_DISPONIVEL).encode(
@@ -2997,7 +3062,6 @@ if aba_analise_extratos.open:
         total_pago = sum(l["valor"] for l in analise.get("pagamentos", []))
         n_pendentes = sum(1 for l in linhas_extratos if not l.get("confirmado"))
         n_cpcv_escritura = sum(1 for l in linhas_extratos if l["tipo"] == "recebimento" and l.get("e_cpcv_escritura"))
-        linhas_cpcv_escritura = [l for l in linhas_receb if l.get("e_cpcv_escritura")]
 
         # --- KPIs
         with st.container(horizontal=True):
@@ -3026,57 +3090,15 @@ if aba_analise_extratos.open:
 
         if pesquisa_extratos.strip():
             st.caption(f"🔎 {len(linhas_encontradas)} de {len(linhas_extratos)} linhas com \"{pesquisa_extratos.strip()}\".")
-        sep_receb, sep_pag, sep_cpcv_mapa, sep_cpcv_indice, sep_rendas, sep_resumo_saldos = st.tabs([
+        sep_receb, sep_pag, sep_cpcv_indice, sep_rendas, sep_resumo_saldos = st.tabs([
             f"Recebimentos ({len(linhas_receb)})", f"Pagamentos ({len(linhas_pag)})",
-            f"CPCVs / Escrituras - Mapa ({len(linhas_cpcv_escritura)})", "Vendas - Índice comercial", "Rendas",
+            "Vendas - Índice comercial", "Rendas",
             "Resumo mensal de saldos",
         ])
         with sep_receb:
             tabela_extratos_colorida(linhas_receb, cores_receb, "Sem recebimentos registados no período.")
         with sep_pag:
             tabela_extratos_colorida(linhas_pag, cores_pag, "Sem pagamentos registados no período.")
-
-        with sep_cpcv_mapa:
-            st.caption(
-                "Do Mapa de Pagamentos e Recebimentos: conta bancária e dia do recebimento "
-                "(imputação CPCV/Escritura, ou outra imputação - ex. \"DEPOSITO\" - cuja descrição "
-                "refira o código de uma fração). Inclui escrituras ainda pendentes de confirmação no "
-                "extrato (coluna Estado) e, quando o código bate com o Índice Comercial, o espaço "
-                "físico e a fração da venda."
-            )
-            if linhas_cpcv_escritura:
-                try:
-                    mapa_ref = api.espaco_fracao_por_ref()
-                except Exception:
-                    mapa_ref = {}
-
-                for l in linhas_cpcv_escritura:
-                    refs = l.get("refs_fracao") or []
-                    l["ref"] = ", ".join(refs) if refs else "-"
-                    info_ref = next((mapa_ref[r] for r in refs if r in mapa_ref), None)
-                    l["espaco_fisico"] = (info_ref or {}).get("espaco_fisico") or "-"
-                    l["fracao"] = (info_ref or {}).get("fracao") or "-"
-
-                df_cpcv = pd.DataFrame(linhas_cpcv_escritura)[[
-                    "dia", "empresa", "imputacao", "ref", "espaco_fisico", "fracao",
-                    "previsto", "valor", "confirmado",
-                ]]
-                df_cpcv["confirmado"] = df_cpcv["confirmado"].map({True: "Confirmado", False: "Pendente"})
-                df_cpcv = df_cpcv.sort_values("dia", ascending=False).rename(columns={
-                    "dia": "Dia", "empresa": "Empresa", "imputacao": "Tipo", "ref": "Ref.",
-                    "espaco_fisico": "Espaço Físico", "fracao": "Fração",
-                    "previsto": "Valor tabelado/proposto", "valor": "Valor recebido",
-                    "confirmado": "Estado",
-                })
-                st.dataframe(
-                    df_cpcv, width="stretch", hide_index=True,
-                    column_config={
-                        "Valor tabelado/proposto": st.column_config.NumberColumn(format="euro"),
-                        "Valor recebido": st.column_config.NumberColumn(format="euro"),
-                    },
-                )
-            else:
-                st.info("Sem CPCVs/Escrituras recebidos registados no período.")
 
         with sep_cpcv_indice:
             _secao_vendas_indice(empresa_extratos, periodo_extratos)

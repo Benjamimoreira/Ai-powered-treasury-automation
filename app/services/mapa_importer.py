@@ -34,8 +34,13 @@ def encontrar_linha_totais(ws):
     raise RuntimeError("Não encontrei a linha de totais (fórmula =SUM ou =SUBTOTAL) na folha.")
 
 
-def importar_linhas(db, ws, dia, cols, tipo, linha_totais, sinal):
-    total = 0
+CAMPOS_LINHA = ("empresa", "previsto", "pago", "imputacao", "descricao")
+
+
+def ler_linhas(ws, cols, tipo, linha_totais, sinal) -> list:
+    """As linhas preenchidas (com empresa) de um dos lados da folha, como
+    dicts com os campos de LinhaMapa."""
+    linhas = []
     for r in range(5, linha_totais):
         empresa = ws[f"{cols['empresa']}{r}"].value
         if not empresa:
@@ -44,18 +49,64 @@ def importar_linhas(db, ws, dia, cols, tipo, linha_totais, sinal):
         pago = ws[f"{cols['real']}{r}"].value
         imputacao = ws[f"{cols['imputacao']}{r}"].value
         descricao = ws[f"{cols['desc']}{r}"].value
-        db.add(LinhaMapa(
-            dia=dia,
-            tipo=tipo,
-            linha=r,
-            empresa=str(empresa).strip(),
-            previsto=sinal * previsto if isinstance(previsto, (int, float)) else None,
-            pago=sinal * pago if isinstance(pago, (int, float)) else None,
-            imputacao=str(imputacao).strip() if imputacao else None,
-            descricao=str(descricao).strip() if descricao else None,
-        ))
-        total += 1
-    return total
+        linhas.append({
+            "tipo": tipo,
+            "linha": r,
+            "empresa": str(empresa).strip(),
+            "previsto": sinal * previsto if isinstance(previsto, (int, float)) else None,
+            "pago": sinal * pago if isinstance(pago, (int, float)) else None,
+            "imputacao": str(imputacao).strip() if imputacao else None,
+            "descricao": str(descricao).strip() if descricao else None,
+        })
+    return linhas
+
+
+def importar_linhas(db, ws, dia, cols, tipo, linha_totais, sinal):
+    linhas = ler_linhas(ws, cols, tipo, linha_totais, sinal)
+    for campos in linhas:
+        db.add(LinhaMapa(dia=dia, **campos))
+    return len(linhas)
+
+
+def sincronizar_dia_do_mapa(db, caminho_mapa: str, dia) -> int:
+    """Põe as linhas do dia na BD iguais às da folha, para um dia que já
+    tinha sido importado mas que o preencher_mapa continua a mexer (hoje
+    provisório, ontem a fechar). Compara por (tipo, n.º da linha):
+    acrescenta as novas, atualiza as que mudaram e apaga as que saíram da
+    folha - mas uma linha já reconciliada com um movimento do banco nunca é
+    mexida (a reconciliação, e qualquer resolução manual, apontam para ela).
+    Devolve o número de linhas acrescentadas/alteradas/apagadas.
+    Levanta KeyError se a folha do dia não existir."""
+    import openpyxl
+
+    nome_folha = f"{dia.day:02d}"
+    wb = openpyxl.load_workbook(caminho_mapa, data_only=False)
+    if nome_folha not in wb.sheetnames:
+        raise KeyError(f"A folha '{nome_folha}' não existe em {caminho_mapa}")
+    ws = wb[nome_folha]
+    linha_totais = encontrar_linha_totais(ws)
+    novas = {
+        (l["tipo"], l["linha"]): l
+        for l in (ler_linhas(ws, COL_RECEBIMENTOS, "recebimento", linha_totais, sinal=1)
+                  + ler_linhas(ws, COL_PAGAMENTOS, "pagamento", linha_totais, sinal=-1))
+    }
+    existentes = {(l.tipo, l.linha): l for l in db.query(LinhaMapa).filter(LinhaMapa.dia == dia).all()}
+
+    alteracoes = 0
+    for chave, campos in novas.items():
+        atual = existentes.get(chave)
+        if atual is None:
+            db.add(LinhaMapa(dia=dia, **campos))
+            alteracoes += 1
+        elif not atual.reconciliacoes and any(getattr(atual, c) != campos[c] for c in CAMPOS_LINHA):
+            for c in CAMPOS_LINHA:
+                setattr(atual, c, campos[c])
+            alteracoes += 1
+    for chave, atual in existentes.items():
+        if chave not in novas and not atual.reconciliacoes:
+            db.delete(atual)
+            alteracoes += 1
+    return alteracoes
 
 
 def importar_dia_do_mapa(db, caminho_mapa: str, dia) -> tuple:

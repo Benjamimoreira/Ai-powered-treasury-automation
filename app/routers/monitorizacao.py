@@ -1,11 +1,12 @@
 from datetime import date
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.services.atualizacao_dados import sincronizar_apos_script
 from app.services.deploy_scripts import ALVOS_DEPLOY, listar_deploys, obter_deploy, pedir_deploy, registar_progresso
 from app.services.destinatarios_mapa import adicionar_destinatario, listar_destinatarios, remover_destinatario
 from app.services.monitorizacao import (
@@ -77,11 +78,17 @@ def listar_status_scripts(db: Session = Depends(get_db)):
 
 
 @router.post("/scripts/{script}/executar")
-def executar_script(script: str, payload: ExecucaoScriptRequest, db: Session = Depends(get_db)):
+def executar_script(script: str, payload: ExecucaoScriptRequest, background_tasks: BackgroundTasks,
+                    db: Session = Depends(get_db)):
+    """Resultado de uma corrida, enviado pelo próprio script no fim. Se o
+    script produz dados (extratos do dia, Mapa, Mapa de Saldos), a API
+    importa-os logo a seguir em segundo plano - ver atualizacao_dados.py."""
     try:
-        return registar_execucao(db, script, payload.status, erro=payload.erro, log=payload.log, duracao_segundos=payload.duracao_segundos)
+        resultado = registar_execucao(db, script, payload.status, erro=payload.erro, log=payload.log, duracao_segundos=payload.duracao_segundos)
     except Exception as exc:  # pragma: no cover - não deve acontecer nesta camada
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    background_tasks.add_task(sincronizar_apos_script, script, payload.status)
+    return resultado
 
 
 @router.post("/scripts/{script}/correr")

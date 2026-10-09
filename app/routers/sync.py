@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models import AtualizarDadosResponse
+from app.services.atualizacao_dados import estado as estado_atualizacao, registar_resultado
 from app.services.monitorizacao import FUSO_LOCAL, pedir_corrida
 from app.services.onedrive_sync import atualizar_dados_do_dia, atualizar_dados_recentes, importar_historico
 
@@ -18,7 +19,9 @@ def atualizar_dados(dias_atras: int = 7, db: Session = Depends(get_db)):
     ainda não existem localmente: movimentos, linhas do mapa e saldos.
     Seguro chamar repetidamente - dias já importados são ignorados."""
     try:
-        return atualizar_dados_recentes(db, dias_atras)
+        resultado = atualizar_dados_recentes(db, dias_atras)
+        registar_resultado(resultado, "sincronização")
+        return resultado
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -30,9 +33,18 @@ def atualizar_dados_dia(dia: date, db: Session = Depends(get_db)):
     data fora da janela dos últimos 7 dias que /atualizar-dados cobre.
     Seguro chamar repetidamente - dados já importados são ignorados."""
     try:
-        return atualizar_dados_do_dia(db, dia)
+        resultado = atualizar_dados_do_dia(db, dia)
+        registar_resultado(resultado, f"dia {dia.isoformat()}")
+        return resultado
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.get("/sync/estado")
+def estado_sincronizacao():
+    """Quando entraram dados novos na BD pela última vez (e de que dias) -
+    o dashboard pergunta isto de 30 em 30 s e recarrega quando muda."""
+    return estado_atualizacao()
 
 
 @router.post("/atualizar-historico")
@@ -75,4 +87,5 @@ def extratos_prontos(dia: Optional[date] = None, db: Session = Depends(get_db)):
         for chave in sincronizacao:
             sincronizacao[chave] += r[chave]
     resultado["sincronizacao"] = sincronizacao
+    registar_resultado(sincronizacao, "extratos prontos")
     return resultado
