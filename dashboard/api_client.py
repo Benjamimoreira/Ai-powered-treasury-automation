@@ -308,6 +308,32 @@ def listar_pedidos_corrida(limit: int = 20) -> dict:
     return r.json()
 
 
+def listar_destinatarios_mapa() -> list:
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/destinatarios-mapa", timeout=10)
+    r.raise_for_status()
+    return r.json()["destinatarios"]
+
+
+def adicionar_destinatario_mapa(email: str) -> list:
+    """422 (requests.HTTPError) se o email for inválido."""
+    r = requests.post(f"{API_BASE_URL}/monitorizacao/destinatarios-mapa", json={"email": email}, timeout=10)
+    r.raise_for_status()
+    return r.json()["destinatarios"]
+
+
+def remover_destinatario_mapa(email: str) -> list:
+    r = requests.delete(f"{API_BASE_URL}/monitorizacao/destinatarios-mapa/{email}", timeout=10)
+    r.raise_for_status()
+    return r.json()["destinatarios"]
+
+
+def resumo_mensal_saldos(ano: int) -> dict:
+    """Liquidez por mês + CPCVs/reforços de sinal/escrituras (Análise de Extratos)."""
+    r = requests.get(f"{API_BASE_URL}/saldos/resumo-mensal", params={"ano": ano}, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_alvos_deploy() -> list:
     r = requests.get(f"{API_BASE_URL}/monitorizacao/deploys/alvos", timeout=10)
     r.raise_for_status()

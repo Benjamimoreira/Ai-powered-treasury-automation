@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.services.deploy_scripts import ALVOS_DEPLOY, listar_deploys, obter_deploy, pedir_deploy, registar_progresso
+from app.services.destinatarios_mapa import adicionar_destinatario, listar_destinatarios, remover_destinatario
 from app.services.monitorizacao import (
     listar_eventos, listar_logs, listar_pedidos, listar_scripts, marcar_pedido, pedir_corrida, registar_evento,
     registar_execucao,
@@ -31,6 +32,30 @@ class PedidoCorridaEstadoRequest(BaseModel):
 class EventoScriptRequest(BaseModel):
     nivel: str = Field(..., description="erro|aviso|info")
     mensagem: str
+
+
+class DestinatarioRequest(BaseModel):
+    email: str
+
+
+@router.get("/destinatarios-mapa")
+def listar_destinatarios_mapa(db: Session = Depends(get_db)):
+    """Para quem o enviar_mapa_smtp.py manda o Mapa (lido pelo script antes
+    de cada envio). Nunca vazio: sem ninguém, volta o pduarte@vidor.pt."""
+    return {"destinatarios": listar_destinatarios(db)}
+
+
+@router.post("/destinatarios-mapa")
+def adicionar_destinatario_mapa(payload: DestinatarioRequest, db: Session = Depends(get_db)):
+    try:
+        return {"destinatarios": adicionar_destinatario(db, payload.email)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete("/destinatarios-mapa/{email}")
+def remover_destinatario_mapa(email: str, db: Session = Depends(get_db)):
+    return {"destinatarios": remover_destinatario(db, email)}
 
 
 class DeployRequest(BaseModel):

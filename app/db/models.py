@@ -286,6 +286,17 @@ class DeployScripts(Base):
     terminado_em = Column(DateTime, nullable=True)
 
 
+class DestinatarioMapa(Base):
+    """Para quem o enviar_mapa_smtp.py manda o Mapa de Pagamentos e
+    Recebimentos. Gerido no dashboard (Monitorização > Destinatários do
+    Mapa); o script lê a lista em GET /monitorizacao/destinatarios-mapa."""
+    __tablename__ = "destinatarios_mapa"
+
+    id = Column(Integer, primary_key=True)
+    email = Column(String, nullable=False, unique=True)
+    criado_em = Column(DateTime, default=_utcnow_naive, nullable=False)
+
+
 def criar_tabelas(engine) -> None:
     """create_all (só cria o que falta) e, antes, CREATE EXTENSION vector no
     Postgres. Sem pgvector (imagem do Postgres sem a extensão) cria tudo

@@ -1673,6 +1673,38 @@ def _progresso_deploys() -> None:
         _barra_deploy(deploy)
 
 
+def _seccao_destinatarios_mapa() -> None:
+    """Para quem o enviar_mapa_smtp manda o Mapa: o script lê esta lista
+    antes de cada envio (pduarte@vidor.pt por omissão - nunca fica vazia)."""
+    with st.container(border=True):
+        st.markdown("**Destinatários do Mapa** (enviar_mapa_smtp)")
+        try:
+            destinatarios = api.listar_destinatarios_mapa()
+        except Exception as e:
+            st.warning(f"Não foi possível carregar os destinatários: {e}")
+            return
+        for email in destinatarios:
+            with st.container(horizontal=True, vertical_alignment="center"):
+                st.markdown(f"✉️ {email}")
+                if len(destinatarios) > 1 and st.button("✕", key=f"remover_destinatario_{email}",
+                                                        help=f"Deixar de enviar para {email}"):
+                    api.remover_destinatario_mapa(email)
+                    st.rerun()
+        with st.popover("➕ Adicionar"):
+            with st.form("form_adicionar_destinatario", clear_on_submit=True, border=False):
+                novo = st.text_input("Email", placeholder="nome@vidor.pt")
+                if st.form_submit_button("Adicionar", type="primary"):
+                    try:
+                        api.adicionar_destinatario_mapa(novo)
+                        st.rerun()
+                    except Exception as e:
+                        try:
+                            detalhe = e.response.json()["detail"]  # ex.: "Email inválido: ..."
+                        except Exception:
+                            detalhe = e
+                        st.error(f"Não foi possível adicionar: {detalhe}")
+
+
 def _seccao_deploy_scripts() -> None:
     """Deploy dos scripts do Windows (máquina de produção) a partir do
     dashboard, que pode estar noutra máquina: a API grava o pedido e o agente
@@ -1727,7 +1759,8 @@ def _botoes_correr_scripts(nomes: list):
         for nome_script in nomes:
             if nome_script == "enviar_mapa_smtp":
                 with st.popover(f"▶ Correr {nome_script}"):
-                    st.markdown("Isto **envia o Mapa por email** aos destinatários de sempre, agora.")
+                    st.markdown("Isto **envia o Mapa por email** agora, aos destinatários da caixa "
+                                "\"Destinatários do Mapa\" (mais abaixo).")
                     if st.button("Enviar agora", key=f"botao_correr_{nome_script}", type="primary"):
                         _pedir_corrida(nome_script)
             elif st.button(f"▶ Correr {nome_script}", key=f"botao_correr_{nome_script}"):
@@ -1823,6 +1856,7 @@ if aba_monitorizacao.open:
             else:
                 st.info("Sem dados de execução dos scripts.")
 
+        _seccao_destinatarios_mapa()
         _seccao_deploy_scripts()
 
         sep_tempo_real, sep_logs, sep_script, sep_auditoria, sep_ia = st.tabs(
@@ -2685,6 +2719,147 @@ ESTADOS_RENDA = {
 MESES_ABREV = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
 
+MESES_NOME_CURTO = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+# Recebimentos de vendas: slots categóricos 1-3 (mesma ordem validada de
+# CORES_IMPUTACAO), sempre a mesma cor para o mesmo tipo em todos os gráficos.
+TIPOS_VENDA_RESUMO = {"cpcv": "CPCV", "reforco_sinal": "Reforço de sinal", "escritura": "Escritura"}
+CORES_TIPO_VENDA = {"CPCV": "#2a78d6", "Reforço de sinal": "#eb6834", "Escritura": "#1baf7a"}
+
+
+def _escala_tipo_venda():
+    return alt.Scale(domain=list(CORES_TIPO_VENDA), range=list(CORES_TIPO_VENDA.values()))
+
+
+def _secao_resumo_mensal_saldos():
+    """Liquidez (saldo disponível de todas as contas juntas) mês a mês, e o
+    que entrou de CPCVs, reforços de sinal e escrituras - ver
+    app/services/resumo_saldos.py. Usa o ano todo, não o filtro De/Até, e
+    todas as empresas (os saldos são por conta, não por empresa do Mapa)."""
+    hoje = date.today()
+    ano = st.selectbox("Ano", list(range(hoje.year, 2025, -1)), key="ano_resumo_mensal_saldos", width=120)
+    try:
+        dados = api.resumo_mensal_saldos(ano)
+    except Exception as e:
+        st.error(f"Erro a consultar o resumo mensal: {e}")
+        return
+    meses, diario = dados["meses"], dados["diario"]
+    if not meses:
+        st.info(f"Sem saldos nem vendas registados em {ano}.")
+        return
+
+    st.caption(
+        "Liquidez = saldo disponível de todas as contas juntas (a última leitura de cada conta até ao dia). "
+        "CPCV, reforço de sinal e escritura = recebimentos do Mapa de Pagamentos e Recebimentos já "
+        "confirmados no extrato; \"por confirmar\" = previstos no Mapa ainda sem extrato. Não usa o "
+        "filtro De/Até nem Empresa de cima."
+    )
+
+    df = pd.DataFrame(meses)
+    df["Mês"] = df["mes"].map(lambda m: f"{MESES_NOME_CURTO[m - 1]} {ano}")
+    def _euro_dia(valor, dia):
+        if valor is None:
+            return "-"
+        texto = f"{valor:,.2f}".replace(",", " ").replace(".", ",")
+        return f"{texto} € (dia {dia[8:10]})"
+
+    df["Mínima"] = [_euro_dia(m.get("liquidez_minima"), m.get("dia_minimo")) for m in meses]
+    df["Máxima"] = [_euro_dia(m.get("liquidez_maxima"), m.get("dia_maximo")) for m in meses]
+    for chave, nome in TIPOS_VENDA_RESUMO.items():
+        df[nome] = df[chave]
+        df[f"N.º {nome}"] = df[f"n_{chave}"]
+    df["Por confirmar"] = sum(df[f"pendente_{chave}"] for chave in TIPOS_VENDA_RESUMO)
+    colunas = ["Mês", "saldo_inicio", "saldo_fim", "variacao", "liquidez_media", "Mínima", "Máxima",
+               "CPCV", "N.º CPCV", "Reforço de sinal", "N.º Reforço de sinal", "Escritura", "N.º Escritura",
+               "total_vendas", "Por confirmar"]
+    euro = st.column_config.NumberColumn(format="euro")
+    st.dataframe(
+        df[[c for c in colunas if c in df.columns]], width="stretch", hide_index=True,
+        column_config={
+            "saldo_inicio": st.column_config.NumberColumn("Saldo início", format="euro"),
+            "saldo_fim": st.column_config.NumberColumn("Saldo fim", format="euro"),
+            "variacao": st.column_config.NumberColumn("Variação", format="euro"),
+            "liquidez_media": st.column_config.NumberColumn("Liquidez média", format="euro"),
+            "Mínima": st.column_config.TextColumn("Liquidez mínima (dia)"),
+            "Máxima": st.column_config.TextColumn("Liquidez máxima (dia)"),
+            "CPCV": euro, "Reforço de sinal": euro, "Escritura": euro,
+            "total_vendas": st.column_config.NumberColumn("Total vendas", format="euro"),
+            "Por confirmar": euro,
+        },
+    )
+
+    # vendas por mês (barras empilhadas) ao lado da liquidez média
+    df_vendas = df.melt(id_vars=["mes"], value_vars=list(TIPOS_VENDA_RESUMO.values()),
+                        var_name="Tipo", value_name="Valor")
+    df_vendas["Mês"] = df_vendas["mes"].map(lambda m: MESES_NOME_CURTO[m - 1])
+    with st.container(horizontal=True):
+        with st.container(border=True):
+            st.markdown("**Recebimentos de vendas por mês**")
+            st.altair_chart(
+                alt.Chart(df_vendas[df_vendas["Valor"] > 0]).mark_bar().encode(
+                    x=alt.X("Mês:N", sort=MESES_NOME_CURTO, title=None),
+                    y=alt.Y("sum(Valor):Q", title="€", axis=alt.Axis(format=",.0f")),
+                    color=alt.Color("Tipo:N", scale=_escala_tipo_venda(), legend=alt.Legend(orient="bottom", title=None)),
+                    tooltip=["Mês", "Tipo", alt.Tooltip("sum(Valor):Q", title="Valor (€)", format=",.2f")],
+                ).properties(height=280),
+                width="stretch",
+            )
+        with st.container(border=True):
+            st.markdown("**Liquidez média por mês**")
+            df_liq = df.reindex(columns=[*df.columns, *{"liquidez_media", "liquidez_minima", "liquidez_maxima"} - set(df.columns)])
+            df_liq = df_liq.dropna(subset=["liquidez_media"]).assign(Mes=lambda d: d["mes"].map(lambda m: MESES_NOME_CURTO[m - 1]))
+            st.altair_chart(
+                alt.Chart(df_liq).mark_line(point=True, color=COR_SALDO_DISPONIVEL).encode(
+                    x=alt.X("Mes:N", sort=MESES_NOME_CURTO, title=None),
+                    y=alt.Y("liquidez_media:Q", title="€", axis=alt.Axis(format=",.0f")),
+                    tooltip=[alt.Tooltip("Mes:N", title="Mês"),
+                             alt.Tooltip("liquidez_media:Q", title="Liquidez média (€)", format=",.2f"),
+                             alt.Tooltip("liquidez_minima:Q", title="Mínima (€)", format=",.2f"),
+                             alt.Tooltip("liquidez_maxima:Q", title="Máxima (€)", format=",.2f")],
+                ).properties(height=280),
+                width="stretch",
+            )
+
+    # liquidez diária do mês escolhido, com as entradas de vendas de cada dia
+    meses_com_saldo = [m["mes"] for m in meses if m.get("dias_com_saldo")]
+    if not diario or not meses_com_saldo:
+        return
+    with st.container(border=True):
+        mes = st.selectbox("Liquidez diária de", meses_com_saldo, index=len(meses_com_saldo) - 1,
+                           format_func=lambda m: f"{MESES_NOME_CURTO[m - 1]} {ano}",
+                           key="mes_liquidez_diaria", width=200)
+        df_dia = pd.DataFrame([d for d in diario if int(d["dia"][5:7]) == mes])
+        df_dia["dia"] = pd.to_datetime(df_dia["dia"])
+        linha = alt.Chart(df_dia).mark_line(point=True, color=COR_SALDO_DISPONIVEL).encode(
+            x=alt.X("dia:T", title=None, axis=alt.Axis(format="%d")),
+            y=alt.Y("liquidez:Q", title="Liquidez (€)", axis=alt.Axis(format=",.0f")),
+            tooltip=[alt.Tooltip("dia:T", title="Dia", format="%d/%m/%Y"),
+                     alt.Tooltip("liquidez:Q", title="Liquidez (€)", format=",.2f")],
+        ).properties(height=240)
+        df_entradas = df_dia.melt(id_vars=["dia"], value_vars=list(TIPOS_VENDA_RESUMO),
+                                  var_name="tipo", value_name="Valor")
+        df_entradas = df_entradas[df_entradas["Valor"] > 0].assign(Tipo=lambda d: d["tipo"].map(TIPOS_VENDA_RESUMO))
+        graficos = [linha]
+        if not df_entradas.empty:
+            graficos.append(alt.Chart(df_entradas).mark_bar(size=10).encode(
+                x=alt.X("dia:T", title=None, axis=alt.Axis(format="%d"), scale=alt.Scale(domain=[df_dia["dia"].min(), df_dia["dia"].max()])),
+                y=alt.Y("sum(Valor):Q", title="Vendas (€)", axis=alt.Axis(format=",.0f")),
+                color=alt.Color("Tipo:N", scale=_escala_tipo_venda(), legend=alt.Legend(orient="bottom", title=None)),
+                tooltip=[alt.Tooltip("dia:T", title="Dia", format="%d/%m/%Y"), "Tipo",
+                         alt.Tooltip("sum(Valor):Q", title="Valor (€)", format=",.2f")],
+            ).properties(height=130))
+        st.altair_chart(alt.vconcat(*graficos), width="stretch")
+        tabela = df_dia.assign(Dia=df_dia["dia"].dt.strftime("%d/%m/%Y"))
+        st.dataframe(
+            tabela[["Dia", "liquidez", "saldo_contabilistico", *TIPOS_VENDA_RESUMO]].sort_values("Dia", ascending=False),
+            width="stretch", hide_index=True,
+            column_config={
+                "liquidez": st.column_config.NumberColumn("Liquidez (disponível)", format="euro"),
+                "saldo_contabilistico": st.column_config.NumberColumn("Saldo contabilístico", format="euro"),
+                **{chave: st.column_config.NumberColumn(nome, format="euro") for chave, nome in TIPOS_VENDA_RESUMO.items()},
+            },
+        )
+
+
 def _secao_rendas(empresa, periodo: dict):
     """Mapa de Rendas cruzado com os extratos: cada recebimento "TRF/TFI
     <nome>" é atribuído a um contrato pelo nome do arrendatário e pelo valor,
@@ -2843,9 +3018,10 @@ if aba_analise_extratos.open:
 
         if pesquisa_extratos.strip():
             st.caption(f"🔎 {len(linhas_encontradas)} de {len(linhas_extratos)} linhas com \"{pesquisa_extratos.strip()}\".")
-        sep_receb, sep_pag, sep_cpcv_mapa, sep_cpcv_indice, sep_rendas = st.tabs([
+        sep_receb, sep_pag, sep_cpcv_mapa, sep_cpcv_indice, sep_rendas, sep_resumo_saldos = st.tabs([
             f"Recebimentos ({len(linhas_receb)})", f"Pagamentos ({len(linhas_pag)})",
             f"CPCVs / Escrituras - Mapa ({len(linhas_cpcv_escritura)})", "Vendas - Índice comercial", "Rendas",
+            "Resumo mensal de saldos",
         ])
         with sep_receb:
             tabela_extratos_colorida(linhas_receb, cores_receb, "Sem recebimentos registados no período.")
@@ -2899,6 +3075,9 @@ if aba_analise_extratos.open:
 
         with sep_rendas:
             _secao_rendas(empresa_extratos, periodo_extratos)
+
+        with sep_resumo_saldos:
+            _secao_resumo_mensal_saldos()
 
         with st.container(border=True):
             grafico_ranking_pag = grafico_ranking_imputacoes(analise.get("pagamentos", []), "Imputações que mais gastam (ranking completo)")

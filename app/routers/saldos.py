@@ -27,6 +27,7 @@ from app.services.previsao import (
     prever_saldo_total_por_cashflow,
 )
 from app.services.previsao_ancorada import backtest_previsao_ancorada, listar_risco_liquidez, prever_saldo_ancorado
+from app.services.resumo_saldos import resumo_mensal_saldos
 from app.services.saldos import consultar_saldo as consultar_saldo_servico
 from app.services.saldos import (
     listar_saldos_atuais,
@@ -228,6 +229,14 @@ def saldos_serie_total(db: Session = Depends(get_db)):
     tempo - para o gráfico da Visão Geral. Rota definida antes de
     `/saldos/{empresa}` para não ser apanhada por esse path param."""
     return {"serie": serie_saldo_total(db)}
+
+
+@router.get("/saldos/resumo-mensal")
+def saldos_resumo_mensal(ano: Optional[int] = None, db: Session = Depends(get_db)):
+    """Resumo mensal da liquidez (saldo disponível de todas as contas) com
+    os recebimentos de CPCVs, reforços de sinal e escrituras - Análise de
+    Extratos > Resumo mensal. Antes de `/saldos/{empresa}`, como a de cima."""
+    return resumo_mensal_saldos(db, ano or date.today().year)
 
 
 @router.get("/saldos/{empresa}", response_model=List[SaldoOut])
