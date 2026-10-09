@@ -380,13 +380,18 @@ def _imputacao_de_linha(l: LinhaMapa) -> str:
 
 
 # Código de referência de uma fração no Índice do Departamento Comercial
-# (ex. "00.PO.23.035" - dois dígitos, duas letras, dois dígitos, três
-# dígitos, sempre separados por ponto) - ver app/services/comercial.py
+# (ex. "00.PO.23.035" - dois dígitos, duas letras, dois ou três dígitos,
+# três dígitos, sempre separados por ponto; o lote pode ter três dígitos,
+# ex. "00.ST.129.031" - visto em 10/2026) - ver app/services/comercial.py
 # (COL_REF). Aparece escrito à mão na Descrição de linhas do Mapa (CPCVs,
 # escrituras, e também sinais/depósitos ainda categorizados só como
 # "DEPOSITO" na Imputação) - é o que liga uma linha do Mapa ao espaço
 # físico/fração da venda a que se refere.
-PADRAO_REF_FRACAO = re.compile(r"\b\d{2}\.[A-Z]{2}\.\d{2}\.\d{3}\b", re.IGNORECASE)
+PADRAO_REF_FRACAO = re.compile(r"\b\d{2}\.[A-Z]{2}\.\d{2,3}\.\d{3}\b", re.IGNORECASE)
+# Palavras que, na Descrição ou na Imputação, marcam uma linha de venda de
+# imóvel (ex. Imputação "00.PO.23.035 Cpcv ALVA Lote 3 AI", "Escritura -
+# 00.AV.04.002, ...", Descrição "Reforço Sinal - 00.PO.23.001").
+PALAVRAS_VENDA = ("cpcv", "escritura", "reforco sinal", "reforco de sinal")
 
 
 def _refs_fracao_de_linha(l: LinhaMapa) -> list:
@@ -407,8 +412,13 @@ def _e_cpcv_ou_escritura(l: LinhaMapa) -> bool:
     Imputação própria (ex. "DEPOSITO", um sinal de CPCV) desde que a
     Descrição refira um código de fração - essas linhas não devem mudar de
     categoria no gráfico circular (continuam "DEPOSITO"), mas fazem parte
-    do mesmo processo de venda e ficavam de fora da tabela dedicada."""
+    do mesmo processo de venda e ficavam de fora da tabela dedicada.
+    Também quando a Descrição ou a Imputação dizem CPCV/escritura/reforço
+    de sinal no meio de outro texto (ex. "00.ST.129.031 Cpcv Novo Mercado")."""
     if _imputacao_de_linha(l) in ("CPCV", "Escritura"):
+        return True
+    texto = remover_acentos(f"{l.descricao or ''} {l.imputacao or ''}").lower()
+    if any(palavra in texto for palavra in PALAVRAS_VENDA):
         return True
     return bool(_refs_fracao_de_linha(l))
 
