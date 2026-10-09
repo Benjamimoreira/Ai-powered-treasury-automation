@@ -203,13 +203,27 @@ registadas, as interações e anotações do Assistente e o histórico de
 execuções dos scripts. Vale a pena um dump regular:
 
 ```powershell
-docker compose exec -T db pg_dump -U tesouraria -Fc tesouraria > backup_$(Get-Date -f yyyyMMdd).dump
+# dump dentro do container e docker cp para fora: redirecionar com ">" no
+# PowerShell pode corromper o ficheiro binário, e "<" nem existe
+docker exec ai-powered-treasury-automation-db-1 pg_dump -U tesouraria -Fc -f /tmp/backup.dump tesouraria
+docker cp ai-powered-treasury-automation-db-1:/tmp/backup.dump "backup_$(Get-Date -f yyyyMMdd).dump"
 # restaurar:
-docker compose exec -T db pg_restore -U tesouraria -d tesouraria --clean < backup_<data>.dump
+docker cp backup_<data>.dump ai-powered-treasury-automation-db-1:/tmp/backup.dump
+docker exec ai-powered-treasury-automation-db-1 pg_restore -U tesouraria -d tesouraria --clean --if-exists /tmp/backup.dump
 ```
 
-Outros volumes: `phoenix_data` (traces, datasets, experiências) e
-`logs_archive` (logs compactados por dia).
+Outros volumes com dados: `faturas_extraidas` (resultado e cache do OCR
+das faturas - sem ela o OCR é refeito de raiz), `phoenix_data` (traces,
+datasets, experiências) e `logs_archive` (logs compactados por dia):
+
+```powershell
+$p = "ai-powered-treasury-automation"
+docker run --rm -v "${p}_faturas_extraidas:/v:ro" -v "${PWD}:/b" alpine tar czf /b/faturas_extraidas.tar.gz -C /v .
+# Phoenix: parar durante a cópia (SQLite)
+docker stop "$p-phoenix-1"; docker run --rm -v "${p}_phoenix_data:/v:ro" -v "${PWD}:/b" alpine tar czf /b/phoenix_data.tar.gz -C /v .; docker start "$p-phoenix-1"
+# restaurar (com o serviço desse volume parado):
+docker run --rm -v "${p}_faturas_extraidas:/v" -v "${PWD}:/b:ro" alpine tar xzf /b/faturas_extraidas.tar.gz -C /v
+```
 
 > Os volumes Docker sobrevivem a `docker compose down`, mas **não** a
 > `docker compose down -v`.
