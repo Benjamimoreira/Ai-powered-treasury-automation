@@ -250,13 +250,22 @@ def _reportar_deploy(deploy_id: int):
     return reportar
 
 
+_mtime_deploy_windows = [None]
+
+
 def correr_deploy(deploy: dict) -> bool:
     global deploy_windows
-    # recarregar os passos a cada deploy: um git pull em C:	esouraria que
-    # mude scripts/deploy_windows.py passa a valer sem reiniciar o agente
+    # recarregar os passos quando o ficheiro mudou: um git pull em
+    # C:	esouraria que mude scripts/deploy_windows.py passa a valer sem
+    # reiniciar o agente
     try:
-        import importlib
-        deploy_windows = importlib.reload(deploy_windows)
+        mtime = os.path.getmtime(deploy_windows.__file__)
+        if mtime != _mtime_deploy_windows[0]:
+            if _mtime_deploy_windows[0] is not None:
+                import importlib
+                deploy_windows = importlib.reload(deploy_windows)
+                log.info("deploy_windows.py mudou - recarregado")
+            _mtime_deploy_windows[0] = mtime
     except Exception:
         log.exception("não foi possível recarregar deploy_windows - a usar a versão já carregada")
     log.info("deploy %s (%s) a começar", deploy["id"], deploy["alvo"])
