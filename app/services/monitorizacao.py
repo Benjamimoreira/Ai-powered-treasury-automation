@@ -576,7 +576,7 @@ def listar_eventos(db: Session, limit: int = 50, script: Optional[str] = None,
         # as discrepâncias são a maioria dos eventos: lê em blocos até ter `limit`
         for inicio in range(0, 50 * limit, 5 * limit):
             bloco = query.offset(inicio).limit(5 * limit).all()
-            eventos += [e for e in bloco if not e_discrepancia_saldo(e.mensagem)]
+            eventos += [e for e in bloco if not e_discrepancia_saldo(e.mensagem) and e.script != "discrepancias"]
             if len(eventos) >= limit or len(bloco) < 5 * limit:
                 break
         eventos = eventos[:limit]

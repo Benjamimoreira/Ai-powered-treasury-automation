@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.db.models import EventoScript
+from app.db.models import AuditoriaDia, EventoScript
 
 # (padrão na mensagem, tipo mostrado) - por ordem: o primeiro que bate ganha
 TIPOS_DISCREPANCIA = [
@@ -93,10 +93,58 @@ def _analisar(mensagem: str, visto_em: datetime) -> Dict[str, Any]:
     return {"dia": dia, "empresa": empresa or "-", "diferenca": diferenca}
 
 
+TIPO_AUDITORIA = "Extrato ≠ Mapa de Pagamentos (auditoria)"
+PREFIXO_RESOLVIDA = "[RESOLVIDA] "
+
+
+def chave_discrepancia(dia: Optional[str], empresa: str, tipo: str) -> str:
+    return f"{dia}|{empresa}|{tipo}"
+
+
+def marcar_resolvida(db: Session, dia: str, empresa: str, tipo: str) -> None:
+    """O botão "Atualizar" confirmou que a discrepância desapareceu: fica um
+    evento [RESOLVIDA] e deixa de aparecer (até voltar a ser reportada)."""
+    db.add(EventoScript(script="discrepancias", nivel="info",
+                        mensagem=PREFIXO_RESOLVIDA + chave_discrepancia(dia, empresa, tipo)))
+    db.commit()
+
+
+def _discrepancias_da_auditoria(db: Session, desde: datetime) -> List[Dict[str, Any]]:
+    """Diferenças extrato vs Mapa por empresa da auditoria MAIS RECENTE de
+    cada dia (a que antes ia por email) - uma auditoria nova sem a empresa
+    quer dizer que já bate certo."""
+    ultimas: Dict[Any, AuditoriaDia] = {}
+    for auditoria in (db.query(AuditoriaDia).filter(AuditoriaDia.timestamp >= desde)
+                      .order_by(AuditoriaDia.timestamp).all()):
+        ultimas[auditoria.dia] = auditoria
+    itens = []
+    for dia, auditoria in ultimas.items():
+        for d in auditoria.diferencas_por_empresa or []:
+            itens.append({
+                "dia": dia.isoformat(),
+                "empresa": d.get("empresa") or "-",
+                "diferenca": round(float(d.get("diferenca") or 0), 2),
+                "tipo": TIPO_AUDITORIA,
+                "script": "auditoria",
+                "mensagem": (f"Extrato {d.get('soma_extrato', 0):.2f} EUR vs Mapa {d.get('soma_mapa', 0):.2f} EUR "
+                             f"- diferença {d.get('diferenca', 0):.2f} EUR"),
+                "visto_em": auditoria.timestamp.isoformat(timespec="seconds") + "Z",
+                "ocorrencias": 1,
+            })
+    return itens
+
+
 def listar_discrepancias(db: Session, dias: int = 14) -> List[Dict[str, Any]]:
     """Discrepâncias vistas nos últimos `dias`, uma por (dia, empresa,
-    tipo) - a mais recente, com quantas vezes foi reportada."""
+    tipo) - a mais recente, com quantas vezes foi reportada. Junta as
+    diferenças da auditoria (extrato vs Mapa) e tira as marcadas como
+    resolvidas depois da última vez que foram vistas."""
     desde = datetime.utcnow() - timedelta(days=dias)
+    resolvidas = {}
+    for e in (db.query(EventoScript).filter(EventoScript.script == "discrepancias",
+                                            EventoScript.timestamp >= desde).all()):
+        if e.mensagem.startswith(PREFIXO_RESOLVIDA):
+            resolvidas[e.mensagem[len(PREFIXO_RESOLVIDA):]] = e.timestamp
     eventos = (
         db.query(EventoScript)
         .filter(EventoScript.timestamp >= desde, EventoScript.nivel.in_(("aviso", "erro", "warning", "error")))
@@ -121,4 +169,9 @@ def listar_discrepancias(db: Session, dias: int = 14) -> List[Dict[str, Any]]:
             "visto_em": evento.timestamp.isoformat(timespec="seconds") + "Z",
             "ocorrencias": 1,
         }
-    return sorted(agrupadas.values(), key=lambda d: (d["dia"] or "", d["visto_em"]), reverse=True)
+    itens = list(agrupadas.values()) + _discrepancias_da_auditoria(db, desde)
+    itens = [i for i in itens
+             if not (chave_discrepancia(i["dia"], i["empresa"], i["tipo"]) in resolvidas
+                     and resolvidas[chave_discrepancia(i["dia"], i["empresa"], i["tipo"])].isoformat(timespec="seconds") + "Z"
+                     >= i["visto_em"])]
+    return sorted(itens, key=lambda d: (d["dia"] or "", d["visto_em"]), reverse=True)

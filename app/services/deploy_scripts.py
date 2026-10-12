@@ -23,6 +23,9 @@ ALVOS_DEPLOY: Dict[str, str] = {
     "cgd_PreencherResumoMensalCGD": "PreencherResumoMensalCGD - Resumo Mensal CGD (09:00, 16:30)",
     "tesouraria_preenchimento": "Tesouraria - Atualizar Mapa Tesouraria, Atualizar Mapa Saldos, Enviar Mapa",
     "scripts_cgd": "Todos os scripts CGD de uma vez",
+    # botão "Atualizar" de uma discrepância (não instala nada): reextrair a
+    # empresa nesse dia, preencher os Mapas desse dia e verificar
+    "reextrair_discrepancia": "Atualizar uma discrepância (reextrair a empresa no dia)",
 }
 # Alvos da CGD: no fim do deploy fazem o que foi escolhido no dashboard -
 # "Hoje"/"Intervalo": extrair esses dias, atualizar os Mapas e o dashboard
@@ -89,7 +92,12 @@ def _validar_extracao(extracao: Optional[Dict[str, Any]]) -> Optional[Dict[str, 
         raise ValueError(f"Período de extração inválido: {extracao}") from exc
     if fim < inicio:
         raise ValueError("A data de fim da extração é anterior à de início.")
-    return {"modo": "periodo", "inicio": inicio.isoformat(), "fim": fim.isoformat()}
+    resultado = {"modo": "periodo", "inicio": inicio.isoformat(), "fim": fim.isoformat()}
+    # reextração de uma discrepância: a empresa e o tipo (para a verificar)
+    for campo in ("empresa", "tipo"):
+        if extracao.get(campo):
+            resultado[campo] = str(extracao[campo])
+    return resultado
 
 
 def pedir_deploy(db: Session, alvo: str, extracao: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -100,6 +108,8 @@ def pedir_deploy(db: Session, alvo: str, extracao: Optional[Dict[str, Any]] = No
         raise ValueError(f"Alvo de deploy desconhecido: {alvo}")
     extracao = _validar_extracao(extracao)
     deploy = _ativo(db, alvo)
+    if deploy is not None and alvo == "reextrair_discrepancia" and deploy.extracao != extracao:
+        deploy = None  # outra discrepância: pedido novo (o agente faz um de cada vez)
     if deploy is None:
         deploy = DeployScripts(alvo=alvo, estado="pendente", mensagem="À espera do agente do Windows", log=[],
                                extracao=extracao)

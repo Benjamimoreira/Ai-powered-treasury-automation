@@ -82,3 +82,34 @@ def test_deploy_e_pedido_falhado_aparecem_nos_separadores(client):
     client.post(f"/monitorizacao/pedidos/{pedido['id']}/estado", json={"estado": "erro", "erro": "pasta não existe"})
     eventos = client.get("/monitorizacao/eventos", params={"script": "enviar_mapa_smtp"}).json()["eventos"]
     assert "pasta não existe" in eventos[0]["mensagem"]
+
+
+def test_diferencas_da_auditoria_aparecem_e_saem_quando_resolvidas(client, db_session):
+    from datetime import date
+
+    from app.db.models import AuditoriaDia
+
+    db_session.add(AuditoriaDia(dia=date(2026, 10, 12), sem_match_fwd=1, sem_match_rev=0, soma_extrato=289.71,
+                                soma_mapa=-1862.49, diferenca=2152.2, diferencas_por_empresa=[
+                                    {"empresa": "HABISERVE CONSTRUCOES NORTE,LDA", "soma_extrato": 289.71,
+                                     "soma_mapa": -1862.49, "diferenca": 2152.2}]))
+    db_session.commit()
+    d = client.get("/monitorizacao/discrepancias-saldos").json()["discrepancias"]
+    auditoria = [x for x in d if x["script"] == "auditoria"]
+    assert auditoria[0]["empresa"] == "HABISERVE CONSTRUCOES NORTE,LDA" and auditoria[0]["diferenca"] == 2152.2
+    assert auditoria[0]["dia"] == "2026-10-12"
+
+    client.post("/monitorizacao/discrepancias-saldos/resolvida", json={
+        "dia": "2026-10-12", "empresa": "HABISERVE CONSTRUCOES NORTE,LDA", "tipo": auditoria[0]["tipo"]})
+    d = client.get("/monitorizacao/discrepancias-saldos").json()["discrepancias"]
+    assert not [x for x in d if x["script"] == "auditoria"]
+    # o marcador não aparece nos erros em tempo real
+    assert not client.get("/monitorizacao/eventos", params={"sem_saldos": True}).json()["eventos"]
+
+
+def test_auditoria_ja_nao_envia_email(monkeypatch):
+    import inspect
+
+    from app.services import reconciliador
+
+    assert "enviar_alerta_auditoria" not in inspect.getsource(reconciliador)

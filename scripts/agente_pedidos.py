@@ -158,13 +158,16 @@ def _lancar_sem_elevacao(script: str, comando: list, cwd: Path) -> None:
                            f"{(resultado.stderr or resultado.stdout).strip()[:300]}")
 
 
-def lancar(script: str) -> None:
+def lancar(script: str, extra=None) -> None:
+    """Lança o script como a tarefa agendada; `extra` são argumentos a mais
+    (ex. ["2026-10", "9"] para o preencher_mapa de um dia - deploy/
+    reextração de uma discrepância)."""
     if script not in COMANDOS:
         raise RuntimeError(f"Sem comando para o script '{script}'")
     if not PASTA_SCRIPTS.is_dir():
         raise RuntimeError(f"Pasta dos scripts não encontrada: {PASTA_SCRIPTS}")
     lancador, argumentos = COMANDOS[script]
-    comando = [*_executavel(lancador), *argumentos]
+    comando = [*_executavel(lancador), *argumentos, *(extra or [])]
     if _elevado():
         _lancar_sem_elevacao(script, comando, PASTA_SCRIPTS)
         return
@@ -269,7 +272,8 @@ def correr_deploy(deploy: dict) -> bool:
     except Exception:
         log.exception("não foi possível recarregar deploy_windows - a usar a versão já carregada")
     log.info("deploy %s (%s) a começar", deploy["id"], deploy["alvo"])
-    ok = deploy_windows.correr(deploy["alvo"], _reportar_deploy(deploy["id"]), extracao=deploy.get("extracao"), api=_api)
+    ok = deploy_windows.correr(deploy["alvo"], _reportar_deploy(deploy["id"]), extracao=deploy.get("extracao"), api=_api,
+                               lancar=lambda argumentos: lancar("preencher_mapa", argumentos))
     log.info("deploy %s (%s) %s", deploy["id"], deploy["alvo"], "concluído" if ok else "falhou")
     return ok
 

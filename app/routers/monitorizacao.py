@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.atualizacao_dados import sincronizar_apos_script
 from app.services.deploy_scripts import ALVOS_COM_EXTRACAO, ALVOS_DEPLOY, listar_deploys, obter_deploy, pedir_deploy, registar_progresso
-from app.services.discrepancias_saldos import listar_discrepancias
+from app.services.discrepancias_saldos import listar_discrepancias, marcar_resolvida
 from app.services.destinatarios_mapa import adicionar_destinatario, listar_destinatarios, remover_destinatario
 from app.services.monitorizacao import (
     listar_eventos, listar_logs, listar_pedidos, listar_scripts, listar_tarefas, marcar_pedido, pedir_corrida,
@@ -229,6 +229,19 @@ def listar_discrepancias_saldos(dias: int = 14, db: Session = Depends(get_db)):
     """Discrepâncias de saldos das empresas reportadas pelos scripts nos
     últimos `dias`, uma por (dia, empresa, tipo) - ver discrepancias_saldos.py."""
     return {"discrepancias": listar_discrepancias(db, dias=dias)}
+
+
+class DiscrepanciaResolvidaRequest(BaseModel):
+    dia: str
+    empresa: str
+    tipo: str
+
+
+@router.post("/discrepancias-saldos/resolvida")
+def discrepancia_resolvida(payload: DiscrepanciaResolvidaRequest, db: Session = Depends(get_db)):
+    """A tarefa do botão "Atualizar" confirmou que já não há discrepância."""
+    marcar_resolvida(db, payload.dia, payload.empresa, payload.tipo)
+    return {"ok": True}
 
 
 @router.get("/ia")

@@ -598,10 +598,10 @@ with col_botao:
                 st.error(f"Erro: {e}")
 
 (
-    aba_visao_geral, aba_monitorizacao, aba_faturas, aba_saldos,
-    aba_analise_extratos, aba_forecast,
+    aba_visao_geral, aba_saldos, aba_analise_extratos, aba_faturas,
+    aba_forecast, aba_monitorizacao,
 ) = st.tabs(
-    ["Visão Geral", "Monitorização", "Faturas", "Saldos", "Análise de Extratos", "Predição"],
+    ["Visão Geral", "Saldos", "Análise de Extratos", "Faturas", "Predição", "Monitorização"],
     # Separadores dinâmicos: só o aberto corre (ver `if aba_*.open:` abaixo).
     # Antes, cada clique em qualquer separador voltava a correr os seis - com
     # todos os gráficos e pedidos à API - e a página ficava lenta.
@@ -1822,23 +1822,47 @@ def _secao_discrepancias_saldos() -> None:
         if not com_valor.empty:
             st.metric("Maior diferença", f"{_n(com_valor.abs().max(), 2)} €", border=True)
 
-    df = df.assign(
-        Dia=pd.to_datetime(df["dia"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("-"),
-        visto=df["visto_em"].map(_hora_local),
-    )
-    st.dataframe(
-        df[["Dia", "empresa", "tipo", "diferenca", "mensagem", "ocorrencias", "visto", "script"]],
-        width="stretch", hide_index=True,
-        column_config={
-            "empresa": st.column_config.TextColumn("Empresa"),
-            "tipo": st.column_config.TextColumn("Tipo"),
-            "diferenca": st.column_config.NumberColumn("Diferença", format="euro"),
-            "mensagem": st.column_config.TextColumn("Detalhe", width="large"),
-            "ocorrencias": st.column_config.NumberColumn("Vezes reportada", help="Corridas que reportaram isto"),
-            "visto": st.column_config.TextColumn("Última vez"),
-            "script": st.column_config.TextColumn("Reportado por"),
-        },
-    )
+    st.caption("🔄 Atualizar = volta a extrair do banco os extratos dessa empresa nesse dia, preenche o Mapa de "
+               "Saldos e o Mapa de Pagamentos e Recebimentos desse dia e verifica outra vez (até 3 vezes). Quando "
+               "a discrepância desaparece, sai desta lista. O progresso aparece em baixo e em Deploy dos scripts.")
+    # reextrações já pedidas/em curso: não deixar pedir a mesma outra vez
+    try:
+        em_curso = {
+            (d["extracao"] or {}).get("inicio", "") + "|" + (d["extracao"] or {}).get("empresa", "") + "|"
+            + (d["extracao"] or {}).get("tipo", ""): d
+            for d in api.listar_deploys(limit=30)
+            if d["alvo"] == "reextrair_discrepancia" and d["estado"] in ("pendente", "a_correr")
+        }
+    except Exception:
+        em_curso = {}
+    df = df.assign(_abs=df["diferenca"].abs().fillna(-1)).sort_values(["_abs", "dia"], ascending=[False, False])
+    LIMITE = 40
+    for i, d in enumerate(df.head(LIMITE).to_dict("records")):
+        dia_txt = pd.to_datetime(d["dia"], errors="coerce").strftime("%d/%m/%Y") if d.get("dia") else "-"
+        valor = (f" · <b>{_n(d['diferenca'], 2)} €</b>" if pd.notna(d.get("diferenca")) else "")
+        chave = f"{d.get('dia')}|{d['empresa']}|{d['tipo']}"
+        with st.container(horizontal=True, vertical_alignment="center", key=f"disc_{i}"):
+            st.markdown(
+                f"<b>{dia_txt} · {escape(str(d['empresa']))}</b> · {escape(d['tipo'])}{valor}<br>"
+                f"<span style='color:#5b6577;font-size:.85rem'>{escape(str(d['mensagem'])[:220])} · "
+                f"última vez {_hora_local(d['visto_em'])} · {d['ocorrencias']}× · {escape(str(d['script']))}</span>",
+                unsafe_allow_html=True, width="stretch",
+            )
+            if chave in em_curso:
+                st.markdown(f"🔄 {ESTADO_DEPLOY.get(em_curso[chave]['estado'], '')}", width=170)
+            elif not d.get("dia") or d["empresa"] == "-":
+                st.markdown("<span style='color:#8a93a3'>sem dia/empresa</span>", unsafe_allow_html=True, width=170)
+            elif st.button("🔄 Atualizar", key=f"atualizar_disc_{i}", width=170):
+                try:
+                    api.pedir_deploy("reextrair_discrepancia", extracao={
+                        "modo": "periodo", "inicio": d["dia"], "fim": d["dia"],
+                        "empresa": str(d["empresa"]), "tipo": d["tipo"]})
+                    st.success(f"Pedido: reextrair {d['empresa']} em {dia_txt} - o agente começa dentro de ~15 s.")
+                except Exception as e:
+                    st.error(f"Não foi possível pedir a atualização: {e}")
+    if len(df) > LIMITE:
+        st.caption(f"Mostradas as {LIMITE} maiores de {len(df)} - filtra por tipo/empresa para ver as outras.")
+    _progresso_deploys()
 
 
 def _seccao_destinatarios_mapa() -> None:
@@ -1942,7 +1966,7 @@ def _seccao_deploy_scripts() -> None:
         reinicia = {a["alvo"] for a in alvos if a.get("usa_extracao") or a.get("reinicia_anual")}
         extracao, resumo_extracao = _escolha_extracao_deploy()
 
-        individuais = [a for a in alvos if a["alvo"] != "scripts_cgd"]
+        individuais = [a for a in alvos if a["alvo"] not in ("scripts_cgd", "reextrair_discrepancia")]
         for a in individuais:
             nome, _, desc = a["descricao"].partition(" - ")
             ultimo = ultimos.get(a["alvo"])

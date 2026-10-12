@@ -70,6 +70,7 @@ class Contexto:
         self.pilha = contextlib.ExitStack()  # recursos que duram vários passos (lock do banco)
         self.estado = {}
         self.api = None  # _api do agente (GET/POST à API) - para os passos que acompanham a cadeia
+        self.lancar = None  # lança o preencher_mapa com argumentos de dia (agente_pedidos.lancar)
 
     def linha(self, texto: str) -> None:
         self._pendentes.append(texto.rstrip())
@@ -293,32 +294,50 @@ def _cgd_extrair_dias(ctx: Contexto) -> None:
         raise FalhaDeploy(f"Não encontrei {exe}")
     ctx.pilha.close()  # larga o lock do banco: é a extração que o vai pedir
     ctx.estado["extracao_inicio"] = _agora_iso()
-    ctx.correr([exe, "--dias", f"{extracao['inicio']}:{extracao['fim']}"], cwd=pasta)
+    comando = [exe, "--dias", f"{extracao['inicio']}:{extracao['fim']}"]
+    if extracao.get("empresa"):
+        comando += ["--empresa", extracao["empresa"]]
+    ctx.correr(comando, cwd=pasta)
 
 
-def _esperar_mapas(ctx: Contexto) -> None:
-    if ctx.api is None:
-        ctx.linha("[AVISO] Sem ligação à API - não dá para acompanhar o Atualizar Mapa Tesouraria.")
+def _dias_por_mes(extracao: dict) -> list:
+    """[("AAAA-MM", "D" | "D1-D2"), ...] - os argumentos do preencher_mapa
+    (painel_preenchimento.py: mês opcional + dia/intervalo), um por mês."""
+    from datetime import date as _date, timedelta as _td
+
+    inicio, fim = _date.fromisoformat(extracao["inicio"]), _date.fromisoformat(extracao["fim"])
+    meses = {}
+    dia = inicio
+    while dia <= fim:
+        meses.setdefault((dia.year, dia.month), []).append(dia.day)
+        dia += _td(days=1)
+    return [(f"{a}-{m:02d}", f"{d[0]}" if len(d) == 1 else f"{d[0]}-{d[-1]}") for (a, m), d in meses.items()]
+
+
+def _atualizar_mapas(ctx: Contexto) -> None:
+    """Preenche o Mapa de Saldos e o Mapa de Pagamentos e Recebimentos DOS
+    DIAS EXTRAÍDOS (o pedido automático do fim de uma extração só faz
+    ontem/hoje) e espera que cada corrida termine."""
+    if ctx.api is None or ctx.lancar is None:
+        ctx.linha("[AVISO] Sem ligação ao agente/API - não dá para preencher os Mapas daqui.")
         return
-    desde = ctx.estado.get("extracao_inicio") or _agora_iso()
-    limite = time.monotonic() + ESPERA_MAPA
-    pedido_feito = False
-    while time.monotonic() < limite:
-        fim = _execucoes_depois(ctx, "preencher_mapa", desde)
-        if fim:
-            ctx.linha(f"Atualizar Mapa Tesouraria terminou ({fim[-1]['nivel']}): {fim[-1]['mensagem'][:160]}")
-            ctx.estado["mapas_fim"] = fim[-1]["timestamp"]
-            if fim[-1]["nivel"] == "erro":
-                raise FalhaDeploy(f"O Atualizar Mapa Tesouraria falhou: {fim[-1]['mensagem'][:200]}")
-            return
-        scripts = {s["nome"]: s for s in ctx.api("GET", "/monitorizacao/scripts")["scripts"]}
-        if not pedido_feito and not scripts.get("preencher_mapa", {}).get("a_correr_desde") and time.monotonic() > limite - ESPERA_MAPA + 120:
-            # a API pede-o sozinha no fim da extração; se 2 min depois ainda não arrancou, pede-se aqui
-            ctx.api("POST", "/monitorizacao/scripts/preencher_mapa/correr")
-            ctx.linha("Atualizar Mapa Tesouraria pedido.")
-            pedido_feito = True
-        time.sleep(15)
-    raise FalhaDeploy("O Atualizar Mapa Tesouraria não terminou em 45 min.")
+    for mes, dias in _dias_por_mes(ctx.estado["extracao"]):
+        desde = _agora_iso()
+        ctx.estado.setdefault("mapas_inicio", desde)
+        ctx.linha(f"Atualizar Mapa Tesouraria {mes} dia(s) {dias}...")
+        ctx.lancar([mes, dias])
+        limite = time.monotonic() + ESPERA_MAPA
+        while True:
+            fim = _execucoes_depois(ctx, "preencher_mapa", desde)
+            if fim:
+                break
+            if time.monotonic() > limite:
+                raise FalhaDeploy(f"O Atualizar Mapa Tesouraria ({mes} {dias}) não terminou em 45 min.")
+            time.sleep(15)
+        ctx.linha(f"Atualizar Mapa Tesouraria terminou ({fim[-1]['nivel']}): {fim[-1]['mensagem'][:160]}")
+        ctx.estado["mapas_fim"] = fim[-1]["timestamp"]
+        if fim[-1]["nivel"] == "erro":
+            raise FalhaDeploy(f"O Atualizar Mapa Tesouraria falhou: {fim[-1]['mensagem'][:200]}")
 
 
 def _esperar_dashboard(ctx: Contexto) -> None:
@@ -335,12 +354,69 @@ def _esperar_dashboard(ctx: Contexto) -> None:
     ctx.linha("[AVISO] Sem dados novos para o dashboard em 3 min (os Mapas podem não ter mudado).")
 
 
+TENTATIVAS_DISCREPANCIA = 3
+TIPO_AUDITORIA = "Extrato ≠ Mapa de Pagamentos (auditoria)"
+
+
+def _normalizar(texto: str) -> str:
+    import unicodedata
+    texto = unicodedata.normalize("NFKD", str(texto)).encode("ascii", "ignore").decode()
+    return "".join(c for c in texto.upper() if c.isalnum())
+
+
+def _discrepancia_continua(ctx: Contexto) -> bool:
+    """Depois de reextrair e preencher: a discrepância ainda lá está?"""
+    extracao = ctx.estado["extracao"]
+    dia, empresa, tipo = extracao["inicio"], extracao["empresa"], extracao.get("tipo") or TIPO_AUDITORIA
+    if tipo == TIPO_AUDITORIA:
+        # auditar outra vez o dia (a API sincroniza-o antes) e ver a empresa
+        resultado = ctx.api("POST", f"/auditoria/{dia}/registar")
+        for d in resultado.get("diferencas_por_empresa") or []:
+            if _normalizar(d.get("empresa")) == _normalizar(empresa) and abs(float(d.get("diferenca") or 0)) > 0.01:
+                ctx.linha(f"Ainda há diferença: {float(d['diferenca']):.2f} EUR")
+                return True
+        return False
+    # aviso de saldo: voltou a ser reportado pela corrida dos Mapas de agora?
+    desde = ctx.estado.get("mapas_inicio") or ctx.estado.get("extracao_inicio") or _agora_iso()
+    for d in ctx.api("GET", "/monitorizacao/discrepancias-saldos?dias=31")["discrepancias"]:
+        if (d["dia"] == dia and _normalizar(d["empresa"]) == _normalizar(empresa) and d["tipo"] == tipo
+                and d["visto_em"] >= desde[:19]):
+            ctx.linha(f"Ainda reportada: {d['mensagem'][:160]}")
+            return True
+    return False
+
+
+def _verificar_discrepancia(ctx: Contexto) -> None:
+    extracao = ctx.estado["extracao"]
+    for tentativa in range(1, TENTATIVAS_DISCREPANCIA + 1):
+        if not _discrepancia_continua(ctx):
+            ctx.api("POST", "/monitorizacao/discrepancias-saldos/resolvida", {
+                "dia": extracao["inicio"], "empresa": extracao["empresa"],
+                "tipo": extracao.get("tipo") or TIPO_AUDITORIA})
+            ctx.linha(f"Discrepância resolvida (tentativa {tentativa}).")
+            return
+        if tentativa == TENTATIVAS_DISCREPANCIA:
+            break
+        ctx.linha(f"[AVISO] Discrepância continua - nova extração ({tentativa + 1}/{TENTATIVAS_DISCREPANCIA})...")
+        ctx.estado.pop("mapas_inicio", None)
+        _cgd_extrair_dias(ctx)
+        _atualizar_mapas(ctx)
+    raise FalhaDeploy(f"A discrepância continua depois de {TENTATIVAS_DISCREPANCIA} extrações - o extrato do banco "
+                      "pode estar mesmo diferente do Mapa (ver Monitorização > Discrepâncias).")
+
+
 def passos_atualizar(extracao: Optional[dict]) -> list:
     if not extracao or extracao.get("modo") != "periodo":
         return []
+    if extracao.get("empresa"):
+        return [
+            (f"Reextrair {extracao['empresa']} em {extracao['inicio']}", _cgd_extrair_dias),
+            ("Atualizar Mapa de Saldos e Mapa de Pagamentos e Recebimentos desse dia", _atualizar_mapas),
+            ("Verificar a discrepância", _verificar_discrepancia),
+        ]
     return [
         (f"Extrair extratos de {extracao['inicio']} a {extracao['fim']}", _cgd_extrair_dias),
-        ("Atualizar Mapa de Saldos e Mapa de Pagamentos e Recebimentos", _esperar_mapas),
+        ("Atualizar Mapa de Saldos e Mapa de Pagamentos e Recebimentos", _atualizar_mapas),
         ("Atualizar o dashboard", _esperar_dashboard),
     ]
 
@@ -351,6 +427,9 @@ ALVOS = {
     # um exe de cada vez (Monitorização > Deploy dos scripts: um botão por script)
     **{f"cgd_{nome}": _passos_cgd([(nome, subpasta)], reiniciar_anual=(nome == "MovimentosCGD"))
        for nome, subpasta in EXES_CGD},
+    # botão "Atualizar" de uma discrepância: não instala nada - só os passos
+    # de passos_atualizar (reextrair, Mapas desse dia, verificar)
+    "reextrair_discrepancia": [],
     "tesouraria_preenchimento": [
         ("Atualizar o código (git pull)", _pt2_git_pull),
         ("Correr os testes", _pt2_testes),
@@ -360,7 +439,8 @@ ALVOS = {
 }
 
 
-def correr(alvo: str, reportar: Callable[..., None], extracao: Optional[dict] = None, api=None) -> bool:
+def correr(alvo: str, reportar: Callable[..., None], extracao: Optional[dict] = None, api=None,
+           lancar=None) -> bool:
     """Corre os passos de `alvo`. reportar(estado=, passo=, total_passos=,
     mensagem=, erro=, linhas=) envia o progresso à API. `extracao` (só
     scripts_cgd): o que a extração anual reiniciada faz - ver
@@ -369,12 +449,13 @@ def correr(alvo: str, reportar: Callable[..., None], extracao: Optional[dict] = 
     if passos is None:
         reportar(estado="erro", erro=f"Alvo de deploy desconhecido: {alvo}", linhas=[])
         return False
-    if alvo.startswith(("cgd_", "scripts_cgd")):
+    if alvo.startswith(("cgd_", "scripts_cgd", "reextrair_")):
         passos = list(passos) + passos_atualizar(extracao)
     total = len(passos)
     ctx = Contexto(lambda **campos: reportar(estado="a_correr", **campos))
     ctx.estado["extracao"] = extracao
     ctx.api = api
+    ctx.lancar = lancar  # lancar(argumentos): Atualizar Mapa Tesouraria desses dias, sem elevação
     inicio = time.monotonic()
     try:
         for indice, (descricao, funcao) in enumerate(passos):

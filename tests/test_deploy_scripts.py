@@ -61,7 +61,7 @@ def test_agente_corre_um_deploy_de_cada_vez_e_expira_os_antigos(monkeypatch):
             return {"deploys": deploys}
         enviados.append((caminho, corpo))
 
-    def correr_falso(alvo, reportar, extracao=None, api=None):
+    def correr_falso(alvo, reportar, extracao=None, api=None, lancar=None):
         corridos.append(alvo)
         reportar(estado="ok")
         return True
@@ -209,3 +209,12 @@ def test_passos_atualizar_e_anual_com_periodo(tmp_path, monkeypatch):
     ctx.estado["extracao"] = {"modo": "periodo", "inicio": "2026-10-12", "fim": "2026-10-12"}
     deploy_windows._cgd_reiniciar_anual(ctx)
     assert json.loads(ficheiro.read_text(encoding="utf-8")) == {"modo": "nenhuma"}  # quem extrai é o passo seguinte
+
+
+def test_dias_por_mes_para_o_preencher():
+    assert deploy_windows._dias_por_mes({"inicio": "2026-10-09", "fim": "2026-10-09"}) == [("2026-10", "9")]
+    assert deploy_windows._dias_por_mes({"inicio": "2026-09-29", "fim": "2026-10-02"}) == [
+        ("2026-09", "29-30"), ("2026-10", "1-2")]
+    passos = deploy_windows.passos_atualizar({"modo": "periodo", "inicio": "2026-10-09", "fim": "2026-10-09",
+                                              "empresa": "J PINTO CONSTRUCOES,LDA"})
+    assert [p[0] for p in passos][-1] == "Verificar a discrepância"

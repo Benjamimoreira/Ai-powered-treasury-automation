@@ -12,7 +12,6 @@ import openpyxl
 from sqlalchemy.orm import Session
 
 from app.db.models import AuditoriaDia, CasoAmbiguo, LinhaMapa, MovimentoBancario, Reconciliacao
-from app.services.alertas import enviar_alerta_auditoria
 from app.services.monitorizacao import _isoformat
 
 TOLERANCIA_VALOR = 0.01
@@ -636,8 +635,9 @@ def registar_auditoria_dia(db: Session, dia) -> dict:
         diferencas_por_empresa=resultado["diferencas_por_empresa"],
     ))
     db.commit()
-    if dia == date.today():
-        enviar_alerta_auditoria(dia, resultado)
+    # Sem email desde 12/10/2026 (pedido explícito): as diferenças por empresa
+    # aparecem na Monitorização > Discrepâncias de saldos, com o botão
+    # "Atualizar" que volta a extrair a empresa (ver discrepancias_saldos.py).
     return resultado
 
 
