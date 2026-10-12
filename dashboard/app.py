@@ -3237,21 +3237,62 @@ def _resumo_mapa_do_mes(ano: int, mes: int, resumo: dict, diario: list) -> None:
             st.info("Sem saldos registados neste mês.")
             return
         dias = dias.sort_values("dia")
-        total = {"Dia": "Total", **{c: dias[c].sum() for c in ("recebido", "pago", *TIPOS_VENDA_RESUMO)},
+        # liquidez diária = o que entrou menos o que saiu nesse dia (Mapa)
+        dias["liquidez_diaria"] = dias["recebido"] - dias["pago"]
+        total = {"Dia": "Total", **{c: dias[c].sum() for c in ("recebido", "pago", "liquidez_diaria", *TIPOS_VENDA_RESUMO)},
                  "saldo_contabilistico": None, "liquidez": None}
         dias["Dia"] = pd.to_datetime(dias["dia"]).dt.strftime("%d/%m/%Y")
         tabela = pd.concat([dias, pd.DataFrame([total])], ignore_index=True)
-        st.dataframe(
-            tabela[["Dia", "recebido", "pago", *TIPOS_VENDA_RESUMO, "saldo_contabilistico", "liquidez"]],
-            width="stretch", hide_index=True,
-            column_config={
-                "recebido": st.column_config.NumberColumn("Recebido", format="euro"),
-                "pago": st.column_config.NumberColumn("Pago", format="euro"),
-                **{chave: st.column_config.NumberColumn(nome, format="euro") for chave, nome in TIPOS_VENDA_RESUMO.items()},
-                "saldo_contabilistico": st.column_config.NumberColumn("Saldo bancário", format="euro"),
-                "liquidez": st.column_config.NumberColumn("Saldo bancário disponível", format="euro"),
-            },
+        colunas = ["Dia", "recebido", "pago", "liquidez_diaria", *TIPOS_VENDA_RESUMO, "saldo_contabilistico", "liquidez"]
+        nomes = {"recebido": "Recebido", "pago": "Pago", "liquidez_diaria": "Liquidez diária", **TIPOS_VENDA_RESUMO,
+                 "saldo_contabilistico": "Saldo bancário", "liquidez": "Saldo bancário disponível"}
+        tabela = tabela[colunas].rename(columns=nomes)
+
+        def _cor_liquidez(valor):
+            if pd.isna(valor) or abs(valor) < 0.005:
+                return ""
+            if valor > 0:
+                return "color: #0b7a3e; background-color: #e3f5ea; font-weight: 600"
+            return "color: #b3261e; background-color: #fbe4e2; font-weight: 600"
+
+        euros = [nomes[c] for c in colunas if c != "Dia"]
+        estilo = (tabela.style
+                  .map(_cor_liquidez, subset=["Liquidez diária"])
+                  .format(lambda v: "" if pd.isna(v) else f"{_n(v, 2)} €", subset=euros)
+                  .format(lambda v: "" if pd.isna(v) else f"{_n(v, 2, sinal=abs(v) >= 0.005)} €",
+                          subset=["Liquidez diária"]))
+        st.dataframe(estilo, width="stretch", hide_index=True)
+
+        # gráfico de linhas: o que entrou, o que saiu e a liquidez de cada dia
+        st.markdown("**Liquidez diária**")
+        st.caption("Recebido − pago de cada dia: acima de 0 (ponto verde) entrou mais do que saiu, abaixo de 0 "
+                   "(ponto vermelho) saiu mais do que entrou.")
+        df_graf = dias.assign(dia=pd.to_datetime(dias["dia"]))
+        df_linhas = df_graf.melt(id_vars=["dia"], value_vars=["recebido", "pago", "liquidez_diaria"],
+                                 var_name="serie", value_name="Valor")
+        df_linhas["Série"] = df_linhas["serie"].map({"recebido": "Recebido", "pago": "Pago",
+                                                     "liquidez_diaria": "Liquidez diária"})
+        cores = alt.Scale(domain=["Recebido", "Pago", "Liquidez diária"],
+                          range=[COR_RECEBIMENTOS_MES, COR_PAGAMENTOS_MES, "#1f3a68"])
+        eixo_x = alt.X("dia:T", title=None, axis=alt.Axis(format="%d/%m", tickCount={"interval": "day", "step": 1}))
+        linhas = alt.Chart(df_linhas).mark_line(strokeWidth=2).encode(
+            x=eixo_x, y=alt.Y("Valor:Q", title="€", axis=alt.Axis(format=",.0f")),
+            color=alt.Color("Série:N", scale=cores, legend=alt.Legend(orient="bottom", title=None)),
+            strokeDash=alt.condition(alt.datum["Série"] == "Liquidez diária", alt.value([1, 0]), alt.value([4, 3])),
+            tooltip=[alt.Tooltip("dia:T", title="Dia", format="%d/%m/%Y"), "Série",
+                     alt.Tooltip("Valor:Q", title="Valor (€)", format=",.2f")],
         )
+        # pontos da liquidez diária: verde se positiva, vermelho se negativa
+        pontos = alt.Chart(df_graf).mark_point(filled=True, size=70).encode(
+            x=eixo_x, y="liquidez_diaria:Q",
+            color=alt.condition(alt.datum.liquidez_diaria >= 0, alt.value("#0b7a3e"), alt.value("#b3261e")),
+            tooltip=[alt.Tooltip("dia:T", title="Dia", format="%d/%m/%Y"),
+                     alt.Tooltip("recebido:Q", title="Recebido (€)", format=",.2f"),
+                     alt.Tooltip("pago:Q", title="Pago (€)", format=",.2f"),
+                     alt.Tooltip("liquidez_diaria:Q", title="Liquidez diária (€)", format="+,.2f")],
+        )
+        zero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#8a93a3", strokeDash=[2, 2]).encode(y="y:Q")
+        st.altair_chart((zero + linhas + pontos).properties(height=320), width="stretch")
 
 
 def _secao_resumo_mensal_saldos():
