@@ -110,6 +110,12 @@ class Contexto:
 
     def linha(self, texto: str) -> None:
         self._pendentes.append(texto.rstrip())
+        # com o lock do banco (passos dos scripts CGD) cada linha é sinal de
+        # vida - senão uma compilação longa parecia "pendurada" e a extração
+        # à espera terminava o agente (bloqueio_sessao.LIMITE_SEM_VIDA_S)
+        bloqueio = sys.modules.get("bloqueio_sessao")
+        if bloqueio is not None and hasattr(bloqueio, "sinal_de_vida"):
+            bloqueio.sinal_de_vida()
         if time.monotonic() - self._ultimo_envio >= INTERVALO_REPORTE_S or len(self._pendentes) >= 40:
             self.enviar_linhas()
 
