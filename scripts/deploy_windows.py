@@ -59,6 +59,41 @@ class FalhaDeploy(RuntimeError):
     pass
 
 
+# (texto que aparece no log do programa, motivo em português para o dashboard)
+# - o primeiro que bater, por esta ordem
+MOTIVOS_FALHA = [
+    (("SmsNaoIntroduzido", "SMS Token não introduzido", "SMS não introduzido", "Validação SMS"),
+     "o código SMS do banco não foi introduzido a tempo"),
+    (("net::ERR_INTERNET_DISCONNECTED", "net::ERR_NAME_NOT_RESOLVED", "net::ERR_CONNECTION",
+      "net::ERR_NETWORK", "net::ERR_ADDRESS_UNREACHABLE", "net::ERR_TIMED_OUT", "getaddrinfo failed",
+      "Name or service not known", "No address associated", "Temporary failure in name resolution"),
+     "falha de internet (sem ligação ou o site do banco não responde)"),
+    (("Target page, context or browser has been closed", "Browser closed", "browser has disconnected"),
+     "o Chrome fechou-se a meio da extração"),
+    (("Timeout", "timed out", "Tempo esgotado"),
+     "o site do banco demorou demasiado a responder (internet lenta ou banco em baixo)"),
+    (("Login incompleto", "URL inesperado", "Caixadirecta não abriu", "ecrã inicial falhou",
+      "Botão Caixadirecta"),
+     "o login no banco falhou (o site da CGD não abriu o ecrã de login)"),
+    (("Permission denied", "PermissionError", "Acesso negado"),
+     "sem permissão para um ficheiro (outro programa a usá-lo ou criado como administrador)"),
+    (("sessao_banco", "outro programa tem a sessão"),
+     "outro programa da CGD está com a sessão do banco aberta"),
+]
+
+
+def motivo_falha(linhas: List[str]) -> str:
+    """O porquê de um programa ter terminado com erro, a partir do que ele
+    escreveu: um motivo conhecido (internet, SMS, login...) ou a primeira
+    linha [ERRO] - "" se não escreveu nada que ajude."""
+    erros = [l.strip() for l in linhas if "[ERRO]" in l or "Traceback" in l or "Error" in l]
+    for padroes, motivo in MOTIVOS_FALHA:
+        if any(p.lower() in l.lower() for l in erros for p in padroes):
+            return motivo
+    primeiro = next((l for l in erros if "[ERRO]" in l), erros[-1] if erros else "")
+    return primeiro.replace("[ERRO]", "").strip()[:200]
+
+
 class Contexto:
     """O que um passo pode usar: correr comandos (com o output a ir para o
     log do deploy), escrever linhas e guardar estado entre passos."""
@@ -90,12 +125,16 @@ class Contexto:
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors="replace", creationflags=SEM_JANELA,
         )
+        recentes: List[str] = []
         for texto in processo.stdout:
             if texto.strip():
                 self.linha(texto)
+                recentes = (recentes + [texto])[-300:]
         codigo = processo.wait()
         if codigo not in codigos_ok:
-            raise FalhaDeploy(f"'{Path(str(comando[0])).name}' terminou com código {codigo}")
+            motivo = motivo_falha(recentes)
+            raise FalhaDeploy(f"'{Path(str(comando[0])).name}' terminou com código {codigo}"
+                              + (f": {motivo}" if motivo else ""))
         return codigo
 
 
@@ -364,10 +403,15 @@ def _normalizar(texto: str) -> str:
     return "".join(c for c in texto.upper() if c.isalnum())
 
 
+def _dia_discrepancia(extracao: dict) -> str:
+    """O dia da discrepância - a extração vai uma semana para trás dele."""
+    return extracao.get("dia") or extracao["fim"]
+
+
 def _discrepancia_continua(ctx: Contexto) -> bool:
     """Depois de reextrair e preencher: a discrepância ainda lá está?"""
     extracao = ctx.estado["extracao"]
-    dia, empresa, tipo = extracao["inicio"], extracao["empresa"], extracao.get("tipo") or TIPO_AUDITORIA
+    dia, empresa, tipo = _dia_discrepancia(extracao), extracao["empresa"], extracao.get("tipo") or TIPO_AUDITORIA
     if tipo == TIPO_AUDITORIA:
         # auditar outra vez o dia (a API sincroniza-o antes) e ver a empresa
         resultado = ctx.api("POST", f"/auditoria/{dia}/registar")
@@ -391,7 +435,7 @@ def _verificar_discrepancia(ctx: Contexto) -> None:
     for tentativa in range(1, TENTATIVAS_DISCREPANCIA + 1):
         if not _discrepancia_continua(ctx):
             ctx.api("POST", "/monitorizacao/discrepancias-saldos/resolvida", {
-                "dia": extracao["inicio"], "empresa": extracao["empresa"],
+                "dia": _dia_discrepancia(extracao), "empresa": extracao["empresa"],
                 "tipo": extracao.get("tipo") or TIPO_AUDITORIA})
             ctx.linha(f"Discrepância resolvida (tentativa {tentativa}).")
             return
@@ -410,8 +454,8 @@ def passos_atualizar(extracao: Optional[dict]) -> list:
         return []
     if extracao.get("empresa"):
         return [
-            (f"Reextrair {extracao['empresa']} em {extracao['inicio']}", _cgd_extrair_dias),
-            ("Atualizar Mapa de Saldos e Mapa de Pagamentos e Recebimentos desse dia", _atualizar_mapas),
+            (f"Reextrair {extracao['empresa']} de {extracao['inicio']} a {extracao['fim']}", _cgd_extrair_dias),
+            ("Atualizar Mapa de Saldos e Mapa de Pagamentos e Recebimentos desses dias", _atualizar_mapas),
             ("Verificar a discrepância", _verificar_discrepancia),
         ]
     return [

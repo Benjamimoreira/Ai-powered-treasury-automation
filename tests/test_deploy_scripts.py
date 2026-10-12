@@ -218,3 +218,37 @@ def test_dias_por_mes_para_o_preencher():
     passos = deploy_windows.passos_atualizar({"modo": "periodo", "inicio": "2026-10-09", "fim": "2026-10-09",
                                               "empresa": "J PINTO CONSTRUCOES,LDA"})
     assert [p[0] for p in passos][-1] == "Verificar a discrepância"
+
+
+def test_codigo_de_erro_diz_o_motivo(tmp_path):
+    import sys
+    ctx = deploy_windows.Contexto(lambda **campos: None)
+    casos = [
+        ("[ERRO] Page.goto: net::ERR_INTERNET_DISCONNECTED at https://www.cgd.pt/", "falha de internet"),
+        ("[ERRO] Falha no download: Download.save_as: Target page, context or browser has been closed\n"
+         "[ERRO] Erro inesperado: Page.wait_for_timeout: Target page, context or browser has been closed",
+         "o Chrome fechou-se"),
+        ("[ERRO] URL inesperado: https://www.cgd.pt/\n[ERRO] Login incompleto.", "o login no banco falhou"),
+        ("[ERRO] Algo estranho aconteceu", "Algo estranho aconteceu"),
+    ]
+    for saida, motivo in casos:
+        script = tmp_path / "falha.py"
+        script.write_text(f"print({saida!r}); raise SystemExit(1)", encoding="utf-8")
+        try:
+            ctx.correr([sys.executable, script])
+        except deploy_windows.FalhaDeploy as e:
+            assert "terminou com código 1: " + motivo in str(e), (saida, str(e))
+        else:
+            raise AssertionError("devia ter falhado")
+
+
+def test_reextrair_discrepancia_extrai_a_semana_e_verifica_o_dia(client):
+    extracao = {"modo": "periodo", "inicio": "2026-10-06", "fim": "2026-10-12", "dia": "2026-10-12",
+                "empresa": "PALAVRADICIONAL", "tipo": "x"}
+    corpo = client.post("/monitorizacao/deploys", json={"alvo": "reextrair_discrepancia", "extracao": extracao}).json()
+    assert corpo["extracao"] == extracao
+    fora = dict(extracao, dia="2026-10-20")
+    assert client.post("/monitorizacao/deploys", json={"alvo": "reextrair_discrepancia", "extracao": fora}).status_code == 422
+    assert deploy_windows._dia_discrepancia(extracao) == "2026-10-12"
+    assert deploy_windows._dia_discrepancia({"inicio": "2026-10-12", "fim": "2026-10-12"}) == "2026-10-12"
+    assert deploy_windows.passos_atualizar(extracao)[0][0] == "Reextrair PALAVRADICIONAL de 2026-10-06 a 2026-10-12"

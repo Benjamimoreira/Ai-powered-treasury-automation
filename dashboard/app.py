@@ -1836,13 +1836,14 @@ def _secao_discrepancias_saldos() -> None:
         if not com_valor.empty:
             st.metric("Maior diferença", f"{_n(com_valor.abs().max(), 2)} €", border=True)
 
-    st.caption("🔄 Atualizar = volta a extrair do banco os extratos dessa empresa nesse dia, preenche o Mapa de "
-               "Saldos e o Mapa de Pagamentos e Recebimentos desse dia e verifica outra vez (até 3 vezes). Quando "
+    st.caption("🔄 Atualizar = volta a extrair do banco os extratos dessa empresa da semana até esse dia (o dia e "
+               "os 6 anteriores), preenche o Mapa de Saldos e o Mapa de Pagamentos e Recebimentos desses dias e "
+               "verifica outra vez a discrepância (até 3 vezes). Quando "
                "a discrepância desaparece, sai desta lista. O progresso aparece em baixo e em Deploy dos scripts.")
     # reextrações já pedidas/em curso: não deixar pedir a mesma outra vez
     try:
         em_curso = {
-            (d["extracao"] or {}).get("inicio", "") + "|" + (d["extracao"] or {}).get("empresa", "") + "|"
+            ((d["extracao"] or {}).get("dia") or (d["extracao"] or {}).get("inicio", "")) + "|" + (d["extracao"] or {}).get("empresa", "") + "|"
             + (d["extracao"] or {}).get("tipo", ""): d
             for d in api.listar_deploys(limit=30)
             if d["alvo"] == "reextrair_discrepancia" and d["estado"] in ("pendente", "a_correr")
@@ -1868,10 +1869,13 @@ def _secao_discrepancias_saldos() -> None:
                 st.markdown("<span style='color:#8a93a3'>sem dia/empresa</span>", unsafe_allow_html=True, width=170)
             elif st.button("🔄 Atualizar", key=f"atualizar_disc_{i}", width=170):
                 try:
+                    dia = pd.Timestamp(d["dia"]).date()
+                    semana_antes = dia - timedelta(days=6)
                     api.pedir_deploy("reextrair_discrepancia", extracao={
-                        "modo": "periodo", "inicio": d["dia"], "fim": d["dia"],
-                        "empresa": str(d["empresa"]), "tipo": d["tipo"]})
-                    st.success(f"Pedido: reextrair {d['empresa']} em {dia_txt} - o agente começa dentro de ~15 s.")
+                        "modo": "periodo", "inicio": semana_antes.isoformat(), "fim": dia.isoformat(),
+                        "dia": dia.isoformat(), "empresa": str(d["empresa"]), "tipo": d["tipo"]})
+                    st.success(f"Pedido: reextrair {d['empresa']} de {semana_antes:%d/%m} a {dia_txt} - o agente "
+                               "começa dentro de ~15 s.")
                 except Exception as e:
                     st.error(f"Não foi possível pedir a atualização: {e}")
     if len(df) > LIMITE:

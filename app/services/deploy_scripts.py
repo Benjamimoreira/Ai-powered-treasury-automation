@@ -93,10 +93,19 @@ def _validar_extracao(extracao: Optional[Dict[str, Any]]) -> Optional[Dict[str, 
     if fim < inicio:
         raise ValueError("A data de fim da extração é anterior à de início.")
     resultado = {"modo": "periodo", "inicio": inicio.isoformat(), "fim": fim.isoformat()}
-    # reextração de uma discrepância: a empresa e o tipo (para a verificar)
+    # reextração de uma discrepância: a empresa, o tipo e o dia dela (para a
+    # verificar - a extração vai uma semana para trás desse dia)
     for campo in ("empresa", "tipo"):
         if extracao.get(campo):
             resultado[campo] = str(extracao[campo])
+    if extracao.get("dia"):
+        try:
+            dia = date.fromisoformat(str(extracao["dia"]))
+        except ValueError as exc:
+            raise ValueError(f"Dia da discrepância inválido: {extracao['dia']}") from exc
+        if not inicio <= dia <= fim:
+            raise ValueError("O dia da discrepância tem de estar dentro do período a extrair.")
+        resultado["dia"] = dia.isoformat()
     return resultado
 
 
