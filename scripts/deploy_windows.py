@@ -153,6 +153,12 @@ def _cgd_parar(ctx: Contexto) -> None:
         resultado = subprocess.run(["taskkill", "/F", "/IM", exe], capture_output=True, text=True,
                                    errors="replace", creationflags=SEM_JANELA)
         ctx.linha((resultado.stdout or resultado.stderr).strip())
+        # o taskkill responde antes de o processo desaparecer de facto (12/10/2026
+        # o deploy falhou por verificar logo a seguir) - esperar até 10 s
+        for _ in range(20):
+            if not _processos_a_correr(exe):
+                break
+            time.sleep(0.5)
         if _processos_a_correr(exe):
             raise FalhaDeploy(
                 f"Não foi possível parar {exe} (corre como administrador). O agente do Windows "
