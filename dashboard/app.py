@@ -1743,12 +1743,38 @@ ESTADO_DEPLOY = {"pendente": "⏳ À espera do agente do Windows", "a_correr": "
                  "ok": "✅ Concluído", "erro": "❌ Falhou"}
 
 
-def _barra_deploy(deploy: dict) -> None:
+def _fracao_deploy(deploy: dict) -> float:
+    """Passos feitos / total, mais o que já vai do passo atual: na extração,
+    os dias já começados ("=== Dia" no log desde o último comando); nos
+    Mapas, meio passo enquanto o Atualizar Mapa Tesouraria corre."""
     total = deploy.get("total_passos") or 0
     passo = deploy.get("passo") or 0
-    fracao = 1.0 if deploy["estado"] == "ok" else (passo / total if total else 0.0)
+    if deploy["estado"] == "ok":
+        return 1.0
+    if not total:
+        return 0.0
+    sub = 0.0
+    log = deploy.get("log") or []
+    extracao = deploy.get("extracao") or {}
+    if deploy["estado"] == "a_correr" and extracao.get("inicio") and extracao.get("fim"):
+        try:
+            n_dias = (date.fromisoformat(extracao["fim"]) - date.fromisoformat(extracao["inicio"])).days + 1
+        except ValueError:
+            n_dias = 1
+        ultimo = max((i for i, l in enumerate(log) if l.startswith(("$ ", "== ", "Atualizar Mapa Tesouraria"))),
+                     default=-1)
+        if ultimo >= 0 and log[ultimo].startswith("$ "):
+            dias = sum(1 for l in log[ultimo + 1:] if "=== Dia " in l)
+            sub = min(max(dias - 0.5, 0) / max(n_dias, 1), 0.95)
+        elif ultimo >= 0 and log[ultimo].startswith("Atualizar Mapa Tesouraria") and "terminou" not in log[ultimo]:
+            sub = 0.5
+    return min(max((passo + sub) / total, 0.0), 1.0)
+
+
+def _barra_deploy(deploy: dict) -> None:
+    fracao = _fracao_deploy(deploy)
     texto = f"{ESTADO_DEPLOY.get(deploy['estado'], deploy['estado'])} · {deploy.get('mensagem') or ''}"
-    st.progress(min(max(fracao, 0.0), 1.0), text=texto)
+    st.progress(fracao, text=f"{fracao:.0%} · {texto}")
     if deploy.get("erro"):
         st.error(deploy["erro"])
     extracao = deploy.get("extracao") or {}
@@ -1788,6 +1814,87 @@ def _progresso_deploys() -> None:
         _barra_deploy(deploy)
 
 
+def _mostrar_destino(destino: dict) -> None:
+    """Para onde foi o valor: uma linha por movimento/linha do Mapa que não
+    bate no dia (ver app/services/destino_discrepancia.py)."""
+    itens = destino.get("itens") or []
+    if not itens:
+        st.success(f"Extrato e Mapa batem certo em {pd.Timestamp(destino['dia']):%d/%m} "
+                   f"({_n(destino['soma_extrato'], 2)} € dos dois lados).")
+        return
+    st.markdown(f"**Para onde foi o valor** · extrato {_n(destino['soma_extrato'], 2)} € · Mapa "
+                f"{_n(destino['soma_mapa'], 2)} € · diferença **{_n(destino['diferenca'], 2)} €**")
+    tabela = pd.DataFrame([{
+        "Valor (€)": i["valor"],
+        "Onde está": ("Extrato " if i["lado"] == "extrato" else "Mapa ") + pd.Timestamp(i["dia"]).strftime("%d/%m"),
+        "Descrição": i.get("descricao") or "",
+        "Imputação": i.get("imputacao") or "",
+        "Linha do Mapa": i.get("linha"),
+        "Do outro lado": (("Mapa " if i["lado"] == "extrato" else "Extrato ")
+                          + pd.Timestamp(i["outro_dia"]).strftime("%d/%m")) if i.get("outro_dia") else "❌ em falta",
+    } for i in itens])
+    st.dataframe(tabela, hide_index=True, width="stretch",
+                 column_config={"Valor (€)": st.column_config.NumberColumn(format="%.2f"),
+                                "Linha do Mapa": st.column_config.NumberColumn(format="%d")})
+    for i in itens:
+        st.caption("→ " + i["explicacao"])
+    if destino.get("so_noutro_dia"):
+        st.info("O extrato já tem estes movimentos, mas noutro dia - voltar a extrair não resolve: é preciso "
+                "mudar o dia da linha no Mapa de Pagamentos e Recebimentos (ou foi o banco que os lançou noutra data).")
+
+
+@st.fragment(run_every=3)
+def _reextracoes_discrepancias() -> None:
+    """As reextrações pedidas no 🔄 Atualizar: barra de progresso enquanto
+    correm e, no fim, o resultado e para onde foi o valor. Atualiza-se de 3
+    em 3 s e fica aqui mesmo depois de a discrepância sair da lista."""
+    try:
+        deploys = [d for d in api.listar_deploys(limit=20) if d["alvo"] == "reextrair_discrepancia"]
+    except Exception:
+        return
+    limite = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=3)
+    recentes = [d for d in deploys if d["estado"] in ("pendente", "a_correr")
+                or (d.get("terminado_em") and pd.Timestamp(d["terminado_em"]) >= limite)][:3]
+    if not recentes:
+        return
+    st.markdown("**🔄 Atualizações de discrepâncias**")
+    for d in recentes:
+        extracao = d.get("extracao") or {}
+        dia = extracao.get("dia") or extracao.get("fim")
+        with st.container(border=True):
+            if dia:
+                st.markdown(f"**{escape(str(extracao.get('empresa', '')))} · discrepância de "
+                            f"{pd.Timestamp(dia):%d/%m/%Y}** · extrai de {pd.Timestamp(extracao['inicio']):%d/%m} a "
+                            f"{pd.Timestamp(extracao['fim']):%d/%m}")
+            else:
+                st.markdown(f"**{d['descricao']}**")
+            fracao = _fracao_deploy(d)
+            st.progress(fracao, text=f"{fracao:.0%} · {ESTADO_DEPLOY.get(d['estado'], d['estado'])} · "
+                                     f"{d.get('mensagem') or ''}")
+            if d["estado"] in ("pendente", "a_correr"):
+                agora = next((l for l in reversed(d.get("log") or []) if l.strip() and not l.startswith("$ ")), "")
+                if agora:
+                    st.caption(f"Agora: {agora[:180]}")
+                continue
+            if d["estado"] == "ok":
+                st.success("Discrepância resolvida - extrato e Mapa batem certo.")
+            elif d.get("erro"):
+                st.error(d["erro"])
+            if dia and extracao.get("empresa"):
+                # guardado por deploy: o fragmento corre de 3 em 3 s
+                cache = st.session_state.setdefault("destino_por_deploy", {})
+                if d["id"] not in cache:
+                    try:
+                        cache[d["id"]] = api.destino_discrepancia(dia, extracao["empresa"])
+                    except Exception as e:
+                        st.caption(f"Não deu para ver para onde foi o valor: {e}")
+                        continue
+                _mostrar_destino(cache[d["id"]])
+            if d.get("log"):
+                with st.expander("Log"):
+                    st.code("\n".join(d["log"][-150:]), language=None)
+
+
 def _secao_discrepancias_saldos() -> None:
     """Discrepâncias de saldos das empresas (problemas dos DADOS, não dos
     scripts): o que o preencher_mapa/atualizar_mapa_saldos avisam sobre os
@@ -1808,6 +1915,7 @@ def _secao_discrepancias_saldos() -> None:
         else:
             dia_inicio = dia_fim = st.date_input("Dia", value=hoje, max_value=hoje,
                                                  key="dia_discrepancias_saldos", width=160)
+    _reextracoes_discrepancias()
     periodo_txt = (f"{dia_inicio:%d/%m/%Y}" if dia_inicio == dia_fim
                    else f"{dia_inicio:%d/%m/%Y} a {dia_fim:%d/%m/%Y}")
     try:
@@ -1839,7 +1947,8 @@ def _secao_discrepancias_saldos() -> None:
     st.caption("🔄 Atualizar = volta a extrair do banco os extratos dessa empresa da semana até esse dia (o dia e "
                "os 6 anteriores), preenche o Mapa de Saldos e o Mapa de Pagamentos e Recebimentos desses dias e "
                "verifica outra vez a discrepância (até 3 vezes). Quando "
-               "a discrepância desaparece, sai desta lista. O progresso aparece em baixo e em Deploy dos scripts.")
+               "a discrepância desaparece, sai desta lista. A barra de progresso e, no fim, para onde foi o valor "
+               "aparecem no topo desta secção. 🔍 = ver já para onde foi o valor, sem extrair.")
     # reextrações já pedidas/em curso: não deixar pedir a mesma outra vez
     try:
         em_curso = {
@@ -1863,6 +1972,10 @@ def _secao_discrepancias_saldos() -> None:
                 f"última vez {_hora_local(d['visto_em'])} · {d['ocorrencias']}× · {escape(str(d['script']))}</span>",
                 unsafe_allow_html=True, width="stretch",
             )
+            abertos = st.session_state.setdefault("destinos_abertos", set())
+            if d.get("dia") and d["empresa"] != "-" and st.button(
+                    "🔍", key=f"destino_disc_{i}", help="Para onde foi o valor (sem extrair)"):
+                abertos.symmetric_difference_update({chave})
             if chave in em_curso:
                 st.markdown(f"🔄 {ESTADO_DEPLOY.get(em_curso[chave]['estado'], '')}", width=170)
             elif not d.get("dia") or d["empresa"] == "-":
@@ -1878,9 +1991,14 @@ def _secao_discrepancias_saldos() -> None:
                                "começa dentro de ~15 s.")
                 except Exception as e:
                     st.error(f"Não foi possível pedir a atualização: {e}")
+        if chave in st.session_state.get("destinos_abertos", set()):
+            with st.container(border=True):
+                try:
+                    _mostrar_destino(api.destino_discrepancia(d["dia"], str(d["empresa"])))
+                except Exception as e:
+                    st.caption(f"Não deu para ver para onde foi o valor: {e}")
     if len(df) > LIMITE:
         st.caption(f"Mostradas as {LIMITE} maiores de {len(df)} - filtra por tipo/empresa para ver as outras.")
-    _progresso_deploys()
 
 
 def _seccao_destinatarios_mapa() -> None:

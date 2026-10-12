@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -120,8 +121,11 @@ class Contexto:
 
     def correr(self, comando: List[str], cwd: Optional[Path] = None, codigos_ok=(0,)) -> int:
         self.linha(f"$ {' '.join(str(c) for c in comando)}")
+        # os exes da CGD escrevem em UTF-8 (senão os acentos chegavam ao
+        # log do dashboard como "Extra��o")
+        ambiente = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
         processo = subprocess.Popen(
-            [str(c) for c in comando], cwd=str(cwd) if cwd else None,
+            [str(c) for c in comando], cwd=str(cwd) if cwd else None, env=ambiente,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors="replace", creationflags=SEM_JANELA,
         )
@@ -430,6 +434,21 @@ def _discrepancia_continua(ctx: Contexto) -> bool:
     return False
 
 
+def _destino(ctx: Contexto) -> Optional[dict]:
+    """Escreve no log para onde foi o valor (ver destino_discrepancia.py da
+    API) e devolve-o - None se a API não responder."""
+    extracao = ctx.estado["extracao"]
+    try:
+        destino = ctx.api("GET", "/monitorizacao/discrepancias-saldos/destino?" + urllib.parse.urlencode(
+            {"dia": _dia_discrepancia(extracao), "empresa": extracao["empresa"]}))
+    except Exception as exc:
+        ctx.linha(f"[AVISO] Não deu para ver para onde foi o valor: {exc}")
+        return None
+    for item in destino.get("itens") or []:
+        ctx.linha(f"→ {item['explicacao']}")
+    return destino
+
+
 def _verificar_discrepancia(ctx: Contexto) -> None:
     extracao = ctx.estado["extracao"]
     for tentativa in range(1, TENTATIVAS_DISCREPANCIA + 1):
@@ -439,6 +458,13 @@ def _verificar_discrepancia(ctx: Contexto) -> None:
                 "tipo": extracao.get("tipo") or TIPO_AUDITORIA})
             ctx.linha(f"Discrepância resolvida (tentativa {tentativa}).")
             return
+        destino = _destino(ctx)
+        if destino and destino.get("so_noutro_dia"):
+            # o extrato já tem tudo - está é noutro dia no Mapa: reextrair não muda nada
+            primeiro = destino["itens"][0]["explicacao"]
+            mais = len(destino["itens"]) - 1
+            raise FalhaDeploy("O extrato está completo - a diferença é de lançamentos noutro dia no Mapa: "
+                              + primeiro + (f" (e mais {mais})" if mais else ""))
         if tentativa == TENTATIVAS_DISCREPANCIA:
             break
         ctx.linha(f"[AVISO] Discrepância continua - nova extração ({tentativa + 1}/{TENTATIVAS_DISCREPANCIA})...")

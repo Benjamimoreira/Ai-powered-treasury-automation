@@ -91,3 +91,38 @@ def test_discrepancias_de_um_dia_ou_intervalo(client, db_session):
                            params={"dia_inicio": "2026-10-09", "dia_fim": "2026-10-10"}).json()["discrepancias"]
     assert {d["dia"][-2:] for d in um_dia} <= {"12"}
     assert {d["dia"][-2:] for d in intervalo} <= {"09", "10"}
+
+
+# ------------------------------------------- para onde foi o valor (discrepância)
+
+def test_destino_discrepancia_encontra_o_movimento_noutro_dia(client, db_session):
+    from app.db.models import MovimentoBancario
+
+    db_session.add_all([
+        # o banco lançou a 10/10, o Mapa tem a 12/10 (caso real da Palavra, 12/10/2026)
+        MovimentoBancario(dia=date(2026, 10, 10), empresa="PALAVRADICIONAL,LDA", descricao="Trf Mbway 967XXX326",
+                          valor=-374.5, ficheiro_origem="x"),
+        MovimentoBancario(dia=date(2026, 10, 10), empresa="PALAVRADICIONAL,LDA", descricao="TRF Yesika Tatiana Ca",
+                          valor=-2920.02, ficheiro_origem="x"),
+        MovimentoBancario(dia=date(2026, 10, 12), empresa="PALAVRADICIONAL,LDA", descricao="COMPRA X",
+                          valor=-10, ficheiro_origem="x"),
+        LinhaMapa(dia=date(2026, 10, 12), tipo="pagamento", linha=19, empresa="Palavra",
+                  descricao="Trf Mbway 967XXX326", pago=-374.5),
+        LinhaMapa(dia=date(2026, 10, 12), tipo="pagamento", linha=20, empresa="Palavra",
+                  descricao="TRF Yesika Tatiana Ca", imputacao="Salários", pago=-2920.02),
+        LinhaMapa(dia=date(2026, 10, 12), tipo="pagamento", linha=21, empresa="Palavra", descricao="COMPRA X", pago=-10),
+        LinhaMapa(dia=date(2026, 10, 12), tipo="pagamento", linha=22, empresa="Palavra", descricao="Fantasma", pago=-5),
+        # de outra empresa: não entra
+        LinhaMapa(dia=date(2026, 10, 12), tipo="pagamento", linha=1, empresa="Vidor SGPS", pago=-999),
+    ])
+    db_session.commit()
+    corpo = client.get("/monitorizacao/discrepancias-saldos/destino",
+                       params={"dia": "2026-10-12", "empresa": "Palavra"}).json()
+    assert (corpo["soma_extrato"], corpo["soma_mapa"]) == (-10, -3309.52)
+    por_linha = {i["linha"]: i for i in corpo["itens"]}
+    assert set(por_linha) == {19, 20, 22}  # a COMPRA X bate no próprio dia
+    assert por_linha[20]["estado"] == "noutro_dia" and por_linha[20]["outro_dia"] == "2026-10-10"
+    assert "no extrato está a 10/10 (TRF Yesika Tatiana Ca)" in por_linha[20]["explicacao"]
+    assert "Salários" in por_linha[20]["explicacao"] and "-2.920,02 €" in por_linha[20]["explicacao"]
+    assert por_linha[22]["estado"] == "em_falta"
+    assert corpo["so_noutro_dia"] is False

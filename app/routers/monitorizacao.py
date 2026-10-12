@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.atualizacao_dados import sincronizar_apos_script
 from app.services.deploy_scripts import ALVOS_COM_EXTRACAO, ALVOS_DEPLOY, listar_deploys, obter_deploy, pedir_deploy, registar_progresso
+from app.services.destino_discrepancia import destino_discrepancia
 from app.services.discrepancias_saldos import listar_discrepancias, marcar_resolvida
 from app.services.destinatarios_mapa import adicionar_destinatario, listar_destinatarios, remover_destinatario
 from app.services.monitorizacao import (
@@ -231,6 +232,14 @@ def listar_discrepancias_saldos(dias: int = 14, dia_inicio: Optional[date] = Non
     auditoria), uma por (dia, empresa, tipo) - ver discrepancias_saldos.py.
     Com dia_inicio (e dia_fim) só as desses dias; senão as dos últimos `dias`."""
     return {"discrepancias": listar_discrepancias(db, dias=dias, dia_inicio=dia_inicio, dia_fim=dia_fim)}
+
+
+@router.get("/discrepancias-saldos/destino")
+def destino_da_discrepancia(dia: date, empresa: str, db: Session = Depends(get_db)):
+    """Para onde foi o valor: o que no dia não bate entre o extrato e o
+    Mapa, e onde está do outro lado (noutro dia) ou que falta - ver
+    destino_discrepancia.py."""
+    return destino_discrepancia(db, dia, empresa)
 
 
 class DiscrepanciaResolvidaRequest(BaseModel):

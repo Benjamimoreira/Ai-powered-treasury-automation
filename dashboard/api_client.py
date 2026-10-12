@@ -392,6 +392,15 @@ def pedir_deploy(alvo: str, extracao: Optional[dict] = None) -> dict:
     return r.json()
 
 
+def destino_discrepancia(dia: str, empresa: str) -> dict:
+    """Para onde foi o valor de uma discrepância (o que não bate no dia e
+    onde está do outro lado) - ver app/services/destino_discrepancia.py."""
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/discrepancias-saldos/destino",
+                     params={"dia": dia, "empresa": empresa}, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_deploys(limit: int = 10) -> list:
     """Deploys dos scripts, mais recentes primeiro (com passo/total_passos)."""
     r = requests.get(f"{API_BASE_URL}/monitorizacao/deploys", params={"limit": limit}, timeout=10)

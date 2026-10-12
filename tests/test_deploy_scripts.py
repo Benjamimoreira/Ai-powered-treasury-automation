@@ -252,3 +252,28 @@ def test_reextrair_discrepancia_extrai_a_semana_e_verifica_o_dia(client):
     assert deploy_windows._dia_discrepancia(extracao) == "2026-10-12"
     assert deploy_windows._dia_discrepancia({"inicio": "2026-10-12", "fim": "2026-10-12"}) == "2026-10-12"
     assert deploy_windows.passos_atualizar(extracao)[0][0] == "Reextrair PALAVRADICIONAL de 2026-10-06 a 2026-10-12"
+
+
+def test_verificar_discrepancia_para_logo_se_o_valor_esta_noutro_dia(monkeypatch):
+    pedidos = []
+
+    def api_falsa(metodo, caminho, corpo=None):
+        pedidos.append(caminho)
+        if caminho.startswith("/auditoria/"):
+            return {"diferencas_por_empresa": [{"empresa": "Palavra", "diferenca": 3294.52}]}
+        return {"itens": [{"explicacao": "-374,50 € no Mapa a 12/10 — no extrato está a 10/10"}], "so_noutro_dia": True}
+
+    extrair = []
+    monkeypatch.setattr(deploy_windows, "_cgd_extrair_dias", lambda ctx: extrair.append(1))
+    ctx = deploy_windows.Contexto(lambda **campos: None)
+    ctx.api = api_falsa
+    ctx.estado["extracao"] = {"modo": "periodo", "inicio": "2026-10-06", "fim": "2026-10-12", "dia": "2026-10-12",
+                              "empresa": "Palavra"}
+    try:
+        deploy_windows._verificar_discrepancia(ctx)
+    except deploy_windows.FalhaDeploy as e:
+        assert "noutro dia no Mapa" in str(e) and "no extrato está a 10/10" in str(e)
+    else:
+        raise AssertionError("devia ter falhado")
+    assert extrair == []  # não volta a extrair à toa
+    assert any("dia=2026-10-12" in p and "empresa=Palavra" in p for p in pedidos)
