@@ -114,7 +114,9 @@ def _discrepancias_da_auditoria(db: Session, desde: datetime) -> List[Dict[str, 
     cada dia (a que antes ia por email) - uma auditoria nova sem a empresa
     quer dizer que já bate certo."""
     ultimas: Dict[Any, AuditoriaDia] = {}
-    for auditoria in (db.query(AuditoriaDia).filter(AuditoriaDia.timestamp >= desde)
+    # pelo DIA auditado (não pela hora da auditoria: uma "auditoria geral"
+    # recente cobre o ano inteiro e trazia diferenças de janeiro)
+    for auditoria in (db.query(AuditoriaDia).filter(AuditoriaDia.dia >= desde.date())
                       .order_by(AuditoriaDia.timestamp).all()):
         ultimas[auditoria.dia] = auditoria
     itens = []

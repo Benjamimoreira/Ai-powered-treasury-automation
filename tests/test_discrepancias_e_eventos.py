@@ -113,3 +113,16 @@ def test_auditoria_ja_nao_envia_email(monkeypatch):
     from app.services import reconciliador
 
     assert "enviar_alerta_auditoria" not in inspect.getsource(reconciliador)
+
+
+def test_auditoria_antiga_nao_entra_mesmo_que_auditada_hoje(client, db_session):
+    from datetime import date
+
+    from app.db.models import AuditoriaDia
+
+    db_session.add(AuditoriaDia(dia=date(2026, 1, 5), sem_match_fwd=0, sem_match_rev=0, soma_extrato=1, soma_mapa=0,
+                                diferenca=1, diferencas_por_empresa=[
+                                    {"empresa": "X", "soma_extrato": 1, "soma_mapa": 0, "diferenca": 1}]))
+    db_session.commit()
+    d = client.get("/monitorizacao/discrepancias-saldos", params={"dias": 7}).json()["discrepancias"]
+    assert not [x for x in d if x["dia"] == "2026-01-05"]
