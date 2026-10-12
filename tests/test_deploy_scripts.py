@@ -61,7 +61,7 @@ def test_agente_corre_um_deploy_de_cada_vez_e_expira_os_antigos(monkeypatch):
             return {"deploys": deploys}
         enviados.append((caminho, corpo))
 
-    def correr_falso(alvo, reportar):
+    def correr_falso(alvo, reportar, extracao=None):
         corridos.append(alvo)
         reportar(estado="ok")
         return True
@@ -132,3 +132,36 @@ def test_instalar_exes_guarda_o_anterior_como_backup(tmp_path, monkeypatch):
     assert (pasta / "MovimentosCGD.exe").read_bytes() == b"novo"
     backups = list(pasta.glob("MovimentosCGD.exe.bak_*"))
     assert len(backups) == 1 and backups[0].read_bytes() == b"antigo"
+
+
+def test_deploy_guarda_a_extracao_escolhida_e_valida(client):
+    corpo = client.post("/monitorizacao/deploys", json={
+        "alvo": "scripts_cgd", "extracao": {"modo": "periodo", "inicio": "2026-10-09", "fim": "2026-10-12"}}).json()
+    assert corpo["extracao"] == {"modo": "periodo", "inicio": "2026-10-09", "fim": "2026-10-12"}
+    pendente = client.get("/monitorizacao/deploys", params={"estado": "pendente"}).json()["deploys"][0]
+    assert pendente["extracao"]["inicio"] == "2026-10-09"
+
+    assert client.post("/monitorizacao/deploys", json={
+        "alvo": "tesouraria_preenchimento", "extracao": {"modo": "periodo", "inicio": "2026-10-12", "fim": "2026-10-01"}}
+    ).status_code == 422
+    assert client.post("/monitorizacao/deploys", json={
+        "alvo": "tesouraria_preenchimento", "extracao": {"modo": "qualquer"}}).status_code == 422
+
+
+def test_reiniciar_anual_escreve_a_extracao_pedida(tmp_path, monkeypatch):
+    import json
+
+    ficheiro = tmp_path / "proxima_extracao.json"
+    monkeypatch.setattr(deploy_windows, "FICHEIRO_PROXIMA_EXTRACAO", ficheiro)
+    comandos = []
+    ctx = deploy_windows.Contexto(lambda **campos: None)
+    monkeypatch.setattr(ctx, "correr", lambda comando, **kw: comandos.append(comando))
+
+    ctx.estado["extracao"] = {"modo": "nenhuma"}
+    deploy_windows._cgd_reiniciar_anual(ctx)
+    assert json.loads(ficheiro.read_text(encoding="utf-8")) == {"modo": "nenhuma"}
+    assert comandos[0][:3] == ["schtasks", "/Run", "/TN"]
+
+    ctx.estado["extracao"] = None  # deploy sem escolha = ano inteiro, como antes
+    deploy_windows._cgd_reiniciar_anual(ctx)
+    assert json.loads(ficheiro.read_text(encoding="utf-8")) == {"modo": "ano"}

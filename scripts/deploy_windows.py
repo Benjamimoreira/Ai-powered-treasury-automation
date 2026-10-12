@@ -22,6 +22,7 @@ elevados), o agente tem de correr com privilégios máximos - ver
 docs/OPERACAO.md, "Deploy dos scripts".
 """
 import contextlib
+import json
 import os
 import shutil
 import subprocess
@@ -44,6 +45,7 @@ EXES_CGD = [
     ("PreencherResumoMensalCGD", "Movimentos Diários CGD"),
 ]
 TAREFA_ANUAL_CGD = "Extratos CGD (Anual)"
+FICHEIRO_PROXIMA_EXTRACAO = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "ExtratosCGD" / "proxima_extracao.json"
 
 PASTA_PT2_REPO = Path(os.environ.get("SCRIPTS_PT2_REPO") or r"C:\Apps\pt2-instalador")
 PASTA_PT2 = Path(os.environ.get("SCRIPTS_PREENCHIMENTO_RAIZ") or r"C:\Apps\tesouraria-preenchimento")
@@ -175,9 +177,20 @@ def _cgd_instalar(ctx: Contexto) -> None:
 
 
 def _cgd_reiniciar_anual(ctx: Contexto) -> None:
+    # O que a extração anual faz ao arrancar (escolhido no dashboard): o
+    # main.py --anual lê e apaga este ficheiro. Sem ele extrai o ano inteiro,
+    # o que pede SMS ao banco (movimentos com mais de 90 dias).
+    extracao = ctx.estado.get("extracao") or {"modo": "ano"}
+    FICHEIRO_PROXIMA_EXTRACAO.parent.mkdir(parents=True, exist_ok=True)
+    FICHEIRO_PROXIMA_EXTRACAO.write_text(json.dumps(extracao), encoding="utf-8")
+    descricao = {
+        "nenhuma": "sem extração agora",
+        "ano": "extração do ano inteiro",
+        "periodo": f"extração de {extracao.get('inicio')} a {extracao.get('fim')}",
+    }.get(extracao.get("modo"), str(extracao))
     ctx.pilha.close()  # larga o lock do banco: a extração anual arranca já
     ctx.correr(["schtasks", "/Run", "/TN", TAREFA_ANUAL_CGD])
-    ctx.linha(f"Tarefa '{TAREFA_ANUAL_CGD}' lançada (faz já uma extração do ano e fica com o agendador 00:00/12:00).")
+    ctx.linha(f"Tarefa '{TAREFA_ANUAL_CGD}' lançada ({descricao}; fica com o agendador 00:00/12:00).")
 
 
 # --------------------------------------------------- tesouraria_preenchimento
@@ -240,16 +253,18 @@ ALVOS = {
 }
 
 
-def correr(alvo: str, reportar: Callable[..., None]) -> bool:
+def correr(alvo: str, reportar: Callable[..., None], extracao: Optional[dict] = None) -> bool:
     """Corre os passos de `alvo`. reportar(estado=, passo=, total_passos=,
-    mensagem=, erro=, linhas=) envia o progresso à API. Devolve True se
-    todos os passos correram."""
+    mensagem=, erro=, linhas=) envia o progresso à API. `extracao` (só
+    scripts_cgd): o que a extração anual reiniciada faz - ver
+    _cgd_reiniciar_anual. Devolve True se todos os passos correram."""
     passos = ALVOS.get(alvo)
     if passos is None:
         reportar(estado="erro", erro=f"Alvo de deploy desconhecido: {alvo}", linhas=[])
         return False
     total = len(passos)
     ctx = Contexto(lambda **campos: reportar(estado="a_correr", **campos))
+    ctx.estado["extracao"] = extracao
     inicio = time.monotonic()
     try:
         for indice, (descricao, funcao) in enumerate(passos):

@@ -281,6 +281,11 @@ class DeployScripts(Base):
     mensagem = Column(String, nullable=True)
     erro = Column(String, nullable=True)
     log = Column(JSON, nullable=False, default=list)
+    # scripts_cgd: o que a extração anual reiniciada no fim extrai -
+    # {"modo": "nenhuma"} | {"modo": "periodo", "inicio": "AAAA-MM-DD", "fim": ...}
+    # | {"modo": "ano"} | None (= ano, como antes). Coluna nova em 10/2026:
+    # ALTER TABLE deploys_scripts ADD COLUMN extracao JSON;
+    extracao = Column(JSON, nullable=True)
     pedido_em = Column(DateTime, default=_utcnow_naive, nullable=False)
     atualizado_em = Column(DateTime, default=_utcnow_naive, nullable=False)
     terminado_em = Column(DateTime, nullable=True)

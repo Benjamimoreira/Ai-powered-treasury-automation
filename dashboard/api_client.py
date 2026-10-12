@@ -384,9 +384,10 @@ def listar_alvos_deploy() -> list:
     return r.json()["alvos"]
 
 
-def pedir_deploy(alvo: str) -> dict:
-    """Botão "Deploy": o agente do Windows corre-o e reporta o progresso."""
-    r = requests.post(f"{API_BASE_URL}/monitorizacao/deploys", json={"alvo": alvo}, timeout=10)
+def pedir_deploy(alvo: str, extracao: Optional[dict] = None) -> dict:
+    """Botão "Deploy": o agente do Windows corre-o e reporta o progresso.
+    extracao (scripts_cgd): o que extrair a seguir - ver DeployRequest da API."""
+    r = requests.post(f"{API_BASE_URL}/monitorizacao/deploys", json={"alvo": alvo, "extracao": extracao}, timeout=10)
     r.raise_for_status()
     return r.json()
 

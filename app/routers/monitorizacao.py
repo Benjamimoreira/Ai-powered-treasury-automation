@@ -62,6 +62,9 @@ def remover_destinatario_mapa(email: str, db: Session = Depends(get_db)):
 
 class DeployRequest(BaseModel):
     alvo: str = Field(..., description="|".join(ALVOS_DEPLOY))
+    # scripts_cgd: extração a seguir ao deploy - {"modo": "nenhuma"|"ano"} ou
+    # {"modo": "periodo", "inicio": "AAAA-MM-DD", "fim": "AAAA-MM-DD"}
+    extracao: Optional[dict] = None
 
 
 class DeployProgressoRequest(BaseModel):
@@ -135,9 +138,10 @@ def pedir_deploy_scripts(payload: DeployRequest, db: Session = Depends(get_db)):
     (scripts/agente_pedidos.py) o correr. Se já há um pendente/a correr
     para o mesmo alvo, devolve esse."""
     try:
-        return pedir_deploy(db, payload.alvo)
+        return pedir_deploy(db, payload.alvo, extracao=payload.extracao)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        estado = 404 if "desconhecido" in str(exc) and "Alvo" in str(exc) else 422
+        raise HTTPException(status_code=estado, detail=str(exc)) from exc
 
 
 @router.get("/deploys")

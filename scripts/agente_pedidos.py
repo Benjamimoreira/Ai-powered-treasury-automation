@@ -215,7 +215,7 @@ def _reportar_deploy(deploy_id: int):
 
 def correr_deploy(deploy: dict) -> bool:
     log.info("deploy %s (%s) a começar", deploy["id"], deploy["alvo"])
-    ok = deploy_windows.correr(deploy["alvo"], _reportar_deploy(deploy["id"]))
+    ok = deploy_windows.correr(deploy["alvo"], _reportar_deploy(deploy["id"]), extracao=deploy.get("extracao"))
     log.info("deploy %s (%s) %s", deploy["id"], deploy["alvo"], "concluído" if ok else "falhou")
     return ok
 

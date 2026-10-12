@@ -1751,6 +1751,11 @@ def _barra_deploy(deploy: dict) -> None:
     st.progress(min(max(fracao, 0.0), 1.0), text=texto)
     if deploy.get("erro"):
         st.error(deploy["erro"])
+    extracao = deploy.get("extracao") or {}
+    if deploy.get("alvo") == "scripts_cgd" and extracao:
+        st.caption("Extração a seguir: " + {
+            "nenhuma": "nenhuma (só instalar)", "ano": "ano inteiro",
+        }.get(extracao.get("modo"), f"{extracao.get('inicio')} a {extracao.get('fim')}"))
     st.caption(
         f"Pedido {_hora_local(deploy['pedido_em'])}"
         + (f" · terminado {_hora_local(deploy['terminado_em'])}" if deploy.get("terminado_em") else
@@ -1840,7 +1845,7 @@ def _seccao_destinatarios_mapa() -> None:
     """Para quem o enviar_mapa_smtp manda o Mapa: o script lê esta lista
     antes de cada envio (pduarte@vidor.pt por omissão - nunca fica vazia)."""
     with st.container(border=True):
-        st.markdown("**Destinatários do Mapa** (enviar_mapa_smtp)")
+        st.markdown("**Destinatários do Mapa (Enviar Mapa Tesouraria)**")
         try:
             destinatarios = api.listar_destinatarios_mapa()
         except Exception as e:
@@ -1884,15 +1889,46 @@ def _seccao_deploy_scripts() -> None:
         with st.container(horizontal=True, vertical_alignment="bottom"):
             alvo = st.selectbox("O que instalar", list(descricoes), format_func=descricoes.get,
                                 key="alvo_deploy_scripts", width=480)
+            extracao, resumo_extracao = None, ""
+            if alvo == "scripts_cgd":
+                # A extração anual é reiniciada no fim do deploy: escolher o que
+                # extrai logo (o ano inteiro faz o banco pedir código SMS).
+                modo = st.selectbox(
+                    "Extração a seguir ao deploy",
+                    ["nenhuma", "dia", "periodo", "ano"],
+                    format_func={"nenhuma": "Não extrair (só instalar)", "dia": "Um dia",
+                                 "periodo": "Intervalo de dias", "ano": "Ano inteiro (pede SMS)"}.get,
+                    key="modo_extracao_deploy", width=260,
+                )
+                hoje = date.today()
+                if modo == "dia":
+                    dia = st.date_input("Dia", value=hoje, max_value=hoje, key="dia_extracao_deploy", width=160)
+                    extracao = {"modo": "periodo", "inicio": dia.isoformat(), "fim": dia.isoformat()}
+                    resumo_extracao = f"extrai o dia {dia:%d/%m/%Y}"
+                elif modo == "periodo":
+                    intervalo = st.date_input("De / até", value=(hoje.replace(day=1), hoje), max_value=hoje,
+                                              key="intervalo_extracao_deploy", width=260)
+                    if isinstance(intervalo, (list, tuple)) and len(intervalo) == 2:
+                        extracao = {"modo": "periodo", "inicio": intervalo[0].isoformat(), "fim": intervalo[1].isoformat()}
+                        resumo_extracao = f"extrai de {intervalo[0]:%d/%m/%Y} a {intervalo[1]:%d/%m/%Y}"
+                    else:
+                        extracao = {"modo": "nenhuma"}
+                        resumo_extracao = "escolhe as duas datas do intervalo"
+                elif modo == "ano":
+                    extracao = {"modo": "ano"}
+                    resumo_extracao = "extrai o ano inteiro (o banco pede código SMS)"
+                else:
+                    extracao = {"modo": "nenhuma"}
+                    resumo_extracao = "não extrai nada agora (fica só o agendador)"
             with st.popover("🚀 Deploy"):
                 st.markdown(
-                    f"Instala **{descricoes[alvo]}** na máquina de produção. Os scripts CGD só são "
-                    "trocados quando nenhuma extração está a usar o banco, e a extração anual é "
-                    "reiniciada no fim."
+                    f"Instala **{descricoes[alvo]}** na máquina de produção."
+                    + (" Os exes só são trocados quando nenhuma extração está a usar o banco; no fim a "
+                       f"extração anual é reiniciada e **{resumo_extracao}**." if alvo == "scripts_cgd" else "")
                 )
                 if st.button("Fazer deploy agora", key="botao_confirmar_deploy", type="primary"):
                     try:
-                        api.pedir_deploy(alvo)
+                        api.pedir_deploy(alvo, extracao=extracao)
                         st.success("Deploy pedido - o agente do Windows começa dentro de ~15 s.")
                     except Exception as e:
                         st.error(f"Não foi possível pedir o deploy: {e}")

@@ -6,7 +6,7 @@ pedido (deploys_scripts) e o agente do Windows (scripts/agente_pedidos.py)
 vai buscá-lo, corre os passos de scripts/deploy_windows.py e reporta o
 progresso de cada um aqui - é isso que a barra de progresso mostra.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -46,6 +46,7 @@ def _deploy_dict(deploy: DeployScripts) -> Dict[str, Any]:
         "mensagem": deploy.mensagem,
         "erro": deploy.erro,
         "log": deploy.log or [],
+        "extracao": deploy.extracao,
         "pedido_em": _iso(deploy.pedido_em),
         "atualizado_em": _iso(deploy.atualizado_em),
         "terminado_em": _iso(deploy.terminado_em),
@@ -63,15 +64,36 @@ def _ativo(db: Session, alvo: str) -> Optional[DeployScripts]:
     )
 
 
-def pedir_deploy(db: Session, alvo: str) -> Dict[str, Any]:
+def _validar_extracao(extracao: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """{"modo": "nenhuma"|"ano"} ou {"modo": "periodo", "inicio", "fim"} (AAAA-MM-DD)."""
+    if not extracao:
+        return None
+    modo = extracao.get("modo")
+    if modo in ("nenhuma", "ano"):
+        return {"modo": modo}
+    if modo != "periodo":
+        raise ValueError(f"Modo de extração desconhecido: {modo}")
+    try:
+        inicio = date.fromisoformat(str(extracao["inicio"]))
+        fim = date.fromisoformat(str(extracao.get("fim") or extracao["inicio"]))
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"Período de extração inválido: {extracao}") from exc
+    if fim < inicio:
+        raise ValueError("A data de fim da extração é anterior à de início.")
+    return {"modo": "periodo", "inicio": inicio.isoformat(), "fim": fim.isoformat()}
+
+
+def pedir_deploy(db: Session, alvo: str, extracao: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Grava um pedido de deploy. Se já há um pendente/a correr para o
     mesmo alvo, devolve esse (dois cliques seguidos = um deploy)."""
     alvo = alvo.strip().lower()
     if alvo not in ALVOS_DEPLOY:
         raise ValueError(f"Alvo de deploy desconhecido: {alvo}")
+    extracao = _validar_extracao(extracao)
     deploy = _ativo(db, alvo)
     if deploy is None:
-        deploy = DeployScripts(alvo=alvo, estado="pendente", mensagem="À espera do agente do Windows", log=[])
+        deploy = DeployScripts(alvo=alvo, estado="pendente", mensagem="À espera do agente do Windows", log=[],
+                               extracao=extracao)
         db.add(deploy)
         db.commit()
         db.refresh(deploy)
