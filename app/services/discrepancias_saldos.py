@@ -136,12 +136,17 @@ def _discrepancias_da_auditoria(db: Session, desde: datetime) -> List[Dict[str, 
     return itens
 
 
-def listar_discrepancias(db: Session, dias: int = 14) -> List[Dict[str, Any]]:
+def listar_discrepancias(db: Session, dias: int = 14, dia_inicio: Optional[date] = None,
+                         dia_fim: Optional[date] = None) -> List[Dict[str, Any]]:
     """Discrepâncias vistas nos últimos `dias`, uma por (dia, empresa,
     tipo) - a mais recente, com quantas vezes foi reportada. Junta as
     diferenças da auditoria (extrato vs Mapa) e tira as marcadas como
     resolvidas depois da última vez que foram vistas."""
     desde = datetime.utcnow() - timedelta(days=dias)
+    if dia_inicio is not None:
+        # um dia/intervalo escolhido: as discrepâncias DESSES dias, que só
+        # podem ter sido vistas a partir do próprio dia
+        desde = datetime.combine(dia_inicio - timedelta(days=1), datetime.min.time())
     resolvidas = {}
     for e in (db.query(EventoScript).filter(EventoScript.script == "discrepancias",
                                             EventoScript.timestamp >= desde).all()):
@@ -176,4 +181,7 @@ def listar_discrepancias(db: Session, dias: int = 14) -> List[Dict[str, Any]]:
              if not (chave_discrepancia(i["dia"], i["empresa"], i["tipo"]) in resolvidas
                      and resolvidas[chave_discrepancia(i["dia"], i["empresa"], i["tipo"])].isoformat(timespec="seconds") + "Z"
                      >= i["visto_em"])]
+    if dia_inicio is not None:
+        ate = (dia_fim or dia_inicio).isoformat()
+        itens = [i for i in itens if i["dia"] and dia_inicio.isoformat() <= i["dia"] <= ate]
     return sorted(itens, key=lambda d: (d["dia"] or "", d["visto_em"]), reverse=True)

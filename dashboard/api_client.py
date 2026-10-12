@@ -410,9 +410,13 @@ def listar_monitorizacao_logs(limit: int = 50, dia: str = None, script: Optional
     return r.json()
 
 
-def listar_discrepancias_saldos(dias: int = 14) -> list:
-    """Discrepâncias de saldos das empresas, uma por (dia, empresa, tipo)."""
-    r = requests.get(f"{API_BASE_URL}/monitorizacao/discrepancias-saldos", params={"dias": dias}, timeout=30)
+def listar_discrepancias_saldos(dias: int = 14, dia_inicio: Optional[str] = None, dia_fim: Optional[str] = None) -> list:
+    """Discrepâncias das empresas, uma por (dia, empresa, tipo) - de um
+    dia/intervalo (dia_inicio/dia_fim AAAA-MM-DD) ou dos últimos `dias`."""
+    params = {"dias": dias}
+    if dia_inicio:
+        params.update(dia_inicio=dia_inicio, dia_fim=dia_fim or dia_inicio)
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/discrepancias-saldos", params=params, timeout=30)
     r.raise_for_status()
     return r.json()["discrepancias"]
 

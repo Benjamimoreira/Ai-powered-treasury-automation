@@ -225,10 +225,12 @@ def listar_monitorizacao_eventos(limit: int = 50, script: Optional[str] = None, 
 
 
 @router.get("/discrepancias-saldos")
-def listar_discrepancias_saldos(dias: int = 14, db: Session = Depends(get_db)):
-    """Discrepâncias de saldos das empresas reportadas pelos scripts nos
-    últimos `dias`, uma por (dia, empresa, tipo) - ver discrepancias_saldos.py."""
-    return {"discrepancias": listar_discrepancias(db, dias=dias)}
+def listar_discrepancias_saldos(dias: int = 14, dia_inicio: Optional[date] = None, dia_fim: Optional[date] = None,
+                                db: Session = Depends(get_db)):
+    """Discrepâncias das empresas (avisos de saldos + diferenças da
+    auditoria), uma por (dia, empresa, tipo) - ver discrepancias_saldos.py.
+    Com dia_inicio (e dia_fim) só as desses dias; senão as dos últimos `dias`."""
+    return {"discrepancias": listar_discrepancias(db, dias=dias, dia_inicio=dia_inicio, dia_fim=dia_fim)}
 
 
 class DiscrepanciaResolvidaRequest(BaseModel):

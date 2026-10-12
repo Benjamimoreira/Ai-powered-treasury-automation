@@ -1793,16 +1793,30 @@ def _secao_discrepancias_saldos() -> None:
     scripts): o que o preencher_mapa/atualizar_mapa_saldos avisam sobre os
     saldos, uma linha por (dia, empresa, tipo) com a última ocorrência - ver
     app/services/discrepancias_saldos.py."""
+    # de um dia ou de um intervalo de dias (pedido explícito 12/10/2026)
+    hoje = date.today()
     with st.container(horizontal=True, vertical_alignment="bottom"):
-        dias = st.selectbox("Período", [3, 7, 14, 31], index=1, format_func=lambda d: f"Últimos {d} dias",
-                            key="dias_discrepancias_saldos", width=180)
+        modo = st.segmented_control("Discrepâncias de", ["Dia", "Intervalo de dias"], default="Dia",
+                                    key="modo_discrepancias_saldos")
+        if modo == "Intervalo de dias":
+            intervalo = st.date_input("De / até", value=(hoje - timedelta(days=6), hoje), max_value=hoje,
+                                      key="intervalo_discrepancias_saldos", width=260)
+            if isinstance(intervalo, (list, tuple)) and len(intervalo) == 2:
+                dia_inicio, dia_fim = intervalo
+            else:
+                dia_inicio = dia_fim = intervalo[0] if isinstance(intervalo, (list, tuple)) else intervalo
+        else:
+            dia_inicio = dia_fim = st.date_input("Dia", value=hoje, max_value=hoje,
+                                                 key="dia_discrepancias_saldos", width=160)
+    periodo_txt = (f"{dia_inicio:%d/%m/%Y}" if dia_inicio == dia_fim
+                   else f"{dia_inicio:%d/%m/%Y} a {dia_fim:%d/%m/%Y}")
     try:
-        discrepancias = api.listar_discrepancias_saldos(dias)
+        discrepancias = api.listar_discrepancias_saldos(dia_inicio=dia_inicio.isoformat(), dia_fim=dia_fim.isoformat())
     except Exception as e:
         st.warning(f"Não foi possível carregar as discrepâncias de saldos: {e}")
         return
     if not discrepancias:
-        st.success(f"Sem discrepâncias de saldos reportadas nos últimos {dias} dias.")
+        st.success(f"Sem discrepâncias em {periodo_txt}.")
         return
     df = pd.DataFrame(discrepancias)
     with st.container(horizontal=True, vertical_alignment="bottom"):
@@ -3041,6 +3055,48 @@ def _escala_tipo_venda():
     return alt.Scale(domain=list(CORES_TIPO_VENDA), range=list(CORES_TIPO_VENDA.values()))
 
 
+def _resumo_mapa_do_mes(ano: int, mes: int, resumo: dict, diario: list) -> None:
+    """Resumo do Mapa de Pagamentos e Recebimentos de um mês: recebido,
+    pago, CPCVs, reforços de sinal, escrituras, saldo bancário e saldo
+    bancário disponível - o total do mês e dia a dia."""
+    with st.container(border=True):
+        st.markdown(f"**Resumo do Mapa de Pagamentos e Recebimentos - {MESES_NOME_COMPLETO[mes - 1]} {ano}**")
+        with st.container(horizontal=True):
+            st.metric("Recebido", f"{_n(resumo.get('recebido', 0), 2)} €", border=True)
+            st.metric("Pago", f"{_n(resumo.get('pago', 0), 2)} €", border=True)
+            st.metric("CPCVs", f"{_n(resumo.get('cpcv', 0), 2)} €", f"{resumo.get('n_cpcv', 0)} recebimento(s)",
+                      delta_color="off", border=True)
+            st.metric("Reforços de sinal", f"{_n(resumo.get('reforco_sinal', 0), 2)} €",
+                      f"{resumo.get('n_reforco_sinal', 0)} recebimento(s)", delta_color="off", border=True)
+            st.metric("Escrituras", f"{_n(resumo.get('escritura', 0), 2)} €",
+                      f"{resumo.get('n_escritura', 0)} recebimento(s)", delta_color="off", border=True)
+        with st.container(horizontal=True):
+            st.metric("Saldo bancário (último dia)", f"{_n(resumo.get('saldo_contabilistico_fim', 0), 2)} €", border=True)
+            st.metric("Saldo bancário disponível (último dia)", f"{_n(resumo.get('saldo_fim', 0), 2)} €", border=True)
+            st.metric("Líquido do mês (recebido − pago)",
+                      f"{_n((resumo.get('recebido', 0) or 0) - (resumo.get('pago', 0) or 0), 2, sinal=True)} €", border=True)
+        dias = pd.DataFrame([d for d in diario if int(d["dia"][5:7]) == mes])
+        if dias.empty:
+            st.info("Sem saldos registados neste mês.")
+            return
+        dias = dias.sort_values("dia")
+        total = {"Dia": "Total", **{c: dias[c].sum() for c in ("recebido", "pago", *TIPOS_VENDA_RESUMO)},
+                 "saldo_contabilistico": None, "liquidez": None}
+        dias["Dia"] = pd.to_datetime(dias["dia"]).dt.strftime("%d/%m/%Y")
+        tabela = pd.concat([dias, pd.DataFrame([total])], ignore_index=True)
+        st.dataframe(
+            tabela[["Dia", "recebido", "pago", *TIPOS_VENDA_RESUMO, "saldo_contabilistico", "liquidez"]],
+            width="stretch", hide_index=True,
+            column_config={
+                "recebido": st.column_config.NumberColumn("Recebido", format="euro"),
+                "pago": st.column_config.NumberColumn("Pago", format="euro"),
+                **{chave: st.column_config.NumberColumn(nome, format="euro") for chave, nome in TIPOS_VENDA_RESUMO.items()},
+                "saldo_contabilistico": st.column_config.NumberColumn("Saldo bancário", format="euro"),
+                "liquidez": st.column_config.NumberColumn("Saldo bancário disponível", format="euro"),
+            },
+        )
+
+
 def _secao_resumo_mensal_saldos():
     """Liquidez (saldo disponível de todas as contas juntas) mês a mês, e o
     que entrou de CPCVs, reforços de sinal e escrituras - ver
@@ -3078,23 +3134,26 @@ def _secao_resumo_mensal_saldos():
         df[nome] = df[chave]
         df[f"N.º {nome}"] = df[f"n_{chave}"]
     df["Por confirmar"] = sum(df[f"pendente_{chave}"] for chave in TIPOS_VENDA_RESUMO)
-    colunas = ["Mês", "saldo_inicio", "saldo_fim", "variacao", "liquidez_media",
-               "CPCV", "N.º CPCV", "Reforço de sinal", "N.º Reforço de sinal", "Escritura", "N.º Escritura",
-               "total_vendas", "Por confirmar"]
     euro = st.column_config.NumberColumn(format="euro")
-    df_tabela = df if mes_escolhido is None else df[df["mes"] == mes_escolhido]
-    st.dataframe(
-        df_tabela[[c for c in colunas if c in df.columns]], width="stretch", hide_index=True,
-        column_config={
-            "saldo_inicio": st.column_config.NumberColumn("Saldo início", format="euro"),
-            "saldo_fim": st.column_config.NumberColumn("Saldo fim", format="euro"),
-            "variacao": st.column_config.NumberColumn("Variação", format="euro"),
-            "liquidez_media": st.column_config.NumberColumn("Liquidez média", format="euro"),
-            "CPCV": euro, "Reforço de sinal": euro, "Escritura": euro,
-            "total_vendas": st.column_config.NumberColumn("Total vendas", format="euro"),
-            "Por confirmar": euro,
-        },
-    )
+    if mes_escolhido is None:
+        # o ano: uma linha por mês
+        colunas = ["Mês", "recebido", "pago", "CPCV", "N.º CPCV", "Reforço de sinal", "N.º Reforço de sinal",
+                   "Escritura", "N.º Escritura", "saldo_contabilistico_fim", "saldo_fim", "liquidez_media",
+                   "Por confirmar"]
+        st.dataframe(
+            df[[c for c in colunas if c in df.columns]], width="stretch", hide_index=True,
+            column_config={
+                "recebido": st.column_config.NumberColumn("Recebido", format="euro"),
+                "pago": st.column_config.NumberColumn("Pago", format="euro"),
+                "CPCV": euro, "Reforço de sinal": euro, "Escritura": euro,
+                "saldo_contabilistico_fim": st.column_config.NumberColumn("Saldo bancário (fim)", format="euro"),
+                "saldo_fim": st.column_config.NumberColumn("Saldo disponível (fim)", format="euro"),
+                "liquidez_media": st.column_config.NumberColumn("Saldo disponível médio", format="euro"),
+                "Por confirmar": euro,
+            },
+        )
+    else:
+        _resumo_mapa_do_mes(ano, mes_escolhido, next(m for m in meses if m["mes"] == mes_escolhido), diario)
 
     # vendas por mês (barras empilhadas) ao lado da liquidez média
     df_vendas = df.melt(id_vars=["mes"], value_vars=list(TIPOS_VENDA_RESUMO.values()),
@@ -3156,16 +3215,17 @@ def _secao_resumo_mensal_saldos():
                          alt.Tooltip("sum(Valor):Q", title="Valor (€)", format=",.2f")],
             ).properties(height=130))
         st.altair_chart(alt.vconcat(*graficos), width="stretch")
-        tabela = df_dia.assign(Dia=df_dia["dia"].dt.strftime("%d/%m/%Y"))
-        st.dataframe(
-            tabela[["Dia", "liquidez", "saldo_contabilistico", *TIPOS_VENDA_RESUMO]].sort_values("Dia", ascending=False),
-            width="stretch", hide_index=True,
-            column_config={
-                "liquidez": st.column_config.NumberColumn("Liquidez (disponível)", format="euro"),
-                "saldo_contabilistico": st.column_config.NumberColumn("Saldo contabilístico", format="euro"),
-                **{chave: st.column_config.NumberColumn(nome, format="euro") for chave, nome in TIPOS_VENDA_RESUMO.items()},
-            },
-        )
+        if mes_escolhido is None:  # com um mês escolhido a tabela dia a dia está no resumo do Mapa, em cima
+            tabela = df_dia.assign(Dia=df_dia["dia"].dt.strftime("%d/%m/%Y"))
+            st.dataframe(
+                tabela[["Dia", "liquidez", "saldo_contabilistico", *TIPOS_VENDA_RESUMO]].sort_values("Dia", ascending=False),
+                width="stretch", hide_index=True,
+                column_config={
+                    "liquidez": st.column_config.NumberColumn("Saldo bancário disponível", format="euro"),
+                    "saldo_contabilistico": st.column_config.NumberColumn("Saldo bancário", format="euro"),
+                    **{chave: st.column_config.NumberColumn(nome, format="euro") for chave, nome in TIPOS_VENDA_RESUMO.items()},
+                },
+            )
 
 
 def _secao_rendas(empresa, periodo: dict):

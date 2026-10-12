@@ -56,12 +56,21 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
 
     # vendas por dia: recebido (pago) e ainda por confirmar no extrato (só previsto)
     vendas_dia: Dict[date, Dict[str, float]] = defaultdict(_vazio_vendas)
+    # recebido/pago de cada dia (linhas do Mapa já confirmadas no extrato) -
+    # o "Resumo" do Mapa de Pagamentos e Recebimentos
+    recebido_dia: Dict[date, float] = defaultdict(float)
+    pago_dia: Dict[date, float] = defaultdict(float)
     linhas = (
         db.query(LinhaMapa)
-        .filter(LinhaMapa.tipo == "recebimento", LinhaMapa.dia >= inicio, LinhaMapa.dia <= fim)
+        .filter(LinhaMapa.dia >= inicio, LinhaMapa.dia <= fim)
         .all()
     )
     for l in linhas:
+        if l.pago is not None:
+            if l.tipo == "recebimento":
+                recebido_dia[l.dia] += l.pago
+            elif l.tipo == "pagamento":
+                pago_dia[l.dia] += abs(l.pago)  # os pagamentos ficam negativos em linhas_mapa
         tipo = tipo_venda(l)
         if tipo is None:
             continue
@@ -81,6 +90,8 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
             "dia": p["dia"].isoformat(),
             "liquidez": round(p["saldo_disponivel_total"], 2),
             "saldo_contabilistico": round(p["saldo_contabilistico_total"], 2),
+            "recebido": round(recebido_dia.get(p["dia"], 0.0), 2),
+            "pago": round(pago_dia.get(p["dia"], 0.0), 2),
             **{t: round(v[t], 2) for t in TIPOS_VENDA},
         })
 
@@ -100,6 +111,7 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
             minimo = min(dias_mes, key=lambda p: p["saldo_disponivel_total"])
             maximo = max(dias_mes, key=lambda p: p["saldo_disponivel_total"])
             linha.update({
+                "saldo_contabilistico_fim": round(dias_mes[-1]["saldo_contabilistico_total"], 2),
                 "saldo_inicio": round(liquidez[0], 2),
                 "saldo_fim": round(liquidez[-1], 2),
                 "variacao": round(liquidez[-1] - liquidez[0], 2),
@@ -111,6 +123,8 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
             })
         linha.update({k: round(v, 2) if isinstance(v, float) else v for k, v in vendas_mes.items()})
         linha["total_vendas"] = round(sum(vendas_mes[t] for t in TIPOS_VENDA), 2)
+        linha["recebido"] = round(sum(v for d, v in recebido_dia.items() if d.month == mes), 2)
+        linha["pago"] = round(sum(v for d, v in pago_dia.items() if d.month == mes), 2)
         meses.append(linha)
 
     return {"ano": ano, "meses": meses, "diario": diario}
