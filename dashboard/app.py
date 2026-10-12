@@ -3263,36 +3263,26 @@ def _resumo_mapa_do_mes(ano: int, mes: int, resumo: dict, diario: list) -> None:
                           subset=["Liquidez diária"]))
         st.dataframe(estilo, width="stretch", hide_index=True)
 
-        # gráfico de linhas: o que entrou, o que saiu e a liquidez de cada dia
+        # gráfico de uma linha: recebido − pago de cada dia
         st.markdown("**Liquidez diária**")
-        st.caption("Recebido − pago de cada dia: acima de 0 (ponto verde) entrou mais do que saiu, abaixo de 0 "
-                   "(ponto vermelho) saiu mais do que entrou.")
+        st.caption("Uma linha com recebido − pago de cada dia: acima de 0 (ponto verde) entrou mais do que saiu, "
+                   "abaixo de 0 (ponto vermelho) saiu mais do que entrou.")
         df_graf = dias.assign(dia=pd.to_datetime(dias["dia"]))
-        df_linhas = df_graf.melt(id_vars=["dia"], value_vars=["recebido", "pago", "liquidez_diaria"],
-                                 var_name="serie", value_name="Valor")
-        df_linhas["Série"] = df_linhas["serie"].map({"recebido": "Recebido", "pago": "Pago",
-                                                     "liquidez_diaria": "Liquidez diária"})
-        cores = alt.Scale(domain=["Recebido", "Pago", "Liquidez diária"],
-                          range=[COR_RECEBIMENTOS_MES, COR_PAGAMENTOS_MES, "#1f3a68"])
         eixo_x = alt.X("dia:T", title=None, axis=alt.Axis(format="%d/%m", tickCount={"interval": "day", "step": 1}))
-        linhas = alt.Chart(df_linhas).mark_line(strokeWidth=2).encode(
-            x=eixo_x, y=alt.Y("Valor:Q", title="€", axis=alt.Axis(format=",.0f")),
-            color=alt.Color("Série:N", scale=cores, legend=alt.Legend(orient="bottom", title=None)),
-            strokeDash=alt.condition(alt.datum["Série"] == "Liquidez diária", alt.value([1, 0]), alt.value([4, 3])),
-            tooltip=[alt.Tooltip("dia:T", title="Dia", format="%d/%m/%Y"), "Série",
-                     alt.Tooltip("Valor:Q", title="Valor (€)", format=",.2f")],
-        )
-        # pontos da liquidez diária: verde se positiva, vermelho se negativa
-        pontos = alt.Chart(df_graf).mark_point(filled=True, size=70).encode(
+        dica = [alt.Tooltip("dia:T", title="Dia", format="%d/%m/%Y"),
+                alt.Tooltip("recebido:Q", title="Recebido (€)", format=",.2f"),
+                alt.Tooltip("pago:Q", title="Pago (€)", format=",.2f"),
+                alt.Tooltip("liquidez_diaria:Q", title="Recebido − pago (€)", format="+,.2f")]
+        linha = alt.Chart(df_graf).mark_line(strokeWidth=2.5, color="#1f3a68").encode(
+            x=eixo_x, y=alt.Y("liquidez_diaria:Q", title="Recebido − pago (€)", axis=alt.Axis(format=",.0f")),
+            tooltip=dica)
+        # pontos: verde se positiva, vermelho se negativa
+        pontos = alt.Chart(df_graf).mark_point(filled=True, size=80).encode(
             x=eixo_x, y="liquidez_diaria:Q",
             color=alt.condition(alt.datum.liquidez_diaria >= 0, alt.value("#0b7a3e"), alt.value("#b3261e")),
-            tooltip=[alt.Tooltip("dia:T", title="Dia", format="%d/%m/%Y"),
-                     alt.Tooltip("recebido:Q", title="Recebido (€)", format=",.2f"),
-                     alt.Tooltip("pago:Q", title="Pago (€)", format=",.2f"),
-                     alt.Tooltip("liquidez_diaria:Q", title="Liquidez diária (€)", format="+,.2f")],
-        )
+            tooltip=dica)
         zero = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#8a93a3", strokeDash=[2, 2]).encode(y="y:Q")
-        st.altair_chart((zero + linhas + pontos).properties(height=320), width="stretch")
+        st.altair_chart((zero + linha + pontos).properties(height=320), width="stretch")
 
 
 def _secao_resumo_mensal_saldos():
