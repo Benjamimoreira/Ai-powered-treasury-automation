@@ -1874,7 +1874,10 @@ def _reextracoes_discrepancias() -> None:
                                      f"{d.get('mensagem') or ''}")
             if d["estado"] in ("pendente", "a_correr"):
                 agora = next((l for l in reversed(d.get("log") or []) if l.strip() and not l.startswith("$ ")), "")
-                if agora:
+                if agora.startswith("[AGUARDAR]"):
+                    st.warning("⏳ À espera do banco: " + agora.replace("[AGUARDAR]", "").strip()[:220]
+                               + " - quem tem o banco é terminado sozinho se ficar 20 min sem sinal de vida.")
+                elif agora:
                     st.caption(f"Agora: {agora[:180]}")
                 continue
             if d["estado"] == "ok":
@@ -2233,7 +2236,21 @@ if aba_monitorizacao.open:
                 df_scripts["ultima_erro"] = df_scripts["ultima_erro"].fillna("")
                 # agora: a correr (avisou o início e ainda não o fim) ou à espera
                 desde = df_scripts["a_correr_desde"] if "a_correr_desde" in df_scripts.columns else pd.Series(None, index=df_scripts.index)
-                df_scripts["agora"] = desde.map(lambda v: f"🔄 A correr desde {_hora_local(v)[-5:]}" if isinstance(v, str) and v else "—")
+                agora_utc = pd.Timestamp.now(tz="UTC")
+
+                def _agora(v):
+                    if not (isinstance(v, str) and v):
+                        return "—"
+                    try:
+                        horas = (agora_utc - pd.Timestamp(v)).total_seconds() / 3600
+                    except (ValueError, TypeError):
+                        horas = 0
+                    # a anual demora, mas não 3 h: muito provavelmente pendurado (12/10/2026)
+                    if horas >= 3:
+                        return f"⚠️ Parado? desde {_hora_local(v)[-5:]}"
+                    return f"🔄 A correr desde {_hora_local(v)[-5:]}"
+
+                df_scripts["agora"] = desde.map(_agora)
                 # próxima execução: a da tarefa agendada do Windows (agente) ou a do horário
                 agend = df_scripts["agendamento"] if "agendamento" in df_scripts.columns else pd.Series(None, index=df_scripts.index)
                 proxima = df_scripts["proxima_execucao"] if "proxima_execucao" in df_scripts.columns else pd.Series(None, index=df_scripts.index)
@@ -2245,9 +2262,25 @@ if aba_monitorizacao.open:
                 n_a_correr = int((df_scripts["agora"] != "—").sum())
                 if n_a_correr:
                     st.info(f"🔄 A correr agora: {', '.join(df_scripts.loc[df_scripts['agora'] != '—', 'nome'])}")
+                parados = df_scripts.loc[df_scripts["agora"].str.startswith("⚠️"), "nome"].tolist()
+                if parados:
+                    st.warning(f"⚠️ A correr há mais de 3 h - provavelmente pendurado: {', '.join(parados)}. "
+                               "Se tiver o banco, a próxima extração termina-o sozinha ao fim de 20 min sem sinal de vida.")
                 desativados = df_scripts.loc[agend == "desativado", "nome"].tolist()
                 if desativados:
                     st.warning(f"⛔ Tarefa agendada desativada no Windows (não corre sozinho): {', '.join(desativados)}.")
+                # o agente reporta as tarefas de minuto a minuto: sem reporte há
+                # muito, "Agora"/"Próxima execução" estão congelados (12/10/2026:
+                # um código do Windows grande dava 500 e ninguém via)
+                try:
+                    reportes = [t["atualizado_em"] for t in api.listar_tarefas_agendadas() if t.get("atualizado_em")]
+                    ultimo_reporte = pd.Timestamp(max(reportes)) if reportes else None
+                except Exception:
+                    ultimo_reporte = None
+                if ultimo_reporte is not None and agora_utc - ultimo_reporte > pd.Timedelta(minutes=5):
+                    st.error(f"📡 O agente do Windows não reporta as tarefas agendadas desde "
+                             f"{_hora_local(ultimo_reporte.isoformat())} - \"Agora\" e \"Próxima execução\" podem estar "
+                             "desatualizados. Ver se a tarefa \"Tesouraria - Agente pedidos Correr\" está a correr.")
                 # a correr primeiro, depois pela próxima execução
                 # (sem próxima execução vem NaN do pandas - vai para o fim)
                 df_scripts["_ordem"] = [f"{0 if a != '—' else 1}|{p if isinstance(p, str) and p else '9999'}"

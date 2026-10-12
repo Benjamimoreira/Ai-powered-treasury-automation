@@ -232,6 +232,18 @@ def registar_tarefas(db: Session, tarefas: List[Dict[str, Any]]) -> int:
             dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
         return dt if dt.year > 2000 else None  # o Windows usa 1999/0001 para "nunca"
 
+    def _resultado(valor):
+        # LastTaskResult é um DWORD: um processo terminado à força dá
+        # 0xC000013A = 3221225786, que não cabe no INTEGER (12/10/2026: todos
+        # os reportes passaram a dar 500 e as tarefas ficaram congeladas no
+        # dashboard). Guarda-se como int32 com sinal, como o Windows o mostra.
+        try:
+            numero = int(valor)
+        except (TypeError, ValueError):
+            return None
+        numero &= 0xFFFFFFFF
+        return numero - 0x100000000 if numero >= 0x80000000 else numero
+
     db.query(TarefaAgendada).delete()
     for tarefa in tarefas:
         db.add(TarefaAgendada(
@@ -239,7 +251,7 @@ def registar_tarefas(db: Session, tarefas: List[Dict[str, Any]]) -> int:
             estado=tarefa.get("estado"),
             proxima_execucao=_data(tarefa.get("proxima_execucao")),
             ultima_execucao=_data(tarefa.get("ultima_execucao")),
-            ultimo_resultado=tarefa.get("ultimo_resultado"),
+            ultimo_resultado=_resultado(tarefa.get("ultimo_resultado")),
             atualizado_em=_agora_utc(),
         ))
     db.commit()

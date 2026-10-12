@@ -126,3 +126,14 @@ def test_auditoria_antiga_nao_entra_mesmo_que_auditada_hoje(client, db_session):
     db_session.commit()
     d = client.get("/monitorizacao/discrepancias-saldos", params={"dias": 7}).json()["discrepancias"]
     assert not [x for x in d if x["dia"] == "2026-01-05"]
+
+
+def test_tarefas_agendadas_com_codigo_do_windows_grande(client):
+    """0xC000013A (processo terminado) = 3221225786 não cabia no INTEGER."""
+    r = client.post("/monitorizacao/tarefas-agendadas", json={"tarefas": [
+        {"nome": "Extratos CGD", "estado": "Ready", "ultimo_resultado": 3221225786},
+        {"nome": "Outra", "estado": "Ready", "ultimo_resultado": "nao-e-numero"}]})
+    assert r.status_code == 200
+    tarefas = {t["nome"]: t for t in client.get("/monitorizacao/tarefas-agendadas").json()["tarefas"]}
+    assert tarefas["Extratos CGD"]["ultimo_resultado"] == 3221225786 - 2 ** 32
+    assert tarefas["Outra"]["ultimo_resultado"] is None

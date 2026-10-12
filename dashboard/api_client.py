@@ -401,6 +401,13 @@ def destino_discrepancia(dia: str, empresa: str) -> dict:
     return r.json()
 
 
+def listar_tarefas_agendadas() -> list:
+    """Tarefas do Agendador do Windows como o agente as reportou (com atualizado_em)."""
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/tarefas-agendadas", timeout=10)
+    r.raise_for_status()
+    return r.json()["tarefas"]
+
+
 def listar_deploys(limit: int = 10) -> list:
     """Deploys dos scripts, mais recentes primeiro (com passo/total_passos)."""
     r = requests.get(f"{API_BASE_URL}/monitorizacao/deploys", params={"limit": limit}, timeout=10)
