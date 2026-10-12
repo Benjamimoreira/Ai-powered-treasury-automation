@@ -251,8 +251,16 @@ def _reportar_deploy(deploy_id: int):
 
 
 def correr_deploy(deploy: dict) -> bool:
+    global deploy_windows
+    # recarregar os passos a cada deploy: um git pull em C:	esouraria que
+    # mude scripts/deploy_windows.py passa a valer sem reiniciar o agente
+    try:
+        import importlib
+        deploy_windows = importlib.reload(deploy_windows)
+    except Exception:
+        log.exception("não foi possível recarregar deploy_windows - a usar a versão já carregada")
     log.info("deploy %s (%s) a começar", deploy["id"], deploy["alvo"])
-    ok = deploy_windows.correr(deploy["alvo"], _reportar_deploy(deploy["id"]), extracao=deploy.get("extracao"))
+    ok = deploy_windows.correr(deploy["alvo"], _reportar_deploy(deploy["id"]), extracao=deploy.get("extracao"), api=_api)
     log.info("deploy %s (%s) %s", deploy["id"], deploy["alvo"], "concluído" if ok else "falhou")
     return ok
 

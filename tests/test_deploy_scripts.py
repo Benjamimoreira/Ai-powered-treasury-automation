@@ -61,7 +61,7 @@ def test_agente_corre_um_deploy_de_cada_vez_e_expira_os_antigos(monkeypatch):
             return {"deploys": deploys}
         enviados.append((caminho, corpo))
 
-    def correr_falso(alvo, reportar, extracao=None):
+    def correr_falso(alvo, reportar, extracao=None, api=None):
         corridos.append(alvo)
         reportar(estado="ok")
         return True
@@ -165,3 +165,47 @@ def test_reiniciar_anual_escreve_a_extracao_pedida(tmp_path, monkeypatch):
     ctx.estado["extracao"] = None  # deploy sem escolha = ano inteiro, como antes
     deploy_windows._cgd_reiniciar_anual(ctx)
     assert json.loads(ficheiro.read_text(encoding="utf-8")) == {"modo": "ano"}
+
+
+def test_deploy_com_periodo_extrai_e_acompanha_mapas_e_dashboard(monkeypatch):
+    """Hoje/Intervalo: depois de instalar, extrair os dias, esperar pelo
+    Atualizar Mapa Tesouraria e pelo dashboard; a extração anual não extrai."""
+    nomes = []
+    for alvo in ("scripts_cgd", "cgd_MovimentosDiariosCGD"):
+        reportes = []
+        monkeypatch.setitem(deploy_windows.ALVOS, alvo, [("Instalar", lambda ctx: None)])
+        chamados = []
+        monkeypatch.setattr(deploy_windows, "passos_atualizar", lambda extracao: [
+            ("Extrair", lambda ctx: chamados.append("extrair")),
+            ("Mapas", lambda ctx: chamados.append("mapas")),
+            ("Dashboard", lambda ctx: chamados.append("dashboard")),
+        ] if extracao and extracao.get("modo") == "periodo" else [])
+        assert deploy_windows.correr(alvo, lambda **c: reportes.append(c),
+                                     extracao={"modo": "periodo", "inicio": "2026-10-12", "fim": "2026-10-12"})
+        assert chamados == ["extrair", "mapas", "dashboard"]
+        assert reportes[-1]["total_passos"] == 4
+        nomes.append(alvo)
+    # só instalar: nada a seguir
+    reportes = []
+    monkeypatch.setitem(deploy_windows.ALVOS, "tesouraria_preenchimento", [("Instalar", lambda ctx: None)])
+    deploy_windows.correr("tesouraria_preenchimento", lambda **c: reportes.append(c),
+                          extracao={"modo": "periodo", "inicio": "2026-10-12", "fim": "2026-10-12"})
+    assert reportes[-1]["total_passos"] == 1  # a tesouraria não extrai
+
+
+def test_passos_atualizar_e_anual_com_periodo(tmp_path, monkeypatch):
+    import json
+
+    assert [p[0] for p in deploy_windows.passos_atualizar({"modo": "periodo", "inicio": "2026-10-09", "fim": "2026-10-12"})] == [
+        "Extrair extratos de 2026-10-09 a 2026-10-12",
+        "Atualizar Mapa de Saldos e Mapa de Pagamentos e Recebimentos",
+        "Atualizar o dashboard",
+    ]
+    assert deploy_windows.passos_atualizar({"modo": "nenhuma"}) == []
+    ficheiro = tmp_path / "proxima_extracao.json"
+    monkeypatch.setattr(deploy_windows, "FICHEIRO_PROXIMA_EXTRACAO", ficheiro)
+    ctx = deploy_windows.Contexto(lambda **campos: None)
+    monkeypatch.setattr(ctx, "correr", lambda comando, **kw: None)
+    ctx.estado["extracao"] = {"modo": "periodo", "inicio": "2026-10-12", "fim": "2026-10-12"}
+    deploy_windows._cgd_reiniciar_anual(ctx)
+    assert json.loads(ficheiro.read_text(encoding="utf-8")) == {"modo": "nenhuma"}  # quem extrai é o passo seguinte

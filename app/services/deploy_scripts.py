@@ -24,9 +24,10 @@ ALVOS_DEPLOY: Dict[str, str] = {
     "tesouraria_preenchimento": "Tesouraria - Atualizar Mapa Tesouraria, Atualizar Mapa Saldos, Enviar Mapa",
     "scripts_cgd": "Todos os scripts CGD de uma vez",
 }
-# Alvos que reiniciam a extração anual no fim (e por isso usam a extração
-# escolhida no dashboard): os que instalam o MovimentosCGD.exe.
-ALVOS_COM_EXTRACAO = {"scripts_cgd", "cgd_MovimentosCGD"}
+# Alvos da CGD: no fim do deploy fazem o que foi escolhido no dashboard -
+# "Hoje"/"Intervalo": extrair esses dias, atualizar os Mapas e o dashboard
+# (scripts/deploy_windows.py, passos_atualizar); "Ano": extração anual.
+ALVOS_COM_EXTRACAO = {alvo for alvo in ALVOS_DEPLOY if alvo.startswith("cgd_") or alvo == "scripts_cgd"}
 ESTADOS_ATIVOS = ("pendente", "a_correr")
 ESTADOS_FINAIS = ("ok", "erro")
 # Um deploy "a_correr" sem notícias do agente há mais que isto (PC desligado,

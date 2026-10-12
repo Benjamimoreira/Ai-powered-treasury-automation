@@ -28,7 +28,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -69,6 +69,7 @@ class Contexto:
         self._ultimo_envio = time.monotonic()
         self.pilha = contextlib.ExitStack()  # recursos que duram vários passos (lock do banco)
         self.estado = {}
+        self.api = None  # _api do agente (GET/POST à API) - para os passos que acompanham a cadeia
 
     def linha(self, texto: str) -> None:
         self._pendentes.append(texto.rstrip())
@@ -188,8 +189,11 @@ def _cgd_instalar(ctx: Contexto, exes=None) -> None:
 def _cgd_reiniciar_anual(ctx: Contexto) -> None:
     # O que a extração anual faz ao arrancar (escolhido no dashboard): o
     # main.py --anual lê e apaga este ficheiro. Sem ele extrai o ano inteiro,
-    # o que pede SMS ao banco (movimentos com mais de 90 dias).
-    extracao = ctx.estado.get("extracao") or {"modo": "ano"}
+    # o que pede SMS ao banco (movimentos com mais de 90 dias). Com "Hoje"/
+    # "Intervalo" quem extrai é o passo seguinte (pastas diárias, para os
+    # Mapas) - a anual não extrai nada.
+    escolha = ctx.estado.get("extracao") or {"modo": "ano"}
+    extracao = {"modo": "ano"} if escolha.get("modo") == "ano" else {"modo": "nenhuma"}
     FICHEIRO_PROXIMA_EXTRACAO.parent.mkdir(parents=True, exist_ok=True)
     FICHEIRO_PROXIMA_EXTRACAO.write_text(json.dumps(extracao), encoding="utf-8")
     descricao = {
@@ -262,6 +266,85 @@ def _passos_cgd(exes, reiniciar_anual: bool) -> list:
     return passos
 
 
+# ------------------------------------------- depois de instalar: atualizar
+# Fluxo pedido em 12/10/2026 para o deploy com "Hoje"/"Intervalo": extrair
+# os extratos desses dias para as pastas diárias -> o fim da extração faz a
+# API pedir o preencher_mapa (Mapa de Saldos + Mapa de Pagamentos e
+# Recebimentos) -> o fim desse importa os dias para o dashboard. Os passos
+# esperam por cada fase para a barra de progresso mostrar até ao fim.
+ESPERA_MAPA = 45 * 60
+ESPERA_DASHBOARD = 3 * 60
+
+
+def _execucoes_depois(ctx: Contexto, script: str, desde: str) -> list:
+    logs = ctx.api("GET", f"/monitorizacao/logs?limit=5&script={script}")["logs"]
+    return [l for l in logs if l["timestamp"] > desde]
+
+
+def _agora_iso() -> str:
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
+
+
+def _cgd_extrair_dias(ctx: Contexto) -> None:
+    extracao = ctx.estado["extracao"]
+    pasta = PASTA_CGD_INSTALADA / "Movimentos Diários CGD"
+    exe = pasta / "MovimentosEscolherDiaCGD.exe"
+    if not exe.is_file():
+        raise FalhaDeploy(f"Não encontrei {exe}")
+    ctx.pilha.close()  # larga o lock do banco: é a extração que o vai pedir
+    ctx.estado["extracao_inicio"] = _agora_iso()
+    ctx.correr([exe, "--dias", f"{extracao['inicio']}:{extracao['fim']}"], cwd=pasta)
+
+
+def _esperar_mapas(ctx: Contexto) -> None:
+    if ctx.api is None:
+        ctx.linha("[AVISO] Sem ligação à API - não dá para acompanhar o Atualizar Mapa Tesouraria.")
+        return
+    desde = ctx.estado.get("extracao_inicio") or _agora_iso()
+    limite = time.monotonic() + ESPERA_MAPA
+    pedido_feito = False
+    while time.monotonic() < limite:
+        fim = _execucoes_depois(ctx, "preencher_mapa", desde)
+        if fim:
+            ctx.linha(f"Atualizar Mapa Tesouraria terminou ({fim[-1]['nivel']}): {fim[-1]['mensagem'][:160]}")
+            ctx.estado["mapas_fim"] = fim[-1]["timestamp"]
+            if fim[-1]["nivel"] == "erro":
+                raise FalhaDeploy(f"O Atualizar Mapa Tesouraria falhou: {fim[-1]['mensagem'][:200]}")
+            return
+        scripts = {s["nome"]: s for s in ctx.api("GET", "/monitorizacao/scripts")["scripts"]}
+        if not pedido_feito and not scripts.get("preencher_mapa", {}).get("a_correr_desde") and time.monotonic() > limite - ESPERA_MAPA + 120:
+            # a API pede-o sozinha no fim da extração; se 2 min depois ainda não arrancou, pede-se aqui
+            ctx.api("POST", "/monitorizacao/scripts/preencher_mapa/correr")
+            ctx.linha("Atualizar Mapa Tesouraria pedido.")
+            pedido_feito = True
+        time.sleep(15)
+    raise FalhaDeploy("O Atualizar Mapa Tesouraria não terminou em 45 min.")
+
+
+def _esperar_dashboard(ctx: Contexto) -> None:
+    if ctx.api is None:
+        return
+    desde = ctx.estado.get("mapas_fim") or _agora_iso()
+    limite = time.monotonic() + ESPERA_DASHBOARD
+    while time.monotonic() < limite:
+        estado = ctx.api("GET", "/sync/estado")
+        if estado.get("atualizado_em", "").replace("+00:00", "Z") >= desde.replace("+00:00", "Z")[:19]:
+            ctx.linha(f"Dashboard com dados novos ({estado.get('origem')}): {', '.join(estado.get('dias') or [])}")
+            return
+        time.sleep(10)
+    ctx.linha("[AVISO] Sem dados novos para o dashboard em 3 min (os Mapas podem não ter mudado).")
+
+
+def passos_atualizar(extracao: Optional[dict]) -> list:
+    if not extracao or extracao.get("modo") != "periodo":
+        return []
+    return [
+        (f"Extrair extratos de {extracao['inicio']} a {extracao['fim']}", _cgd_extrair_dias),
+        ("Atualizar Mapa de Saldos e Mapa de Pagamentos e Recebimentos", _esperar_mapas),
+        ("Atualizar o dashboard", _esperar_dashboard),
+    ]
+
+
 ALVOS = {
     # todos os exes da CGD de uma vez
     "scripts_cgd": _passos_cgd(EXES_CGD, reiniciar_anual=True),
@@ -277,7 +360,7 @@ ALVOS = {
 }
 
 
-def correr(alvo: str, reportar: Callable[..., None], extracao: Optional[dict] = None) -> bool:
+def correr(alvo: str, reportar: Callable[..., None], extracao: Optional[dict] = None, api=None) -> bool:
     """Corre os passos de `alvo`. reportar(estado=, passo=, total_passos=,
     mensagem=, erro=, linhas=) envia o progresso à API. `extracao` (só
     scripts_cgd): o que a extração anual reiniciada faz - ver
@@ -286,9 +369,12 @@ def correr(alvo: str, reportar: Callable[..., None], extracao: Optional[dict] = 
     if passos is None:
         reportar(estado="erro", erro=f"Alvo de deploy desconhecido: {alvo}", linhas=[])
         return False
+    if alvo.startswith(("cgd_", "scripts_cgd")):
+        passos = list(passos) + passos_atualizar(extracao)
     total = len(passos)
     ctx = Contexto(lambda **campos: reportar(estado="a_correr", **campos))
     ctx.estado["extracao"] = extracao
+    ctx.api = api
     inicio = time.monotonic()
     try:
         for indice, (descricao, funcao) in enumerate(passos):

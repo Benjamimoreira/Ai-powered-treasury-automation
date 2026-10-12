@@ -101,6 +101,10 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
         "descricao": "Deploy dos scripts da tesouraria a partir do dashboard (Monitorização > Deploy dos scripts)",
         "hora_execucao": "a pedido (dashboard)",
     },
+    "movimentos_escolher_dia_cgd": {
+        "descricao": "Movimentos CGD dos dias pedidos (MovimentosEscolherDiaCGD.exe --dias, deploy pelo dashboard) - no fim pede o Atualizar Mapa",
+        "hora_execucao": "a pedido (dashboard)",
+    },
     "preencher_resumo_mensal": {
         "descricao": "Preenchimento do Resumo Mensal CGD (09:00 completa o dia anterior)",
         "hora_execucao": "09:00, 16:30",

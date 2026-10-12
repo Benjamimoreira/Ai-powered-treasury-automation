@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from html import escape
 from pathlib import Path
 import os
@@ -1874,31 +1874,37 @@ def _seccao_destinatarios_mapa() -> None:
 
 
 def _escolha_extracao_deploy():
-    """Extração que a instância anual faz quando é reiniciada no fim de um
-    deploy do MovimentosCGD (o ano inteiro faz o banco pedir código SMS).
-    Devolve (extracao para a API, frase para o resumo)."""
+    """O que o deploy faz depois de instalar os scripts da CGD. "Hoje"/
+    "Intervalo": extrai esses dias do banco, atualiza o Mapa de Saldos e o
+    Mapa de Pagamentos e Recebimentos e o dashboard (scripts/
+    deploy_windows.py, passos_atualizar). Devolve (extracao para a API,
+    frase para o resumo)."""
     hoje = date.today()
     with st.container(horizontal=True, vertical_alignment="bottom"):
         modo = st.selectbox(
-            "Extração a seguir ao deploy do MovimentosCGD",
-            ["nenhuma", "hoje", "periodo", "ano"],
-            format_func={"nenhuma": "Não extrair (só instalar)", "hoje": "Hoje",
-                         "periodo": "Intervalo de dias", "ano": "Ano inteiro (pede SMS)"}.get,
-            key="modo_extracao_deploy", width=320,
+            "Depois de instalar",
+            ["hoje", "periodo", "nenhuma", "ano"],
+            format_func={"hoje": "Hoje: extrair, atualizar Mapas e dashboard",
+                         "periodo": "Intervalo de dias: extrair, atualizar Mapas e dashboard",
+                         "nenhuma": "Só instalar (não extrair)",
+                         "ano": "Extração anual do ano inteiro (pede SMS, não atualiza os Mapas)"}.get,
+            key="modo_extracao_deploy", width=480,
         )
         if modo == "hoje":
             return ({"modo": "periodo", "inicio": hoje.isoformat(), "fim": hoje.isoformat()},
-                    f"extrai hoje ({hoje:%d/%m/%Y})")
+                    f"extrai hoje ({hoje:%d/%m/%Y}) e atualiza o Mapa de Saldos, o Mapa de Pagamentos e "
+                    "Recebimentos e o dashboard")
         if modo == "periodo":
-            intervalo = st.date_input("De / até", value=(hoje.replace(day=1), hoje), max_value=hoje,
+            intervalo = st.date_input("De / até", value=(hoje - timedelta(days=1), hoje), max_value=hoje,
                                       key="intervalo_extracao_deploy", width=260)
             if isinstance(intervalo, (list, tuple)) and len(intervalo) == 2:
                 return ({"modo": "periodo", "inicio": intervalo[0].isoformat(), "fim": intervalo[1].isoformat()},
-                        f"extrai de {intervalo[0]:%d/%m/%Y} a {intervalo[1]:%d/%m/%Y}")
-            return {"modo": "nenhuma"}, "não extrai nada (escolhe as duas datas do intervalo)"
+                        f"extrai de {intervalo[0]:%d/%m/%Y} a {intervalo[1]:%d/%m/%Y} e atualiza o Mapa de Saldos, "
+                        "o Mapa de Pagamentos e Recebimentos e o dashboard")
+            return {"modo": "nenhuma"}, "só instala (escolhe as duas datas do intervalo)"
         if modo == "ano":
-            return {"modo": "ano"}, "extrai o ano inteiro (o banco pede código SMS)"
-    return {"modo": "nenhuma"}, "não extrai nada agora (fica só o agendador)"
+            return {"modo": "ano"}, "faz a extração anual do ano inteiro (o banco pede código SMS)"
+    return {"modo": "nenhuma"}, "só instala (não extrai nada)"
 
 
 def _pedir_deploys(alvos: list, extracao, reinicia: set) -> None:
@@ -1919,8 +1925,9 @@ def _seccao_deploy_scripts() -> None:
     script e um "Deploy de todos" no fim."""
     with st.container(border=True):
         st.markdown("**Deploy dos scripts do Windows**")
-        st.caption("Instalar = compilar e copiar o código novo dos scripts para a máquina de produção. "
-                   "Não corre os scripts nem atualiza os Mapas (isso é a tarefa agendada / os botões ▶ acima).")
+        st.caption("Deploy = instalar o código novo dos scripts na máquina de produção e, conforme a escolha em "
+                   "baixo, extrair os extratos do banco, atualizar o Mapa de Saldos, o Mapa de Pagamentos e "
+                   "Recebimentos e o dashboard. A barra de progresso mostra cada passo até ao fim.")
         try:
             alvos = api.listar_alvos_deploy()
         except Exception as e:
@@ -1932,7 +1939,7 @@ def _seccao_deploy_scripts() -> None:
                 ultimos.setdefault(d["alvo"], d)
         except Exception:
             ultimos = {}
-        reinicia = {a["alvo"] for a in alvos if a.get("reinicia_anual")}
+        reinicia = {a["alvo"] for a in alvos if a.get("usa_extracao") or a.get("reinicia_anual")}
         extracao, resumo_extracao = _escolha_extracao_deploy()
 
         individuais = [a for a in alvos if a["alvo"] != "scripts_cgd"]
@@ -1946,8 +1953,7 @@ def _seccao_deploy_scripts() -> None:
                             unsafe_allow_html=True, width="stretch")
                 with st.popover("🚀 Deploy"):
                     st.markdown(f"Instala **{nome}** na máquina de produção"
-                                + (f"; no fim a extração anual é reiniciada e **{resumo_extracao}**."
-                                   if a["alvo"] in reinicia else "."))
+                                + (f" e depois **{resumo_extracao}**." if a["alvo"] in reinicia else "."))
                     if st.button("Fazer deploy agora", key=f"deploy_{a['alvo']}", type="primary"):
                         _pedir_deploys([a["alvo"]], extracao, reinicia)
 
@@ -1956,8 +1962,7 @@ def _seccao_deploy_scripts() -> None:
             st.markdown("**Todos os scripts**  \n<span style='color:#5b6577'>os 5 exes da CGD e os scripts da "
                         "tesouraria, um a seguir ao outro</span>", unsafe_allow_html=True, width="stretch")
             with st.popover("🚀 Deploy de todos", type="primary"):
-                st.markdown("Instala **todos os scripts** (CGD e tesouraria). No fim a extração anual é reiniciada e "
-                            f"**{resumo_extracao}**.")
+                st.markdown(f"Instala **todos os scripts** (CGD e tesouraria) e depois **{resumo_extracao}**.")
                 if st.button("Fazer deploy de todos agora", key="deploy_todos", type="primary"):
                     _pedir_deploys(["scripts_cgd", "tesouraria_preenchimento"], extracao, reinicia)
         _progresso_deploys()

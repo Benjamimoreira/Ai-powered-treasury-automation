@@ -24,6 +24,7 @@ from app.services.monitorizacao import FUSO_LOCAL
 SCRIPTS_QUE_ATUALIZAM_DADOS = {
     "movimentos_diarios_cgd",
     "movimentos_dia_atual_cgd",
+    "movimentos_escolher_dia_cgd",
     "preencher_mapa",
     "atualizar_mapa_saldos",
 }
@@ -33,7 +34,7 @@ CHAVES_RESULTADO = ("dias_com_movimentos_novos", "dias_com_saldos_novos", "dias_
 # extratos do dia na pasta) pede logo o preencher_mapa, que atualiza o Mapa
 # de Saldos e o Mapa de Pagamentos e Recebimentos; o fim dele volta a passar
 # aqui e importa o dia para o dashboard.
-EXTRACOES_QUE_ATUALIZAM_MAPA = {"movimentos_diarios_cgd", "movimentos_dia_atual_cgd"}
+EXTRACOES_QUE_ATUALIZAM_MAPA = {"movimentos_diarios_cgd", "movimentos_dia_atual_cgd", "movimentos_escolher_dia_cgd"}
 
 log = logging.getLogger("api_tesouraria.atualizacao_dados")
 _lock = threading.Lock()

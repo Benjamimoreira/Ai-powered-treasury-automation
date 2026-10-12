@@ -155,7 +155,7 @@ def marcar_pedido_corrida(pedido_id: int, payload: PedidoCorridaEstadoRequest, d
 
 @router.get("/deploys/alvos")
 def listar_alvos_deploy():
-    return {"alvos": [{"alvo": alvo, "descricao": descricao, "reinicia_anual": alvo in ALVOS_COM_EXTRACAO}
+    return {"alvos": [{"alvo": alvo, "descricao": descricao, "usa_extracao": alvo in ALVOS_COM_EXTRACAO}
                       for alvo, descricao in ALVOS_DEPLOY.items()]}
 
 
