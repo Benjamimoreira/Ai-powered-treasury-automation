@@ -5,7 +5,7 @@ agendada - ver deploy\registar_atualizacao_automatica.ps1).
 Faz o que o job "deploy" do CI faria se houvesse um runner nesta máquina:
   1. git pull --ff-only     (código do agente, compose, scripts)  [sem -SemGit]
   2. docker compose pull    (imagens novas publicadas pelo CI no GHCR)
-  3. se mudou alguma coisa: docker compose up -d --no-build --remove-orphans
+  3. se o compose recriaria algum serviço a correr: docker compose up -d --no-build <esses serviços>
   4. docker image prune -f
 
 Não reinicia a API enquanto houver um deploy dos scripts a correr (o agente
@@ -75,15 +75,18 @@ try {
     $r = Externo "$compose pull -q"
     if ($r.Codigo -ne 0) { Log "[ERRO] docker compose pull: $($r.Saida)"; exit 1 }
 
-    # Algum contentor está a correr uma imagem diferente da que ficou local?
-    $desatualizados = @()
-    foreach ($id in (Externo "$compose ps -q").Saida -split "`n" | Where-Object { $_.Trim() }) {
-        $info = (Externo "docker inspect --format `"{{.Name}}|{{.Config.Image}}|{{.Image}}`" $($id.Trim())").Saida.Trim()
-        $nome, $imagem, $emUso = $info -split '\|'
-        $local = (Externo "docker image inspect --format `"{{.Id}}`" $imagem").Saida.Trim()
-        if ($local -and $local -ne $emUso) { $desatualizados += $nome.TrimStart('/') }
-    }
-    if ($desatualizados.Count -gt 0) { Log "Imagem nova para: $($desatualizados -join ', ')"; $mudou = $true }
+    # Só os serviços que já estão a correr: um "up -d" de todos arrancava
+    # também os que são só a pedido (faturas-ocr, "docker compose run").
+    $servicos = ((Externo "$compose ps --services --status running").Saida -split "`n" |
+        ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^[\w.-]+$' }) -join " "
+    if (-not $servicos) { Log "[AVISO] Nenhum serviço a correr - nada a atualizar (arrancar à mão com up -d)."; exit 0 }
+
+    # É o próprio compose a dizer o que recriaria. Comparar digests dava falsos
+    # positivos: o CI volta a publicar db/log-archiver a cada push com digest
+    # novo e o mesmo conteúdo, e o compose (bem) não os recria.
+    $plano = (Externo "$compose up -d --no-build --dry-run $servicos").Saida -split "`n" |
+        Where-Object { $_ -match 'Container (\S+)\s+Recreate' } | ForEach-Object { $Matches[1] } | Select-Object -Unique
+    if ($plano) { Log "Imagem/configuração nova para: $($plano -join ', ')"; $mudou = $true }
 
     if (-not $mudou) { exit 0 }
 
@@ -102,7 +105,7 @@ try {
 
     if ($Simular) { Log "[SIMULAR] $compose up -d --no-build --remove-orphans"; exit 0 }
 
-    $r = Externo "$compose up -d --no-build --remove-orphans"
+    $r = Externo "$compose up -d --no-build $servicos"
     if ($r.Codigo -ne 0) { Log "[ERRO] docker compose up: $($r.Saida)"; exit 1 }
     Log "Contentores atualizados."
 
