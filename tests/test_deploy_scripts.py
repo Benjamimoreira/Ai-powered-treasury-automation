@@ -301,3 +301,31 @@ def test_atualizar_mapas_espera_pelo_que_ja_esta_a_correr(monkeypatch):
         {"timestamp": "9999", "nivel": "info", "mensagem": "ok"}]}
     deploy_windows._atualizar_mapas(ctx)
     assert lancados == [["2026-10", "6-12"]]
+
+
+def test_deploy_que_esperou_por_outro_nao_expira(monkeypatch):
+    """Pedido há 60 min, mas o agente esteve ocupado até agora: não expira."""
+    deploys = [_deploy(5, "scripts_cgd", 60)]
+    enviados, corridos = [], []
+
+    def api_falsa(metodo, caminho, corpo=None):
+        if metodo == "GET":
+            return {"deploys": deploys}
+        enviados.append((caminho, corpo))
+
+    def correr_falso(alvo, reportar, extracao=None, api=None, lancar=None):
+        corridos.append(alvo)
+        return True
+
+    class Terminado:
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(agente_pedidos, "_api", api_falsa)
+    monkeypatch.setattr(agente_pedidos, "_deploy_em_curso", Terminado())  # outro acabou de terminar
+    monkeypatch.setattr(agente_pedidos, "_livre_desde", [None])
+    monkeypatch.setattr(agente_pedidos.deploy_windows, "correr", correr_falso)
+    agente_pedidos.tratar_deploys()
+    agente_pedidos._deploy_em_curso.join()
+    assert corridos == ["scripts_cgd"]
+    assert not any((c or {}).get("estado") == "erro" for _, c in enviados)

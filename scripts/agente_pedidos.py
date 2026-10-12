@@ -238,6 +238,10 @@ def reportar_tarefas() -> int:
 
 
 _deploy_em_curso = None  # threading.Thread do deploy a correr (um de cada vez)
+# quando o último deploy terminou: os pedidos que esperaram por ele não
+# expiram por isso (12/10/2026: um "Deploy de todos" expirou atrás de uma
+# reextração de 1 h e os exes não foram recompilados)
+_livre_desde = [None]
 
 
 TENTATIVAS_FIM_DEPLOY = 40  # x 15 s = 10 min
@@ -296,13 +300,17 @@ def tratar_deploys() -> int:
     global _deploy_em_curso
     if _deploy_em_curso is not None and _deploy_em_curso.is_alive():
         return 0
+    if _deploy_em_curso is not None:
+        _livre_desde[0] = _livre_desde[0] or datetime.now(timezone.utc)
     deploys = _api("GET", "/monitorizacao/deploys?estado=pendente&limit=20")["deploys"]
     agora = datetime.now(timezone.utc)
     for deploy in reversed(deploys):  # mais antigo primeiro
         pedido_em = datetime.fromisoformat(deploy["pedido_em"].replace("Z", "+00:00"))
         if pedido_em.tzinfo is None:
             pedido_em = pedido_em.replace(tzinfo=timezone.utc)
-        if agora - pedido_em > VALIDADE_DEPLOY:
+        # o tempo que esteve à espera de outro deploy não conta
+        desde = max(pedido_em, _livre_desde[0]) if _livre_desde[0] else pedido_em
+        if agora - desde > VALIDADE_DEPLOY:
             log.warning("deploy %s (%s) expirado - pedido às %s", deploy["id"], deploy["alvo"], deploy["pedido_em"])
             _reportar_deploy(deploy["id"])(
                 estado="erro", erro=f"Expirado: o agente do Windows só o viu {agora - pedido_em} depois")
@@ -316,6 +324,7 @@ def tratar_deploys() -> int:
             raise
         _deploy_em_curso = threading.Thread(target=correr_deploy, args=(deploy,), name=f"deploy-{deploy['id']}")
         _deploy_em_curso.start()
+        _livre_desde[0] = None
         break
     return len(deploys)
 
