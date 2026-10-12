@@ -2082,7 +2082,9 @@ if aba_monitorizacao.open:
                 if desativados:
                     st.warning(f"⛔ Tarefa agendada desativada no Windows (não corre sozinho): {', '.join(desativados)}.")
                 # a correr primeiro, depois pela próxima execução
-                df_scripts["_ordem"] = [(0 if a != "—" else 1, p or "9999") for a, p in zip(df_scripts["agora"], proxima)]
+                # (sem próxima execução vem NaN do pandas - vai para o fim)
+                df_scripts["_ordem"] = [f"{0 if a != '—' else 1}|{p if isinstance(p, str) and p else '9999'}"
+                                        for a, p in zip(df_scripts["agora"], proxima)]
                 df_scripts = df_scripts.sort_values("_ordem")
                 st.dataframe(
                     df_scripts[["nome", "agora", "status_badge", "ultima_execucao", "proxima", "hora_execucao",
