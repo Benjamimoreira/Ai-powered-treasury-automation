@@ -1873,65 +1873,93 @@ def _seccao_destinatarios_mapa() -> None:
                         st.error(f"Não foi possível adicionar: {detalhe}")
 
 
+def _escolha_extracao_deploy():
+    """Extração que a instância anual faz quando é reiniciada no fim de um
+    deploy do MovimentosCGD (o ano inteiro faz o banco pedir código SMS).
+    Devolve (extracao para a API, frase para o resumo)."""
+    hoje = date.today()
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        modo = st.selectbox(
+            "Extração a seguir ao deploy do MovimentosCGD",
+            ["nenhuma", "hoje", "periodo", "ano"],
+            format_func={"nenhuma": "Não extrair (só instalar)", "hoje": "Hoje",
+                         "periodo": "Intervalo de dias", "ano": "Ano inteiro (pede SMS)"}.get,
+            key="modo_extracao_deploy", width=320,
+        )
+        if modo == "hoje":
+            return ({"modo": "periodo", "inicio": hoje.isoformat(), "fim": hoje.isoformat()},
+                    f"extrai hoje ({hoje:%d/%m/%Y})")
+        if modo == "periodo":
+            intervalo = st.date_input("De / até", value=(hoje.replace(day=1), hoje), max_value=hoje,
+                                      key="intervalo_extracao_deploy", width=260)
+            if isinstance(intervalo, (list, tuple)) and len(intervalo) == 2:
+                return ({"modo": "periodo", "inicio": intervalo[0].isoformat(), "fim": intervalo[1].isoformat()},
+                        f"extrai de {intervalo[0]:%d/%m/%Y} a {intervalo[1]:%d/%m/%Y}")
+            return {"modo": "nenhuma"}, "não extrai nada (escolhe as duas datas do intervalo)"
+        if modo == "ano":
+            return {"modo": "ano"}, "extrai o ano inteiro (o banco pede código SMS)"
+    return {"modo": "nenhuma"}, "não extrai nada agora (fica só o agendador)"
+
+
+def _pedir_deploys(alvos: list, extracao, reinicia: set) -> None:
+    for alvo in alvos:
+        try:
+            api.pedir_deploy(alvo, extracao=extracao if alvo in reinicia else None)
+        except Exception as e:
+            st.error(f"Não foi possível pedir o deploy de {alvo}: {e}")
+            return
+    st.success(f"Deploy pedido ({len(alvos)}) - o agente do Windows começa dentro de ~15 s e faz um de cada vez.")
+
+
 def _seccao_deploy_scripts() -> None:
     """Deploy dos scripts do Windows (máquina de produção) a partir do
     dashboard, que pode estar noutra máquina: a API grava o pedido e o agente
     do Windows (scripts/agente_pedidos.py) corre os passos de
-    scripts/deploy_windows.py, reportando cada um para a barra."""
+    scripts/deploy_windows.py, reportando cada um para a barra. Um botão por
+    script e um "Deploy de todos" no fim."""
     with st.container(border=True):
         st.markdown("**Deploy dos scripts do Windows**")
+        st.caption("Instalar = compilar e copiar o código novo dos scripts para a máquina de produção. "
+                   "Não corre os scripts nem atualiza os Mapas (isso é a tarefa agendada / os botões ▶ acima).")
         try:
             alvos = api.listar_alvos_deploy()
         except Exception as e:
             st.warning(f"Não foi possível carregar os alvos de deploy: {e}")
             return
-        descricoes = {a["alvo"]: a["descricao"] for a in alvos}
-        with st.container(horizontal=True, vertical_alignment="bottom"):
-            alvo = st.selectbox("O que instalar", list(descricoes), format_func=descricoes.get,
-                                key="alvo_deploy_scripts", width=480)
-            extracao, resumo_extracao = None, ""
-            if alvo == "scripts_cgd":
-                # A extração anual é reiniciada no fim do deploy: escolher o que
-                # extrai logo (o ano inteiro faz o banco pedir código SMS).
-                modo = st.selectbox(
-                    "Extração a seguir ao deploy",
-                    ["nenhuma", "dia", "periodo", "ano"],
-                    format_func={"nenhuma": "Não extrair (só instalar)", "dia": "Um dia",
-                                 "periodo": "Intervalo de dias", "ano": "Ano inteiro (pede SMS)"}.get,
-                    key="modo_extracao_deploy", width=260,
-                )
-                hoje = date.today()
-                if modo == "dia":
-                    dia = st.date_input("Dia", value=hoje, max_value=hoje, key="dia_extracao_deploy", width=160)
-                    extracao = {"modo": "periodo", "inicio": dia.isoformat(), "fim": dia.isoformat()}
-                    resumo_extracao = f"extrai o dia {dia:%d/%m/%Y}"
-                elif modo == "periodo":
-                    intervalo = st.date_input("De / até", value=(hoje.replace(day=1), hoje), max_value=hoje,
-                                              key="intervalo_extracao_deploy", width=260)
-                    if isinstance(intervalo, (list, tuple)) and len(intervalo) == 2:
-                        extracao = {"modo": "periodo", "inicio": intervalo[0].isoformat(), "fim": intervalo[1].isoformat()}
-                        resumo_extracao = f"extrai de {intervalo[0]:%d/%m/%Y} a {intervalo[1]:%d/%m/%Y}"
-                    else:
-                        extracao = {"modo": "nenhuma"}
-                        resumo_extracao = "escolhe as duas datas do intervalo"
-                elif modo == "ano":
-                    extracao = {"modo": "ano"}
-                    resumo_extracao = "extrai o ano inteiro (o banco pede código SMS)"
-                else:
-                    extracao = {"modo": "nenhuma"}
-                    resumo_extracao = "não extrai nada agora (fica só o agendador)"
-            with st.popover("🚀 Deploy"):
-                st.markdown(
-                    f"Instala **{descricoes[alvo]}** na máquina de produção."
-                    + (" Os exes só são trocados quando nenhuma extração está a usar o banco; no fim a "
-                       f"extração anual é reiniciada e **{resumo_extracao}**." if alvo == "scripts_cgd" else "")
-                )
-                if st.button("Fazer deploy agora", key="botao_confirmar_deploy", type="primary"):
-                    try:
-                        api.pedir_deploy(alvo, extracao=extracao)
-                        st.success("Deploy pedido - o agente do Windows começa dentro de ~15 s.")
-                    except Exception as e:
-                        st.error(f"Não foi possível pedir o deploy: {e}")
+        try:
+            ultimos = {}
+            for d in api.listar_deploys(limit=30):  # mais recentes primeiro
+                ultimos.setdefault(d["alvo"], d)
+        except Exception:
+            ultimos = {}
+        reinicia = {a["alvo"] for a in alvos if a.get("reinicia_anual")}
+        extracao, resumo_extracao = _escolha_extracao_deploy()
+
+        individuais = [a for a in alvos if a["alvo"] != "scripts_cgd"]
+        for a in individuais:
+            nome, _, desc = a["descricao"].partition(" - ")
+            ultimo = ultimos.get(a["alvo"])
+            estado = (f"{ESTADO_DEPLOY.get(ultimo['estado'], ultimo['estado'])} · {_hora_local(ultimo['pedido_em'])}"
+                      if ultimo else "ainda sem deploy pelo dashboard")
+            with st.container(horizontal=True, vertical_alignment="center"):
+                st.markdown(f"**{nome}**  \n<span style='color:#5b6577'>{desc} · último deploy: {estado}</span>",
+                            unsafe_allow_html=True, width="stretch")
+                with st.popover("🚀 Deploy"):
+                    st.markdown(f"Instala **{nome}** na máquina de produção"
+                                + (f"; no fim a extração anual é reiniciada e **{resumo_extracao}**."
+                                   if a["alvo"] in reinicia else "."))
+                    if st.button("Fazer deploy agora", key=f"deploy_{a['alvo']}", type="primary"):
+                        _pedir_deploys([a["alvo"]], extracao, reinicia)
+
+        st.divider()
+        with st.container(horizontal=True, vertical_alignment="center"):
+            st.markdown("**Todos os scripts**  \n<span style='color:#5b6577'>os 5 exes da CGD e os scripts da "
+                        "tesouraria, um a seguir ao outro</span>", unsafe_allow_html=True, width="stretch")
+            with st.popover("🚀 Deploy de todos", type="primary"):
+                st.markdown("Instala **todos os scripts** (CGD e tesouraria). No fim a extração anual é reiniciada e "
+                            f"**{resumo_extracao}**.")
+                if st.button("Fazer deploy de todos agora", key="deploy_todos", type="primary"):
+                    _pedir_deploys(["scripts_cgd", "tesouraria_preenchimento"], extracao, reinicia)
         _progresso_deploys()
 
 
@@ -2005,6 +2033,7 @@ if aba_monitorizacao.open:
         # --- KPIs
         with st.container(horizontal=True, vertical_alignment="center"):
             st.metric("Scripts OK", n_ok, border=True)
+            st.metric("A correr agora", sum(1 for s in scripts if s.get("a_correr_desde")), border=True)
             st.metric("Scripts com erro", n_erro, "precisa de atenção" if n_erro else None, delta_color="inverse", border=True)
             st.metric("Atrasados", n_atrasado, "sem execução à hora esperada" if n_atrasado else None, delta_color="inverse", border=True)
             if n_execucoes:
@@ -2035,19 +2064,46 @@ if aba_monitorizacao.open:
                     atrasados_mask = pd.Series(False, index=df_scripts.index)
                 df_scripts["ultima_execucao"] = df_scripts["ultima_execucao"].map(lambda v: _hora_local(v) if isinstance(v, str) and v else "—")
                 df_scripts["ultima_erro"] = df_scripts["ultima_erro"].fillna("")
+                # agora: a correr (avisou o início e ainda não o fim) ou à espera
+                desde = df_scripts["a_correr_desde"] if "a_correr_desde" in df_scripts.columns else pd.Series(None, index=df_scripts.index)
+                df_scripts["agora"] = desde.map(lambda v: f"🔄 A correr desde {_hora_local(v)[-5:]}" if isinstance(v, str) and v else "—")
+                # próxima execução: a da tarefa agendada do Windows (agente) ou a do horário
+                agend = df_scripts["agendamento"] if "agendamento" in df_scripts.columns else pd.Series(None, index=df_scripts.index)
+                proxima = df_scripts["proxima_execucao"] if "proxima_execucao" in df_scripts.columns else pd.Series(None, index=df_scripts.index)
+                df_scripts["proxima"] = [
+                    "⛔ Tarefa desativada" if a == "desativado"
+                    else (f"🗓️ {_hora_local(p)}" if isinstance(p, str) and p else ("a pedido" if a == "a pedido" else "—"))
+                    for a, p in zip(agend, proxima)
+                ]
+                n_a_correr = int((df_scripts["agora"] != "—").sum())
+                if n_a_correr:
+                    st.info(f"🔄 A correr agora: {', '.join(df_scripts.loc[df_scripts['agora'] != '—', 'nome'])}")
+                desativados = df_scripts.loc[agend == "desativado", "nome"].tolist()
+                if desativados:
+                    st.warning(f"⛔ Tarefa agendada desativada no Windows (não corre sozinho): {', '.join(desativados)}.")
+                # a correr primeiro, depois pela próxima execução
+                df_scripts["_ordem"] = [(0 if a != "—" else 1, p or "9999") for a, p in zip(df_scripts["agora"], proxima)]
+                df_scripts = df_scripts.sort_values("_ordem")
                 st.dataframe(
-                    df_scripts[["nome", "descricao", "hora_execucao", "status_badge", "ultima_execucao", "ultima_erro"]],
+                    df_scripts[["nome", "agora", "status_badge", "ultima_execucao", "proxima", "hora_execucao",
+                                "ultima_erro", "descricao"]],
                     width="stretch",
                     hide_index=True,
                     column_config={
                         "nome": st.column_config.TextColumn("Script"),
-                        "descricao": st.column_config.TextColumn("Descrição"),
-                        "hora_execucao": st.column_config.TextColumn("Horas"),
+                        "agora": st.column_config.TextColumn("Agora"),
+                        "status_badge": st.column_config.TextColumn("Última corrida"),
                         "ultima_execucao": st.column_config.TextColumn("Última execução"),
+                        "proxima": st.column_config.TextColumn("Próxima execução"),
+                        "hora_execucao": st.column_config.TextColumn("Horário"),
                         "ultima_erro": st.column_config.TextColumn("Último erro"),
-                        "status_badge": st.column_config.TextColumn("Estado"),
+                        "descricao": st.column_config.TextColumn("Descrição"),
                     },
                 )
+                st.caption("Fluxo: tarefa agendada → extração CGD (Movimentos Dia Atual / Diários) → Atualizar Mapa "
+                           "Tesouraria (Mapa de Saldos + Mapa de Pagamentos e Recebimentos, pedido automaticamente no "
+                           "fim da extração) → dashboard atualizado. Próximas execuções lidas do Agendador de Tarefas "
+                           "do Windows pelo agente.")
 
                 # Scripts sem botão "Correr" (ex.: os da CGD, avaliacao_online)
                 # não entram - a API recusaria o pedido.

@@ -99,3 +99,47 @@ def test_executar_dispara_a_sincronizacao_e_sync_estado_responde(client, monkeyp
     # sem nada de novo, o estado não muda
     assert atualizacao_dados.registar_resultado({"dias_com_mapa_novo": []}, "vazio") is False
     assert client.get("/sync/estado").json()["origem"] == "teste"
+
+
+def test_inicio_fim_e_agendamento_no_estado_dos_scripts(client):
+    client.post("/monitorizacao/scripts/movimentos_diarios_cgd/inicio", json={"origem": "teste"})
+    client.post("/monitorizacao/tarefas-agendadas", json={"tarefas": [
+        {"nome": "Movimentos Diários CGD", "estado": "Ready", "proxima_execucao": "2026-10-13T07:30:00.0000000Z"},
+        {"nome": "Tesouraria - Enviar Mapa Diario", "estado": "Disabled", "proxima_execucao": "2026-10-12T15:30:00Z"},
+    ]})
+    scripts = {s["nome"]: s for s in client.get("/monitorizacao/scripts").json()["scripts"]}
+    diarios = scripts["movimentos_diarios_cgd"]
+    assert diarios["a_correr_desde"] is not None
+    assert diarios["agendamento"] == "ativo" and diarios["proxima_execucao"] == "2026-10-13T07:30:00Z"
+    assert scripts["enviar_mapa_smtp"]["agendamento"] == "desativado"
+    assert scripts["deploy_scripts_cgd"]["agendamento"] == "a pedido"
+
+    # o fim tira-o de "a correr"
+    client.post("/monitorizacao/scripts/movimentos_diarios_cgd/executar", json={"status": "ok"})
+    scripts = {s["nome"]: s for s in client.get("/monitorizacao/scripts").json()["scripts"]}
+    assert scripts["movimentos_diarios_cgd"]["a_correr_desde"] is None
+    assert [t["nome"] for t in client.get("/monitorizacao/tarefas-agendadas").json()["tarefas"]] == [
+        "Movimentos Diários CGD", "Tesouraria - Enviar Mapa Diario"]
+
+
+def test_fim_da_extracao_pede_o_preencher_mapa_exceto_se_ja_estiver_a_correr(monkeypatch, session_factory):
+    monkeypatch.setattr("app.services.onedrive_sync.atualizar_dados_do_dia",
+                        lambda db, dia: {"dias_com_movimentos_novos": [], "dias_com_saldos_novos": [],
+                                         "dias_com_mapa_novo": [], "erros": []})
+    monkeypatch.setattr("app.db.session.SessionLocal", session_factory)
+    monkeypatch.delenv("SCRIPTS_PREENCHIMENTO_RAIZ", raising=False)
+    monkeypatch.delenv("SCRIPTS_LOG_DIR", raising=False)
+    from app.db.models import PedidoCorrida
+    from app.services.monitorizacao import registar_inicio
+
+    atualizacao_dados.sincronizar_apos_script("movimentos_dia_atual_cgd", "warning")
+    db = session_factory()
+    assert [p.script for p in db.query(PedidoCorrida).all()] == ["preencher_mapa"]
+    db.query(PedidoCorrida).delete(); db.commit()
+
+    registar_inicio(db, "preencher_mapa", origem="teste")  # já a correr: não pede outro
+    atualizacao_dados.sincronizar_apos_script("movimentos_diarios_cgd", "ok")
+    assert db.query(PedidoCorrida).count() == 0
+    atualizacao_dados.sincronizar_apos_script("extrair_faturas", "ok")  # não é extração dos extratos
+    assert db.query(PedidoCorrida).count() == 0
+    db.close()

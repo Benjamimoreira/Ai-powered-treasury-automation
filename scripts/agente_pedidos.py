@@ -197,6 +197,43 @@ def tratar_pendentes() -> int:
     return len(pedidos)
 
 
+# Tarefas do Agendador de Tarefas reportadas à API (a API corre em Docker e
+# não as vê): estado, próxima e última execução - Monitorização > Estado dos
+# scripts mostra a próxima execução real e as tarefas desativadas.
+_PS_TAREFAS = (
+    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+    "Get-ScheduledTask | Where-Object { ($_.TaskName -like 'Tesouraria*' -and $_.TaskName -notlike 'Tesouraria - Agente*') "
+    "-or $_.TaskName -like '*CGD*' -or $_.TaskName -like 'Faturas*' } | ForEach-Object { "
+    "$i = $_ | Get-ScheduledTaskInfo; [pscustomobject]@{ nome = $_.TaskName; estado = [string]$_.State; "
+    "proxima_execucao = $(if ($i.NextRunTime) { $i.NextRunTime.ToUniversalTime().ToString('o') } else { $null }); "
+    "ultima_execucao = $(if ($i.LastRunTime) { $i.LastRunTime.ToUniversalTime().ToString('o') } else { $null }); "
+    "ultimo_resultado = [int64]$i.LastTaskResult } } | ConvertTo-Json -Depth 3"
+)
+INTERVALO_TAREFAS_SEGUNDOS = 60
+_ultimo_reporte_tarefas = [0.0]
+
+
+def reportar_tarefas() -> int:
+    if time.monotonic() - _ultimo_reporte_tarefas[0] < INTERVALO_TAREFAS_SEGUNDOS:
+        return 0
+    _ultimo_reporte_tarefas[0] = time.monotonic()
+    resultado = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_TAREFAS],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    texto = (resultado.stdout or "").strip()
+    if not texto:
+        return 0
+    tarefas = json.loads(texto)
+    if isinstance(tarefas, dict):  # uma só tarefa: o ConvertTo-Json não faz lista
+        tarefas = [tarefas]
+    for tarefa in tarefas:
+        tarefa["ultimo_resultado"] = int(tarefa.get("ultimo_resultado") or 0) & 0xFFFFFFFF
+    _api("POST", "/monitorizacao/tarefas-agendadas", {"tarefas": tarefas})
+    return len(tarefas)
+
+
 _deploy_em_curso = None  # threading.Thread do deploy a correr (um de cada vez)
 
 
@@ -262,7 +299,7 @@ def main() -> None:
     uma_vez = "--uma-vez" in sys.argv
     log.info("agente a correr (API %s, scripts em %s)", API_URL, PASTA_SCRIPTS)
     while True:
-        for tratar in (tratar_pendentes, tratar_deploys):
+        for tratar in (tratar_pendentes, tratar_deploys, reportar_tarefas):
             try:
                 tratar()
             except (urllib.error.URLError, OSError) as exc:

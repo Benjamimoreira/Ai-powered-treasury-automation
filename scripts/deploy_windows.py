@@ -99,10 +99,11 @@ class Contexto:
 
 # ---------------------------------------------------------------- scripts_cgd
 
-def _cgd_verificar(ctx: Contexto) -> None:
+def _cgd_verificar(ctx: Contexto, exes=None) -> None:
+    exes = EXES_CGD if exes is None else exes
     if not PASTA_CGD.is_dir():
         raise FalhaDeploy(f"Pasta dos scripts CGD não encontrada: {PASTA_CGD}")
-    em_falta = [nome for nome, _ in EXES_CGD if not (PASTA_CGD / f"{nome}.spec").is_file()]
+    em_falta = [nome for nome, _ in exes if not (PASTA_CGD / f"{nome}.spec").is_file()]
     if em_falta:
         raise FalhaDeploy(f".spec em falta em {PASTA_CGD}: {', '.join(em_falta)}")
     ficheiros = sorted(str(p.name) for p in PASTA_CGD.glob("*.py"))
@@ -144,9 +145,10 @@ def _processos_a_correr(nome_exe: str) -> List[str]:
     return [linha for linha in saida.splitlines() if linha.lower().startswith(f'"{nome_exe.lower()}"')]
 
 
-def _cgd_parar(ctx: Contexto) -> None:
+def _cgd_parar(ctx: Contexto, exes=None) -> None:
+    exes = EXES_CGD if exes is None else exes
     parados = []
-    for nome, _ in EXES_CGD:
+    for nome, _ in exes:
         exe = f"{nome}.exe"
         if not _processos_a_correr(exe):
             continue
@@ -168,9 +170,10 @@ def _cgd_parar(ctx: Contexto) -> None:
     ctx.linha(f"Parados: {', '.join(parados)}" if parados else "Nenhum programa CGD estava a correr.")
 
 
-def _cgd_instalar(ctx: Contexto) -> None:
+def _cgd_instalar(ctx: Contexto, exes=None) -> None:
+    exes = EXES_CGD if exes is None else exes
     carimbo = datetime.now().strftime("%Y%m%d_%H%M%S")
-    for nome, subpasta in EXES_CGD:
+    for nome, subpasta in exes:
         origem = PASTA_CGD / "dist" / f"{nome}.exe"
         destino = PASTA_CGD_INSTALADA / subpasta / f"{nome}.exe"
         destino.parent.mkdir(parents=True, exist_ok=True)
@@ -241,15 +244,30 @@ def _pt2_dependencias(ctx: Contexto) -> None:
     ctx.correr([python, "-c", "import openpyxl, win32com.client, office365; print('Dependências OK')"], cwd=PASTA_PT2)
 
 
-ALVOS = {
-    "scripts_cgd": [
-        ("Verificar o código", _cgd_verificar),
-        *[(f"Compilar {nome}.exe", _cgd_compilar(nome)) for nome, _ in EXES_CGD],
+def _passos_cgd(exes, reiniciar_anual: bool) -> list:
+    """Passos do deploy de alguns exes da CGD. Só o MovimentosCGD tem a
+    instância anual sempre aberta, por isso só ele reinicia a extração anual
+    (e usa a extração escolhida no dashboard)."""
+    from functools import partial
+
+    passos = [
+        ("Verificar o código", partial(_cgd_verificar, exes=exes)),
+        *[(f"Compilar {nome}.exe", _cgd_compilar(nome)) for nome, _ in exes],
         ("Esperar que o banco fique livre", _cgd_esperar_banco),
-        ("Parar os programas CGD abertos", _cgd_parar),
-        ("Instalar os exes", _cgd_instalar),
-        ("Reiniciar a extração anual", _cgd_reiniciar_anual),
-    ],
+        ("Parar os programas CGD abertos", partial(_cgd_parar, exes=exes)),
+        ("Instalar os exes" if len(exes) > 1 else f"Instalar {exes[0][0]}.exe", partial(_cgd_instalar, exes=exes)),
+    ]
+    if reiniciar_anual:
+        passos.append(("Reiniciar a extração anual", _cgd_reiniciar_anual))
+    return passos
+
+
+ALVOS = {
+    # todos os exes da CGD de uma vez
+    "scripts_cgd": _passos_cgd(EXES_CGD, reiniciar_anual=True),
+    # um exe de cada vez (Monitorização > Deploy dos scripts: um botão por script)
+    **{f"cgd_{nome}": _passos_cgd([(nome, subpasta)], reiniciar_anual=(nome == "MovimentosCGD"))
+       for nome, subpasta in EXES_CGD},
     "tesouraria_preenchimento": [
         ("Atualizar o código (git pull)", _pt2_git_pull),
         ("Correr os testes", _pt2_testes),

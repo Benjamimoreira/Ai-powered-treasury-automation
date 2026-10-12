@@ -16,9 +16,17 @@ from app.db.models import DeployScripts, EventoScript
 # O que se pode instalar - as chaves têm de existir em ALVOS de
 # scripts/deploy_windows.py (é lá que estão os passos).
 ALVOS_DEPLOY: Dict[str, str] = {
-    "scripts_cgd": "Scripts CGD (MovimentosCGD, Movimentos Diários, Resumo Mensal)",
-    "tesouraria_preenchimento": "Tesouraria preenchimento (preencher_mapa, enviar_mapa_smtp, ...)",
+    "cgd_MovimentosCGD": "MovimentosCGD - Extratos CGD (mês 08:00, noite 15:15 e anual 00:00/12:00)",
+    "cgd_MovimentosDiaAtualCGD": "MovimentosDiaAtualCGD - Movimentos do dia atual (08:20, 15:00)",
+    "cgd_MovimentosDiariosCGD": "MovimentosDiariosCGD - Movimentos de ontem (08:30)",
+    "cgd_MovimentosEscolherDiaCGD": "MovimentosEscolherDiaCGD - Movimentos de um dia escolhido à mão",
+    "cgd_PreencherResumoMensalCGD": "PreencherResumoMensalCGD - Resumo Mensal CGD (09:00, 16:30)",
+    "tesouraria_preenchimento": "Tesouraria - Atualizar Mapa Tesouraria, Atualizar Mapa Saldos, Enviar Mapa",
+    "scripts_cgd": "Todos os scripts CGD de uma vez",
 }
+# Alvos que reiniciam a extração anual no fim (e por isso usam a extração
+# escolhida no dashboard): os que instalam o MovimentosCGD.exe.
+ALVOS_COM_EXTRACAO = {"scripts_cgd", "cgd_MovimentosCGD"}
 ESTADOS_ATIVOS = ("pendente", "a_correr")
 ESTADOS_FINAIS = ("ok", "erro")
 # Um deploy "a_correr" sem notícias do agente há mais que isto (PC desligado,

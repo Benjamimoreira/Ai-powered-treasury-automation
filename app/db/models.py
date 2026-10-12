@@ -291,6 +291,33 @@ class DeployScripts(Base):
     terminado_em = Column(DateTime, nullable=True)
 
 
+class ScriptEmCurso(Base):
+    """Corridas a decorrer agora (Monitorização > Estado dos scripts > "A
+    correr"): cada script avisa no início (POST /monitorizacao/scripts/
+    {script}/inicio) e a linha sai quando reporta o fim (/executar)."""
+    __tablename__ = "scripts_em_curso"
+
+    id = Column(Integer, primary_key=True)
+    script = Column(String, nullable=False, unique=True)
+    iniciado_em = Column(DateTime, default=_utcnow_naive, nullable=False)
+    origem = Column(String, nullable=True)
+
+
+class TarefaAgendada(Base):
+    """Estado das tarefas do Agendador de Tarefas do Windows, reportado pelo
+    agente do Windows (POST /monitorizacao/tarefas-agendadas) - a API corre
+    em Docker e não as vê. Dá a "Próxima execução" real de cada script."""
+    __tablename__ = "tarefas_agendadas"
+
+    id = Column(Integer, primary_key=True)
+    nome = Column(String, nullable=False, unique=True)
+    estado = Column(String, nullable=True)  # Ready | Running | Disabled
+    proxima_execucao = Column(DateTime, nullable=True)  # UTC
+    ultima_execucao = Column(DateTime, nullable=True)  # UTC
+    ultimo_resultado = Column(Integer, nullable=True)
+    atualizado_em = Column(DateTime, default=_utcnow_naive, nullable=False)
+
+
 class DestinatarioMapa(Base):
     """Para quem o enviar_mapa_smtp.py manda o Mapa de Pagamentos e
     Recebimentos. Gerido no dashboard (Monitorização > Destinatários do

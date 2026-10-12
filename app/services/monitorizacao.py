@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import json_log_formatter
 from sqlalchemy.orm import Session
 
-from app.db.models import EventoScript, ExecucaoScript, PedidoCorrida
+from app.db.models import EventoScript, ExecucaoScript, PedidoCorrida, ScriptEmCurso, TarefaAgendada
 
 FUSO_LOCAL = ZoneInfo("Europe/Lisbon")
 TOLERANCIA_ATRASO_MINUTOS = 20
@@ -109,6 +109,27 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
 }
 
 
+# Tarefas do Agendador de Tarefas do Windows que lançam cada script - o
+# agente do Windows reporta o estado e a próxima execução de cada uma
+# (registar_tarefas). A extração anual das 00:00/12:00 não é uma tarefa
+# (agendador interno do MovimentosCGD.exe --anual): usa hora_execucao.
+TAREFAS_DO_SCRIPT: Dict[str, List[str]] = {
+    "preencher_mapa": ["Tesouraria - Atualizar Mapas (manha - dados finais de ontem)",
+                       "Tesouraria - Atualizar Mapas (dia - dados provisorios de hoje)"],
+    "atualizar_mapa_saldos": ["Tesouraria - Atualizar Mapa Saldos (5min apos preencher)"],
+    "enviar_mapa_smtp": ["Tesouraria - Enviar Mapa Diario"],
+    "extratos_cgd": ["Extratos CGD"],
+    "extratos_cgd_noite": ["Extratos CGD (Noite)"],
+    "movimentos_diarios_cgd": ["Movimentos Diários CGD"],
+    "movimentos_dia_atual_cgd": ["Movimentos do Dia Atual CGD"],
+    "preencher_resumo_mensal": ["Preencher Resumo Mensal CGD", "Preencher Resumo Mensal CGD (Manhã)"],
+    "recolher_faturas_recebidas": ["Faturas Recebidas - Recolha Horaria"],
+}
+# Uma corrida "a correr" há mais do que isto sem reportar o fim morreu
+# (PC desligado, processo morto) - deixa de contar como a correr.
+CORRIDA_ESQUECIDA = timedelta(hours=4)
+
+
 def _isoformat(timestamp: datetime) -> str:
     return timestamp.isoformat(timespec="seconds") + "Z"
 
@@ -167,8 +188,113 @@ def _verificar_atraso(hora_execucao: str, ultima_execucao_iso: Optional[str], ag
     return {"atrasado": False, "hora_em_falta": None}
 
 
+def _agora_utc() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def registar_inicio(db: Session, script: str, origem: Optional[str] = None) -> Dict[str, Any]:
+    """O script começou (POST /monitorizacao/scripts/{script}/inicio):
+    fica "a correr" até reportar o fim em registar_execucao."""
+    nome = script.strip().lower()
+    em_curso = db.query(ScriptEmCurso).filter(ScriptEmCurso.script == nome).first()
+    if em_curso is None:
+        em_curso = ScriptEmCurso(script=nome)
+        db.add(em_curso)
+    em_curso.iniciado_em = _agora_utc()
+    em_curso.origem = origem
+    db.commit()
+    return {"script": nome, "iniciado_em": _isoformat(em_curso.iniciado_em), "origem": origem}
+
+
+def em_execucao(db: Session, script: str) -> Optional[datetime]:
+    """Desde quando `script` está a correr (UTC), ou None."""
+    em_curso = db.query(ScriptEmCurso).filter(ScriptEmCurso.script == script.strip().lower()).first()
+    if em_curso is None or _agora_utc() - em_curso.iniciado_em > CORRIDA_ESQUECIDA:
+        return None
+    return em_curso.iniciado_em
+
+
+def registar_tarefas(db: Session, tarefas: List[Dict[str, Any]]) -> int:
+    """Substitui o estado das tarefas agendadas pelo que o agente do Windows
+    acabou de ler (nome, estado, proxima/ultima execução em ISO, resultado)."""
+    def _data(valor):
+        if not valor:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(valor).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt if dt.year > 2000 else None  # o Windows usa 1999/0001 para "nunca"
+
+    db.query(TarefaAgendada).delete()
+    for tarefa in tarefas:
+        db.add(TarefaAgendada(
+            nome=str(tarefa.get("nome", "")).strip(),
+            estado=tarefa.get("estado"),
+            proxima_execucao=_data(tarefa.get("proxima_execucao")),
+            ultima_execucao=_data(tarefa.get("ultima_execucao")),
+            ultimo_resultado=tarefa.get("ultimo_resultado"),
+            atualizado_em=_agora_utc(),
+        ))
+    db.commit()
+    return len(tarefas)
+
+
+def listar_tarefas(db: Session) -> List[Dict[str, Any]]:
+    return [
+        {"nome": t.nome, "estado": t.estado,
+         "proxima_execucao": _isoformat(t.proxima_execucao) if t.proxima_execucao else None,
+         "ultima_execucao": _isoformat(t.ultima_execucao) if t.ultima_execucao else None,
+         "ultimo_resultado": t.ultimo_resultado, "atualizado_em": _isoformat(t.atualizado_em)}
+        for t in db.query(TarefaAgendada).order_by(TarefaAgendada.nome).all()
+    ]
+
+
+def _proxima_pelo_horario(hora_execucao: str, agora: Optional[datetime] = None) -> Optional[datetime]:
+    """Próximo HH:MM de hora_execucao a partir de agora (Lisboa) - para
+    scripts sem tarefa agendada conhecida (ex.: extração anual interna)."""
+    agora = agora or datetime.now(FUSO_LOCAL)
+    candidatos = []
+    for dias in (0, 1):
+        base = (agora + timedelta(days=dias)).date()
+        for h, m in _horas_esperadas_hoje(hora_execucao):
+            momento = datetime.combine(base, datetime.min.time(), tzinfo=FUSO_LOCAL).replace(hour=h, minute=m)
+            if momento > agora:
+                candidatos.append(momento)
+    return min(candidatos) if candidatos else None
+
+
+def _agendamento(nome: str, hora_execucao: str, tarefas: Dict[str, TarefaAgendada]) -> Dict[str, Any]:
+    """Próxima execução e estado do agendamento de um script: pelas tarefas
+    do Windows reportadas pelo agente, senão pelo horário (hora_execucao)."""
+    nomes_tarefas = TAREFAS_DO_SCRIPT.get(nome, [])
+    conhecidas = [tarefas[n] for n in nomes_tarefas if n in tarefas]
+    info = [{"nome": t.nome, "estado": t.estado,
+             "proxima_execucao": _isoformat(t.proxima_execucao) if t.proxima_execucao else None}
+            for t in conhecidas]
+    if conhecidas:
+        ativas = [t for t in conhecidas if (t.estado or "").lower() != "disabled"]
+        proximas = [t.proxima_execucao for t in ativas if t.proxima_execucao]
+        return {
+            "agendamento": "ativo" if ativas else "desativado",
+            "proxima_execucao": _isoformat(min(proximas)) if proximas else None,
+            "tarefas": info,
+        }
+    if nomes_tarefas:
+        return {"agendamento": "desconhecido", "proxima_execucao": None, "tarefas": []}
+    proxima = _proxima_pelo_horario(hora_execucao)
+    return {
+        "agendamento": "horario" if proxima else "a pedido",
+        "proxima_execucao": _isoformat(proxima.astimezone(timezone.utc).replace(tzinfo=None)) if proxima else None,
+        "tarefas": [],
+    }
+
+
 def listar_scripts(db: Session) -> List[Dict[str, Any]]:
     nomes = set(SCRIPT_PADRAO) | {nome for (nome,) in db.query(ExecucaoScript.script).distinct()}
+    tarefas = {t.nome: t for t in db.query(TarefaAgendada).all()}
 
     resultado = []
     for nome in sorted(nomes):
@@ -191,6 +317,8 @@ def listar_scripts(db: Session) -> List[Dict[str, Any]]:
             "hora_execucao": hora_execucao,
             # só estes têm botão "Correr" (pedir_corrida recusa os outros)
             "corrivel": "ficheiro" in info,
+            "a_correr_desde": _isoformat(desde) if (desde := em_execucao(db, nome)) else None,
+            **_agendamento(nome, hora_execucao, tarefas),
             "status": ultima.status if ultima else "ok",
             "ultima_execucao": ultima_execucao_iso,
             "ultima_erro": ultima.erro if ultima else None,
@@ -304,6 +432,9 @@ def marcar_pedido(db: Session, pedido_id: int, estado: str, erro: Optional[str] 
     pedido.estado = estado
     pedido.erro = erro
     pedido.iniciado_em = datetime.now(timezone.utc).replace(tzinfo=None)
+    if estado == "iniciado":
+        # a correr já, mesmo que o script ainda não tenha avisado o início
+        registar_inicio(db, pedido.script, origem="botão Correr")
     if estado == "erro":
         db.add(EventoScript(script=pedido.script, nivel="erro",
                             mensagem=f"[ERRO] Botão Correr: o agente do Windows não lançou o script - {erro}"))
@@ -376,6 +507,7 @@ def registar_execucao(db: Session, script: str, status: str, erro: Optional[str]
     nome = script.strip().lower()
     execucao = ExecucaoScript(script=nome, status=status, erro=erro, log=log or [], duracao_segundos=duracao_segundos)
     db.add(execucao)
+    db.query(ScriptEmCurso).filter(ScriptEmCurso.script == nome).delete()  # já não está a correr
     db.commit()
     db.refresh(execucao)
     _eventos_a_partir_do_log(db, nome, status, erro, log or [], duracao_segundos)

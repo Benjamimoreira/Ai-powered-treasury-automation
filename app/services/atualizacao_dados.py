@@ -28,6 +28,12 @@ SCRIPTS_QUE_ATUALIZAM_DADOS = {
     "atualizar_mapa_saldos",
 }
 CHAVES_RESULTADO = ("dias_com_movimentos_novos", "dias_com_saldos_novos", "dias_com_mapa_novo")
+# Fluxo pedido em 12/10/2026: tarefa agendada -> extração CGD -> preencher e
+# atualizar os Mapas -> dashboard. O fim destas extrações (as que deixam os
+# extratos do dia na pasta) pede logo o preencher_mapa, que atualiza o Mapa
+# de Saldos e o Mapa de Pagamentos e Recebimentos; o fim dele volta a passar
+# aqui e importa o dia para o dashboard.
+EXTRACOES_QUE_ATUALIZAM_MAPA = {"movimentos_diarios_cgd", "movimentos_dia_atual_cgd"}
 
 log = logging.getLogger("api_tesouraria.atualizacao_dados")
 _lock = threading.Lock()
@@ -79,6 +85,24 @@ def sincronizar_apos_script(script: str, status: str) -> None:
                 continue
             for chave in CHAVES_RESULTADO:
                 juntos[chave] += resultado.get(chave) or []
+        if script in EXTRACOES_QUE_ATUALIZAM_MAPA:
+            _pedir_preencher_mapa(db, script)
     finally:
         db.close()
     registar_resultado(juntos, f"fim de {script}")
+
+
+def _pedir_preencher_mapa(db, script: str) -> None:
+    """Pede o preencher_mapa ao agente do Windows (como o botão "Atualizar
+    Mapa Tesouraria"), exceto se já estiver um a correr - dois a gravar no
+    mesmo Mapa estragavam-no."""
+    from app.services.monitorizacao import em_execucao, pedir_corrida
+
+    try:
+        if em_execucao(db, "preencher_mapa"):
+            log.info("fim de %s: preencher_mapa já está a correr - não pedido outra vez", script)
+            return
+        pedido = pedir_corrida(db, "preencher_mapa")
+        log.info("fim de %s: preencher_mapa pedido (%s)", script, pedido.get("status"))
+    except Exception as exc:
+        log.warning("fim de %s: não foi possível pedir o preencher_mapa: %s", script, exc)

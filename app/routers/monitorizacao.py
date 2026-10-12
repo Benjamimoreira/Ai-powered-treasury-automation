@@ -7,12 +7,12 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.services.atualizacao_dados import sincronizar_apos_script
-from app.services.deploy_scripts import ALVOS_DEPLOY, listar_deploys, obter_deploy, pedir_deploy, registar_progresso
+from app.services.deploy_scripts import ALVOS_COM_EXTRACAO, ALVOS_DEPLOY, listar_deploys, obter_deploy, pedir_deploy, registar_progresso
 from app.services.discrepancias_saldos import listar_discrepancias
 from app.services.destinatarios_mapa import adicionar_destinatario, listar_destinatarios, remover_destinatario
 from app.services.monitorizacao import (
-    listar_eventos, listar_logs, listar_pedidos, listar_scripts, marcar_pedido, pedir_corrida, registar_evento,
-    registar_execucao,
+    listar_eventos, listar_logs, listar_pedidos, listar_scripts, listar_tarefas, marcar_pedido, pedir_corrida,
+    registar_evento, registar_execucao, registar_inicio, registar_tarefas,
 )
 from app.services.monitorizacao_ia import anotar_interacao, calibracao_juiz, listar_para_rever, metricas_ia
 
@@ -81,6 +81,32 @@ def listar_status_scripts(db: Session = Depends(get_db)):
     return {"scripts": listar_scripts(db)}
 
 
+class InicioScriptRequest(BaseModel):
+    origem: Optional[str] = None
+
+
+@router.post("/scripts/{script}/inicio")
+def inicio_script(script: str, payload: Optional[InicioScriptRequest] = None, db: Session = Depends(get_db)):
+    """O script começou - fica "a correr" na Monitorização até /executar."""
+    return registar_inicio(db, script, origem=payload.origem if payload else None)
+
+
+class TarefasAgendadasRequest(BaseModel):
+    tarefas: List[dict]
+
+
+@router.post("/tarefas-agendadas")
+def reportar_tarefas_agendadas(payload: TarefasAgendadasRequest, db: Session = Depends(get_db)):
+    """O agente do Windows reporta as tarefas do Agendador de Tarefas
+    (nome, estado, proxima_execucao, ultima_execucao, ultimo_resultado)."""
+    return {"registadas": registar_tarefas(db, payload.tarefas)}
+
+
+@router.get("/tarefas-agendadas")
+def listar_tarefas_agendadas(db: Session = Depends(get_db)):
+    return {"tarefas": listar_tarefas(db)}
+
+
 @router.post("/scripts/{script}/executar")
 def executar_script(script: str, payload: ExecucaoScriptRequest, background_tasks: BackgroundTasks,
                     db: Session = Depends(get_db)):
@@ -129,7 +155,8 @@ def marcar_pedido_corrida(pedido_id: int, payload: PedidoCorridaEstadoRequest, d
 
 @router.get("/deploys/alvos")
 def listar_alvos_deploy():
-    return {"alvos": [{"alvo": alvo, "descricao": descricao} for alvo, descricao in ALVOS_DEPLOY.items()]}
+    return {"alvos": [{"alvo": alvo, "descricao": descricao, "reinicia_anual": alvo in ALVOS_COM_EXTRACAO}
+                      for alvo, descricao in ALVOS_DEPLOY.items()]}
 
 
 @router.post("/deploys")
