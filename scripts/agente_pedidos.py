@@ -240,16 +240,27 @@ def reportar_tarefas() -> int:
 _deploy_em_curso = None  # threading.Thread do deploy a correr (um de cada vez)
 
 
+TENTATIVAS_FIM_DEPLOY = 40  # x 15 s = 10 min
+
+
 def _reportar_deploy(deploy_id: int):
     def reportar(**campos):
-        try:
-            _api("POST", f"/monitorizacao/deploys/{deploy_id}/progresso", campos)
-        except urllib.error.HTTPError as exc:
-            if exc.code != 409:  # 409 = já terminado - nada a fazer
-                log.warning("deploy %s: progresso recusado (%s)", deploy_id, exc)
-        except (urllib.error.URLError, OSError) as exc:
-            # API em baixo: o deploy continua, só a barra fica parada
-            log.warning("deploy %s: progresso não enviado (%s)", deploy_id, exc)
+        # o fim (ok/erro) tem de chegar: com a API em baixo nesse momento (ex.
+        # containers a reiniciar) o deploy ficava "a correr" para sempre
+        final = campos.get("estado") in ("ok", "erro")
+        for tentativa in range(TENTATIVAS_FIM_DEPLOY if final else 1):
+            try:
+                _api("POST", f"/monitorizacao/deploys/{deploy_id}/progresso", campos)
+                return
+            except urllib.error.HTTPError as exc:
+                if exc.code != 409:  # 409 = já terminado - nada a fazer
+                    log.warning("deploy %s: progresso recusado (%s)", deploy_id, exc)
+                return
+            except (urllib.error.URLError, OSError) as exc:
+                # API em baixo: o deploy continua, só a barra fica parada
+                log.warning("deploy %s: progresso não enviado (%s)", deploy_id, exc)
+                if final:
+                    time.sleep(15)
     return reportar
 
 

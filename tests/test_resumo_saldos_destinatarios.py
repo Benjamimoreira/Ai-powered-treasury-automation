@@ -99,10 +99,10 @@ def test_destino_discrepancia_encontra_o_movimento_noutro_dia(client, db_session
     from app.db.models import MovimentoBancario
 
     db_session.add_all([
-        # o banco lançou a 10/10, o Mapa tem a 12/10 (caso real da Palavra, 12/10/2026)
-        MovimentoBancario(dia=date(2026, 10, 10), empresa="PALAVRADICIONAL,LDA", descricao="Trf Mbway 967XXX326",
+        # o banco lançou na quinta 08/10, o Mapa tem na segunda 12/10
+        MovimentoBancario(dia=date(2026, 10, 8), empresa="PALAVRADICIONAL,LDA", descricao="Trf Mbway 967XXX326",
                           valor=-374.5, ficheiro_origem="x"),
-        MovimentoBancario(dia=date(2026, 10, 10), empresa="PALAVRADICIONAL,LDA", descricao="TRF Yesika Tatiana Ca",
+        MovimentoBancario(dia=date(2026, 10, 8), empresa="PALAVRADICIONAL,LDA", descricao="TRF Yesika Tatiana Ca",
                           valor=-2920.02, ficheiro_origem="x"),
         MovimentoBancario(dia=date(2026, 10, 12), empresa="PALAVRADICIONAL,LDA", descricao="COMPRA X",
                           valor=-10, ficheiro_origem="x"),
@@ -121,8 +121,28 @@ def test_destino_discrepancia_encontra_o_movimento_noutro_dia(client, db_session
     assert (corpo["soma_extrato"], corpo["soma_mapa"]) == (-10, -3309.52)
     por_linha = {i["linha"]: i for i in corpo["itens"]}
     assert set(por_linha) == {19, 20, 22}  # a COMPRA X bate no próprio dia
-    assert por_linha[20]["estado"] == "noutro_dia" and por_linha[20]["outro_dia"] == "2026-10-10"
-    assert "no extrato está a 10/10 (TRF Yesika Tatiana Ca)" in por_linha[20]["explicacao"]
+    assert por_linha[20]["estado"] == "noutro_dia" and por_linha[20]["outro_dia"] == "2026-10-08"
+    assert "no extrato está a 08/10 (TRF Yesika Tatiana Ca)" in por_linha[20]["explicacao"]
     assert "Salários" in por_linha[20]["explicacao"] and "-2.920,02 €" in por_linha[20]["explicacao"]
     assert por_linha[22]["estado"] == "em_falta"
     assert corpo["so_noutro_dia"] is False
+
+
+def test_auditoria_e_destino_contam_o_fim_de_semana_na_segunda(client, db_session):
+    """O Mapa põe os movimentos de sábado/domingo na folha de segunda
+    (calendario.py) - a auditoria tem de fazer o mesmo."""
+    from app.db.models import MovimentoBancario
+
+    db_session.add_all([
+        MovimentoBancario(dia=date(2026, 10, 10), empresa="PALAVRADICIONAL,LDA", descricao="TRF Yesika",
+                          valor=-2920.02, ficheiro_origem="x"),  # sábado
+        LinhaMapa(dia=date(2026, 10, 12), tipo="pagamento", linha=20, empresa="Palavra",
+                  descricao="TRF Yesika", pago=-2920.02),  # segunda
+    ])
+    db_session.commit()
+    for dia in ("2026-10-10", "2026-10-12"):
+        auditoria = client.get(f"/auditoria/{dia}").json()
+        assert [d for d in auditoria["diferencas_por_empresa"] if "PALAV" in d["empresa"].upper()] == [], dia
+    destino = client.get("/monitorizacao/discrepancias-saldos/destino",
+                         params={"dia": "2026-10-12", "empresa": "Palavra"}).json()
+    assert destino["itens"] == [] and destino["soma_extrato"] == -2920.02

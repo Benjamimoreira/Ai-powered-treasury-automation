@@ -505,8 +505,17 @@ def auditoria_dia(db: Session, dia) -> dict:
     > Auditoria) mostrar exatamente o que falta/sobra e de onde veio.
     Linhas com previsto E pago já preenchidos (resolvidas antes de existir
     esta API) ficam de fora - já não são "previstos por bater", são
-    histórico. Independente de reconciliar_dia já ter corrido."""
-    movimentos = db.query(MovimentoBancario).filter(MovimentoBancario.dia == dia).all()
+    histórico. Independente de reconciliar_dia já ter corrido.
+
+    Os movimentos do extrato de sábado, domingo e feriado contam na folha
+    do dia útil seguinte, como no Mapa (calendario.py) - senão cada
+    transferência de fim de semana dava duas discrepâncias falsas."""
+    from app.services.calendario import dias_do_extrato_na_folha
+
+    dia = date.fromisoformat(str(dia)) if not isinstance(dia, date) else dia
+    dias_extrato = dias_do_extrato_na_folha(dia)
+    movimentos = (db.query(MovimentoBancario).filter(MovimentoBancario.dia.in_(dias_extrato)).all()
+                  if dias_extrato else [])
     linhas_abertas = db.query(LinhaMapa).filter(
         LinhaMapa.dia == dia, LinhaMapa.previsto.isnot(None), LinhaMapa.pago.is_(None),
     ).all()

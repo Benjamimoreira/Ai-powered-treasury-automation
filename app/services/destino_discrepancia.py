@@ -15,6 +15,7 @@ from typing import Any, Dict, List
 from sqlalchemy.orm import Session
 
 from app.db.models import LinhaMapa, MovimentoBancario
+from app.services.calendario import folha_do_movimento
 from app.services.reconciliador import TOLERANCIA_VALOR, chave_empresa, empresa_do_mapa_corresponde
 
 JANELA_DIAS = 6
@@ -67,18 +68,27 @@ def destino_discrepancia(db: Session, dia: date, empresa: str, janela: int = JAN
               if _da_empresa(l.empresa, empresa) and (l.pago is not None or l.previsto is not None)]
     pagas = [l for l in linhas if l.pago is not None]
 
-    # 1) no mesmo dia: o que bate certo (pago = valor do extrato)
+    # em que folha do Mapa fica cada movimento: os de sábado, domingo ou
+    # feriado vão para o dia útil seguinte (calendario.py - regra do preencher)
+    folha = {m.id: folha_do_movimento(m.dia) for m in movimentos}
+
+    # 1) na mesma folha: o que bate certo (pago = valor do extrato)
     sobram_m = {m.id: m for m in movimentos}
     sobram_l = {l.id: l for l in pagas}
-    for d in sorted({m.dia for m in movimentos} | {l.dia for l in pagas}):
-        for m, l in _casar([m for m in sobram_m.values() if m.dia == d],
+    for d in sorted(set(folha.values()) | {l.dia for l in pagas}):
+        for m, l in _casar([m for m in sobram_m.values() if folha[m.id] == d],
                            [l for l in sobram_l.values() if l.dia == d], lambda l: l.pago):
             del sobram_m[m.id], sobram_l[l.id]
 
     itens: List[Dict[str, Any]] = []
     # 2) o que sobra no dia: procurar o mesmo valor noutro dia (o mais perto)
     perto = lambda x: (abs((x.dia - dia).days), x.dia)
-    for m in [m for m in sobram_m.values() if m.dia == dia]:
+
+    def no_extrato(m) -> str:
+        transporte = f", vai para a folha de {_ddmm(folha[m.id])}" if folha[m.id] != m.dia else ""
+        return f"{_ddmm(m.dia)} ({m.descricao}{transporte})"
+
+    for m in [m for m in sobram_m.values() if folha[m.id] == dia]:
         candidatas = sorted([l for l in sobram_l.values() if l.dia != dia] +
                             [l for l in linhas if l.pago is None and l.previsto is not None], key=perto)
         par = next((l for l in candidatas if abs((l.pago if l.pago is not None else l.previsto) - m.valor)
@@ -88,30 +98,30 @@ def destino_discrepancia(db: Session, dia: date, empresa: str, janela: int = JAN
         if par is not None:
             sobram_l.pop(par.id, None)
             item.update(estado="noutro_dia", outro_dia=par.dia.isoformat(), explicacao=(
-                f"{_euros(m.valor)} no extrato a {_ddmm(m.dia)} ({m.descricao}) — no Mapa está a "
+                f"{_euros(m.valor)} no extrato a {no_extrato(m)} — no Mapa está a "
                 f"{_ddmm(par.dia)} ({_texto_linha(par)})"))
         else:
             item.update(estado="em_falta", outro_dia=None, explicacao=(
-                f"{_euros(m.valor)} no extrato a {_ddmm(m.dia)} ({m.descricao}) — não está no Mapa "
+                f"{_euros(m.valor)} no extrato a {no_extrato(m)} — não está no Mapa "
                 f"de {_ddmm(inicio)} a {_ddmm(fim)} (falta lançar)"))
         itens.append(item)
     for l in [l for l in sobram_l.values() if l.dia == dia]:
         par = next((m for m in sorted(sobram_m.values(), key=perto)
-                    if m.dia != dia and abs(m.valor - l.pago) < TOLERANCIA_VALOR), None)
+                    if folha[m.id] != dia and abs(m.valor - l.pago) < TOLERANCIA_VALOR), None)
         item = {"lado": "mapa", "dia": l.dia.isoformat(), "valor": l.pago, "descricao": l.descricao,
                 "imputacao": l.imputacao, "linha": l.linha}
         if par is not None:
             sobram_m.pop(par.id, None)
             item.update(estado="noutro_dia", outro_dia=par.dia.isoformat(), explicacao=(
                 f"{_euros(l.pago)} no Mapa a {_ddmm(l.dia)} ({_texto_linha(l)}) — no extrato está a "
-                f"{_ddmm(par.dia)} ({par.descricao})"))
+                f"{no_extrato(par)}"))
         else:
             item.update(estado="em_falta", outro_dia=None, explicacao=(
                 f"{_euros(l.pago)} no Mapa a {_ddmm(l.dia)} ({_texto_linha(l)}) — não aparece no "
                 f"extrato de {_ddmm(inicio)} a {_ddmm(fim)}"))
         itens.append(item)
 
-    soma_extrato = sum(m.valor for m in movimentos if m.dia == dia)
+    soma_extrato = sum(m.valor for m in movimentos if folha[m.id] == dia)
     soma_mapa = sum(l.pago for l in pagas if l.dia == dia)
     return {
         "dia": dia.isoformat(), "empresa": empresa,

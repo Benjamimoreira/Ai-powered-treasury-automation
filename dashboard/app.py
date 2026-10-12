@@ -1878,7 +1878,8 @@ def _reextracoes_discrepancias() -> None:
                     st.caption(f"Agora: {agora[:180]}")
                 continue
             if d["estado"] == "ok":
-                st.success("Discrepância resolvida - extrato e Mapa batem certo.")
+                mensagem = d.get("mensagem") or "Concluído"
+                (st.success if "resolvida" in mensagem or mensagem.startswith("Concluído em") else st.warning)(mensagem)
             elif d.get("erro"):
                 st.error(d["erro"])
             if dia and extracao.get("empresa"):

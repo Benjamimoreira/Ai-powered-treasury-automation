@@ -261,7 +261,9 @@ def test_verificar_discrepancia_para_logo_se_o_valor_esta_noutro_dia(monkeypatch
         pedidos.append(caminho)
         if caminho.startswith("/auditoria/"):
             return {"diferencas_por_empresa": [{"empresa": "Palavra", "diferenca": 3294.52}]}
-        return {"itens": [{"explicacao": "-374,50 € no Mapa a 12/10 — no extrato está a 10/10"}], "so_noutro_dia": True}
+        return {"itens": [{"lado": "mapa", "estado": "noutro_dia",
+                           "explicacao": "-374,50 € no Mapa a 12/10 — no extrato está a 10/10"}],
+                "diferenca": 374.5, "so_noutro_dia": True}
 
     extrair = []
     monkeypatch.setattr(deploy_windows, "_cgd_extrair_dias", lambda ctx: extrair.append(1))
@@ -269,11 +271,33 @@ def test_verificar_discrepancia_para_logo_se_o_valor_esta_noutro_dia(monkeypatch
     ctx.api = api_falsa
     ctx.estado["extracao"] = {"modo": "periodo", "inicio": "2026-10-06", "fim": "2026-10-12", "dia": "2026-10-12",
                               "empresa": "Palavra"}
-    try:
-        deploy_windows._verificar_discrepancia(ctx)
-    except deploy_windows.FalhaDeploy as e:
-        assert "noutro dia no Mapa" in str(e) and "no extrato está a 10/10" in str(e)
-    else:
-        raise AssertionError("devia ter falhado")
+    deploy_windows._verificar_discrepancia(ctx)  # termina "Concluído" com o resultado, sem erro
+    assert ctx.estado["resultado"].startswith("Concluído - extratos extraídos, a discrepância continua")
+    assert "no extrato está a 10/10" in ctx.estado["resultado"]
     assert extrair == []  # não volta a extrair à toa
     assert any("dia=2026-10-12" in p and "empresa=Palavra" in p for p in pedidos)
+
+
+def test_deploy_parado_sem_noticias_passa_a_erro(client, db_session):
+    from app.db.models import DeployScripts
+
+    velho = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=40)
+    db_session.add(DeployScripts(alvo="reextrair_discrepancia", estado="a_correr", log=[], atualizado_em=velho,
+                                 pedido_em=velho))
+    db_session.commit()
+    deploy = client.get("/monitorizacao/deploys").json()["deploys"][0]
+    assert deploy["estado"] == "erro" and "Sem notícias do agente" in deploy["erro"]
+
+
+def test_atualizar_mapas_espera_pelo_que_ja_esta_a_correr(monkeypatch):
+    estados = iter([True, True, False])  # a correr, a correr, livre
+    monkeypatch.setattr(deploy_windows, "_tarefa_a_correr", lambda nome: next(estados, False))
+    monkeypatch.setattr(deploy_windows.time, "sleep", lambda s: None)
+    lancados = []
+    ctx = deploy_windows.Contexto(lambda **campos: None)
+    ctx.estado["extracao"] = {"inicio": "2026-10-06", "fim": "2026-10-12"}
+    ctx.lancar = lancados.append
+    ctx.api = lambda metodo, caminho, corpo=None: {"logs": [
+        {"timestamp": "9999", "nivel": "info", "mensagem": "ok"}]}
+    deploy_windows._atualizar_mapas(ctx)
+    assert lancados == [["2026-10", "6-12"]]

@@ -128,7 +128,29 @@ def pedir_deploy(db: Session, alvo: str, extracao: Optional[Dict[str, Any]] = No
     return _deploy_dict(deploy)
 
 
+# a correr sem nenhuma notícia do agente há mais do que isto = o agente
+# parou ou o fim perdeu-se (o agente manda sinal de vida de minuto a minuto,
+# mesmo à espera dos Mapas)
+SEM_NOTICIAS_A_CORRER = timedelta(minutes=20)
+
+
+def _expirar_parados(db: Session) -> None:
+    limite = _agora() - SEM_NOTICIAS_A_CORRER
+    parados = (db.query(DeployScripts)
+               .filter(DeployScripts.estado == "a_correr", DeployScripts.atualizado_em < limite).all())
+    for deploy in parados:
+        hora = deploy.atualizado_em.strftime("%H:%M") if deploy.atualizado_em else "?"
+        deploy.estado = "erro"
+        deploy.erro = (f"Sem notícias do agente do Windows desde as {hora} UTC - o agente parou ou perdeu a "
+                       "ligação à API. Pede outra vez.")
+        deploy.mensagem = deploy.mensagem or "Parado"
+        deploy.terminado_em = _agora()
+    if parados:
+        db.commit()
+
+
 def listar_deploys(db: Session, estado: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
+    _expirar_parados(db)
     query = db.query(DeployScripts)
     if estado:
         query = query.filter(DeployScripts.estado == estado)

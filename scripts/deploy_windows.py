@@ -320,6 +320,41 @@ ESPERA_MAPA = 45 * 60
 ESPERA_DASHBOARD = 3 * 60
 
 
+TAREFA_PREENCHER = "Tesouraria - Agente correr preencher_mapa"
+SINAL_DE_VIDA_S = 60
+
+
+def _tarefa_a_correr(nome: str) -> bool:
+    """A tarefa agendada está a correr? (o Start-ScheduledTask de uma tarefa
+    já a correr não faz nada - o pedido perdia-se e o deploy ficava à espera
+    de uma corrida que nunca vinha, 12/10/2026)"""
+    try:
+        saida = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", f"(Get-ScheduledTask -TaskName '{nome}').State"],
+            capture_output=True, text=True, timeout=30, creationflags=SEM_JANELA).stdout
+    except Exception:
+        return False
+    return saida.strip().lower() == "running"
+
+
+def _esperar(ctx: Contexto, texto: str, pronto: Callable[[], bool], limite_s: float, intervalo_s: float = 15) -> bool:
+    """Espera até pronto() ou limite_s, escrevendo de minuto a minuto que
+    ainda está à espera (o dashboard vê que o deploy está vivo)."""
+    inicio = time.monotonic()
+    ultimo_sinal = inicio
+    while True:
+        if pronto():
+            return True
+        agora = time.monotonic()
+        if agora - inicio > limite_s:
+            return False
+        if agora - ultimo_sinal >= SINAL_DE_VIDA_S:
+            ctx.linha(f"{texto} ({(agora - inicio) / 60:.0f} min)")
+            ctx.enviar_linhas()
+            ultimo_sinal = agora
+        time.sleep(intervalo_s)
+
+
 def _execucoes_depois(ctx: Contexto, script: str, desde: str) -> list:
     logs = ctx.api("GET", f"/monitorizacao/logs?limit=5&script={script}")["logs"]
     return [l for l in logs if l["timestamp"] > desde]
@@ -365,18 +400,28 @@ def _atualizar_mapas(ctx: Contexto) -> None:
         ctx.linha("[AVISO] Sem ligação ao agente/API - não dá para preencher os Mapas daqui.")
         return
     for mes, dias in _dias_por_mes(ctx.estado["extracao"]):
+        # outro Atualizar Mapa Tesouraria a correr (ex. o automático do fim
+        # de uma extração): esperar que acabe, senão o nosso não arranca
+        if _tarefa_a_correr(TAREFA_PREENCHER):
+            ctx.linha("Já está a correr outro Atualizar Mapa Tesouraria - à espera que termine...")
+            ctx.enviar_linhas()
+            if not _esperar(ctx, "Ainda à espera do outro Atualizar Mapa Tesouraria",
+                            lambda: not _tarefa_a_correr(TAREFA_PREENCHER), ESPERA_MAPA):
+                raise FalhaDeploy("O Atualizar Mapa Tesouraria que já estava a correr não terminou em 45 min "
+                                  "(ver se o Excel tem alguma janela aberta à espera).")
         desde = _agora_iso()
         ctx.estado.setdefault("mapas_inicio", desde)
         ctx.linha(f"Atualizar Mapa Tesouraria {mes} dia(s) {dias}...")
+        ctx.enviar_linhas()
         ctx.lancar([mes, dias])
-        limite = time.monotonic() + ESPERA_MAPA
-        while True:
-            fim = _execucoes_depois(ctx, "preencher_mapa", desde)
-            if fim:
-                break
-            if time.monotonic() > limite:
-                raise FalhaDeploy(f"O Atualizar Mapa Tesouraria ({mes} {dias}) não terminou em 45 min.")
-            time.sleep(15)
+        fim = []
+
+        def terminou() -> bool:
+            fim[:] = _execucoes_depois(ctx, "preencher_mapa", desde)
+            return bool(fim)
+
+        if not _esperar(ctx, f"Atualizar Mapa Tesouraria {mes} {dias} a correr", terminou, ESPERA_MAPA):
+            raise FalhaDeploy(f"O Atualizar Mapa Tesouraria ({mes} {dias}) não terminou em 45 min.")
         ctx.linha(f"Atualizar Mapa Tesouraria terminou ({fim[-1]['nivel']}): {fim[-1]['mensagem'][:160]}")
         ctx.estado["mapas_fim"] = fim[-1]["timestamp"]
         if fim[-1]["nivel"] == "erro":
@@ -449,7 +494,18 @@ def _destino(ctx: Contexto) -> Optional[dict]:
     return destino
 
 
+def _resumo_destino(destino: Optional[dict]) -> str:
+    if not destino or not destino.get("itens"):
+        return ""
+    itens = destino["itens"]
+    return f" Diferença {destino['diferenca']:.2f} €: " + itens[0]["explicacao"] + (
+        f" (e mais {len(itens) - 1})" if len(itens) > 1 else "")
+
+
 def _verificar_discrepancia(ctx: Contexto) -> None:
+    """Termina sempre "Concluído" com o resultado em ctx.estado["resultado"]
+    (resolvida, ou o valor que continua e onde está) - erro é só quando a
+    extração/os Mapas falham."""
     extracao = ctx.estado["extracao"]
     for tentativa in range(1, TENTATIVAS_DISCREPANCIA + 1):
         if not _discrepancia_continua(ctx):
@@ -457,22 +513,24 @@ def _verificar_discrepancia(ctx: Contexto) -> None:
                 "dia": _dia_discrepancia(extracao), "empresa": extracao["empresa"],
                 "tipo": extracao.get("tipo") or TIPO_AUDITORIA})
             ctx.linha(f"Discrepância resolvida (tentativa {tentativa}).")
+            ctx.estado["resultado"] = "Concluído - discrepância resolvida: extrato e Mapa batem certo."
             return
         destino = _destino(ctx)
-        if destino and destino.get("so_noutro_dia"):
-            # o extrato já tem tudo - está é noutro dia no Mapa: reextrair não muda nada
-            primeiro = destino["itens"][0]["explicacao"]
-            mais = len(destino["itens"]) - 1
-            raise FalhaDeploy("O extrato está completo - a diferença é de lançamentos noutro dia no Mapa: "
-                              + primeiro + (f" (e mais {mais})" if mais else ""))
-        if tentativa == TENTATIVAS_DISCREPANCIA:
-            break
+        # só volta a extrair se falta alguma coisa no extrato (linha do Mapa
+        # sem movimento do banco) - se o extrato já tem tudo, a diferença
+        # está no Mapa (noutro dia ou por lançar) e reextrair não muda nada
+        falta_no_extrato = bool(destino) and any(
+            i["lado"] == "mapa" and i["estado"] == "em_falta" for i in destino.get("itens") or [])
+        if not falta_no_extrato or tentativa == TENTATIVAS_DISCREPANCIA:
+            ctx.estado["resultado"] = (
+                "Concluído - extratos extraídos, a discrepância continua: o que falta mudar é no Mapa."
+                if not falta_no_extrato else
+                f"Concluído - a discrepância continua depois de {tentativa} extrações.") + _resumo_destino(destino)
+            return
         ctx.linha(f"[AVISO] Discrepância continua - nova extração ({tentativa + 1}/{TENTATIVAS_DISCREPANCIA})...")
         ctx.estado.pop("mapas_inicio", None)
         _cgd_extrair_dias(ctx)
         _atualizar_mapas(ctx)
-    raise FalhaDeploy(f"A discrepância continua depois de {TENTATIVAS_DISCREPANCIA} extrações - o extrato do banco "
-                      "pode estar mesmo diferente do Mapa (ver Monitorização > Discrepâncias).")
 
 
 def passos_atualizar(extracao: Optional[dict]) -> list:
@@ -542,6 +600,8 @@ def correr(alvo: str, reportar: Callable[..., None], extracao: Optional[dict] = 
     ctx.pilha.close()
     linhas, ctx._pendentes = ctx._pendentes, []
     minutos = (time.monotonic() - inicio) / 60
-    reportar(estado="ok", passo=total, total_passos=total,
-             mensagem=f"Concluído em {minutos:.0f} min" if minutos >= 1 else "Concluído", linhas=linhas)
+    duracao = f" ({minutos:.0f} min)" if minutos >= 1 else ""
+    mensagem = (ctx.estado["resultado"] + duracao if ctx.estado.get("resultado")
+                else f"Concluído em {minutos:.0f} min" if minutos >= 1 else "Concluído")
+    reportar(estado="ok", passo=total, total_passos=total, mensagem=mensagem[:900], linhas=linhas)
     return True
