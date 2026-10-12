@@ -1741,6 +1741,7 @@ NOMES_BOTAO_CORRER = {
 ESTADO_PEDIDO = {"pendente": "⏳ à espera do agente do Windows", "iniciado": "▶ lançado", "erro": "❌ não lançado"}
 ESTADO_DEPLOY = {"pendente": "⏳ À espera do agente do Windows", "a_correr": "🔄 A instalar",
                  "ok": "✅ Concluído", "erro": "❌ Falhou"}
+ESTADO_REEXTRACAO = dict(ESTADO_DEPLOY, a_correr="🔄 A atualizar")
 
 
 def _fracao_deploy(deploy: dict) -> float:
@@ -1869,7 +1870,7 @@ def _reextracoes_discrepancias() -> None:
             else:
                 st.markdown(f"**{d['descricao']}**")
             fracao = _fracao_deploy(d)
-            st.progress(fracao, text=f"{fracao:.0%} · {ESTADO_DEPLOY.get(d['estado'], d['estado'])} · "
+            st.progress(fracao, text=f"{fracao:.0%} · {ESTADO_REEXTRACAO.get(d['estado'], d['estado'])} · "
                                      f"{d.get('mensagem') or ''}")
             if d["estado"] in ("pendente", "a_correr"):
                 agora = next((l for l in reversed(d.get("log") or []) if l.strip() and not l.startswith("$ ")), "")
@@ -1977,7 +1978,7 @@ def _secao_discrepancias_saldos() -> None:
                     "🔍", key=f"destino_disc_{i}", help="Para onde foi o valor (sem extrair)"):
                 abertos.symmetric_difference_update({chave})
             if chave in em_curso:
-                st.markdown(f"🔄 {ESTADO_DEPLOY.get(em_curso[chave]['estado'], '')}", width=170)
+                st.markdown(ESTADO_REEXTRACAO.get(em_curso[chave]['estado'], ''), width=170)
             elif not d.get("dia") or d["empresa"] == "-":
                 st.markdown("<span style='color:#8a93a3'>sem dia/empresa</span>", unsafe_allow_html=True, width=170)
             elif st.button("🔄 Atualizar", key=f"atualizar_disc_{i}", width=170):
