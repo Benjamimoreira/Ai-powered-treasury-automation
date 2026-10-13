@@ -427,7 +427,10 @@ st.markdown(
         --azul: #0b1f3a; --azul-2: #16325c; --tinta: #1b2433; --cinza: #5b6577;
         --linha: #dfe3ea; --fundo-suave: #f7f8fa;
         --vermelho: #c8102e; --vermelho-escuro: #8e0b20; --vermelho-linha: rgba(200, 16, 46, .45);
+        --fundo: #e4e7eb;
     }
+    /* fundo cinza-rato: as caixas e os cartões brancos destacam-se da página */
+    .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] { background: var(--fundo) !important; }
     html, body, .stMarkdown, button, input, textarea, select, [data-testid="stWidgetLabel"] {
         font-family: 'IBM Plex Sans', -apple-system, 'Segoe UI', sans-serif;
     }
@@ -489,7 +492,7 @@ st.markdown(
 
     /* KPIs em cartão */
     div[data-testid="stMetric"] {
-        background: #ffffff; border: 1px solid var(--linha); border-top: 3px solid var(--azul);
+        background: #ffffff; border: 1px solid #c3cad5; border-top: 3px solid var(--azul);
         border-radius: 6px; padding: 12px 16px 10px 16px; box-shadow: 0 1px 2px rgba(11, 31, 58, .05);
     }
     [data-testid="stMetricLabel"] p {
