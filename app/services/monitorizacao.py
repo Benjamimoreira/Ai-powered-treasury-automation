@@ -57,6 +57,11 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
         "hora_execucao": "de 15 em 15 min (07h-21h)",
         # sem "ficheiro": corre no container "sincronizador", não no Windows
     },
+    "aplicar_previsao_mensal": {
+        "descricao": "Folha \"Previsão\" de cada Mapa de Pagamentos e Recebimentos (pedida ao carregar uma previsão mensal no dashboard)",
+        "hora_execucao": "a pedido",
+        "ficheiro": "aplicar_previsao_mensal.py",
+    },
     "enviar_mapa_smtp": {
         "descricao": "Envio diário do Mapa de Pagamentos e Recebimentos por email",
         "hora_execucao": "16:30",

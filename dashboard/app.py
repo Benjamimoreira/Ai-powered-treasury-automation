@@ -1482,9 +1482,127 @@ def _painel_assistente(chave: str, altura_conversa=None):
         st.session_state["chat_mensagens"].append(mensagem_nova)
 
 
+def _secao_previsao_mensal() -> None:
+    """Previsão de tesouraria mensal da direção financeira (ficheiro
+    "Previsão Tesouraria_<MÊS>.xlsx") contra o realizado no Mapa de
+    Pagamentos e Recebimentos - ver app/services/previsao_mensal.py. A
+    mesma previsão está na folha "Previsão" de cada Mapa mensal."""
+    with st.container(border=True):
+        st.markdown("**Previsão de tesouraria mensal**")
+        with st.expander("📤 Carregar um ficheiro de previsão novo"):
+            ficheiro = st.file_uploader("Ficheiro \"Previsão Tesouraria_<MÊS>.xlsx\"", type=["xlsx"],
+                                        key="ficheiro_previsao_mensal")
+            if ficheiro is not None and st.button("Importar previsão", key="importar_previsao_mensal"):
+                try:
+                    r = api.importar_previsao_mensal(ficheiro.name, ficheiro.getvalue())
+                    st.success(f"Importadas {r['linhas']} linhas ({', '.join(r['meses'])}). " + (
+                        "A folha \"Previsão\" dos Mapas de cada mês está a ser atualizada pelo agente do Windows "
+                        "(Monitorização > aplicar_previsao_mensal)." if r.get("mapas") == "pedido"
+                        else f"Mapas não atualizados: {r.get('mapas')}"))
+                    for aviso in r.get("avisos") or []:
+                        st.warning(aviso)
+                except Exception as e:
+                    st.error(f"Não foi possível importar: {e}")
+        try:
+            dados = api.previsao_mensal()
+        except Exception as e:
+            st.error(f"Erro a consultar a previsão mensal: {e}")
+            return
+        meses = dados.get("meses") or []
+        if not meses:
+            st.info("Ainda não há previsão mensal carregada - usa \"Carregar um ficheiro de previsão novo\".")
+            return
+        try:
+            carregado = pd.Timestamp(dados.get("importado_em")).tz_convert("Europe/Lisbon").strftime("%d/%m %H:%M")
+        except (ValueError, TypeError):
+            carregado = "-"
+        st.caption(f"Fonte: {dados.get('ficheiro')} (carregado {carregado}). "
+                   "Realizado = recebido/pago confirmado no extrato nas linhas do Mapa de Pagamentos e "
+                   "Recebimentos (o mês em curso só até hoje). Os autos de obra por obra são o detalhe da "
+                   "rubrica \"Autos de Obra\" das despesas - não se somam outra vez.")
+
+        df = pd.DataFrame(meses)
+        curtos = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+        df["Mês"] = [f"{curtos[m - 1]} {a}" + (" (real)" if r else "")
+                     for a, m, r in zip(df["ano"], df["mes"], df["realizado_no_ficheiro"])]
+        df["desvio_rec"] = df["recebido"] - df["previsto_recebimentos"]
+        df["desvio_pag"] = df["pago"] - df["previsto_pagamentos"]
+        tabela = df[["Mês", "previsto_recebimentos", "recebido", "desvio_rec", "previsto_pagamentos", "pago",
+                     "desvio_pag", "previsto_liquido", "liquido"]].rename(columns={
+            "previsto_recebimentos": "Recebimentos previstos", "recebido": "Recebido", "desvio_rec": "Desvio receb.",
+            "previsto_pagamentos": "Pagamentos previstos", "pago": "Pago", "desvio_pag": "Desvio pag.",
+            "previsto_liquido": "Líquido previsto", "liquido": "Líquido real"})
+
+        def _cor(valor):
+            if pd.isna(valor) or abs(valor) < 0.005:
+                return ""
+            return "color: #0b7a3e; font-weight: 600" if valor > 0 else "color: #b3261e; font-weight: 600"
+
+        euros = [c for c in tabela.columns if c != "Mês"]
+        estilo = (tabela.style
+                  .map(_cor, subset=["Líquido previsto", "Líquido real"])
+                  .format(lambda v: "" if pd.isna(v) else f"{_n(v, 0)} €", subset=euros))
+        st.dataframe(estilo, width="stretch", hide_index=True)
+
+        # previsto vs realizado, mês a mês
+        df_graf = pd.concat([
+            df.assign(Série="Recebimentos", Tipo="Previsto", Valor=df["previsto_recebimentos"]),
+            df.assign(Série="Recebimentos", Tipo="Realizado", Valor=df["recebido"]),
+            df.assign(Série="Pagamentos", Tipo="Previsto", Valor=df["previsto_pagamentos"]),
+            df.assign(Série="Pagamentos", Tipo="Realizado", Valor=df["pago"]),
+        ])[["Mês", "Série", "Tipo", "Valor"]]
+        df_graf["Barra"] = df_graf["Série"] + " " + df_graf["Tipo"].str.lower()
+        cores = alt.Scale(domain=["Recebimentos previsto", "Recebimentos realizado", "Pagamentos previsto",
+                                  "Pagamentos realizado"],
+                          range=["#9fdcc4", COR_RECEBIMENTOS_MES, "#f3b0ae", COR_PAGAMENTOS_MES])
+        st.altair_chart(
+            alt.Chart(df_graf).mark_bar().encode(
+                x=alt.X("Mês:N", sort=list(df["Mês"]), title=None),
+                xOffset=alt.XOffset("Barra:N", sort=list(cores.domain)),
+                y=alt.Y("Valor:Q", title="€", axis=alt.Axis(format=",.0f")),
+                color=alt.Color("Barra:N", scale=cores, legend=alt.Legend(orient="bottom", title=None)),
+                tooltip=["Mês", "Série", "Tipo", alt.Tooltip("Valor:Q", title="Valor (€)", format=",.2f")],
+            ).properties(height=320),
+            width="stretch",
+        )
+
+        # detalhe de um mês: as rubricas do ficheiro
+        rotulos = {i: rotulo for i, rotulo in enumerate(df["Mês"])}
+        hoje = date.today()
+        escolhido = next((i for i, m in enumerate(meses) if (m["ano"], m["mes"]) == (hoje.year, hoje.month)), 0)
+        i = st.selectbox("Detalhe do mês", list(rotulos), index=escolhido, format_func=rotulos.get,
+                         key="mes_previsao_mensal", width=220)
+        mes = meses[i]
+        with st.container(horizontal=True):
+            st.metric("Vendas diretas previstas", f"{_n(mes['previsto_vendas_diretas'])} €",
+                      f"realizado (escrituras) {_n(mes['vendas_diretas'])} €", delta_color="off", border=True)
+            st.metric("Sinais e reforços previstos", f"{_n(mes['previsto_sinais_reforcos'])} €",
+                      f"realizado (CPCVs + reforços) {_n(mes['sinais_reforcos'])} €", delta_color="off", border=True)
+            st.metric("Pagamentos previstos", f"{_n(mes['previsto_pagamentos'])} €",
+                      f"pago {_n(mes['pago'])} €", delta_color="off", border=True)
+        linhas = pd.DataFrame(mes["linhas"])
+        with st.container(horizontal=True):
+            for titulo, filtro in (("Pagamentos (despesas)", linhas["tipo"] == "pagamento"),
+                                   ("Recebimentos", linhas["tipo"] == "recebimento"),
+                                   ("Autos de obra por obra (detalhe)", linhas["tipo"] == "detalhe")):
+                parte = linhas[filtro]
+                with st.container(border=True):
+                    st.markdown(f"**{titulo}**")
+                    if parte.empty:
+                        st.caption("Sem valores neste mês.")
+                        continue
+                    colunas = ["grupo", "rubrica", "valor"] if titulo == "Recebimentos" else ["rubrica", "valor"]
+                    st.dataframe(
+                        parte[colunas].sort_values("valor", ascending=False), hide_index=True, width="stretch",
+                        column_config={"grupo": "Grupo", "rubrica": "Rubrica",
+                                       "valor": st.column_config.NumberColumn("Previsto", format="euro")})
+                    st.caption(f"Total: {_n(parte['valor'].sum(), 2)} €")
+
+
 if aba_forecast.open:
     with aba_forecast:
         _painel_forecast()
+        _secao_previsao_mensal()
 
 if aba_visao_geral.open:
     with aba_visao_geral:

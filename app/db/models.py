@@ -345,3 +345,24 @@ def criar_tabelas(engine) -> None:
             print(f"pgvector indisponível ({erro.__class__.__name__}) - embeddings só em memória.")
             tabelas = [t for t in Base.metadata.sorted_tables if t.name != EmbeddingMovimento.__tablename__]
     Base.metadata.create_all(bind=engine, tables=tabelas)
+
+
+class PrevisaoMensal(Base):
+    """Previsão de tesouraria por mês (ficheiro "Previsão Tesouraria_<MÊS>.xlsx"
+    da direção financeira, carregado no dashboard): uma linha por rubrica e
+    mês - pagamentos (Despesas), recebimentos (Vendas diretas, Sinais e
+    reforços) e o detalhe dos autos de obra por obra (só informativo, já está
+    somado na rubrica "Autos de Obra" das despesas). Ver
+    app/services/previsao_mensal.py."""
+    __tablename__ = "previsao_mensal"
+
+    id = Column(Integer, primary_key=True)
+    ano = Column(Integer, nullable=False, index=True)
+    mes = Column(Integer, nullable=False, index=True)
+    tipo = Column(String, nullable=False)  # recebimento | pagamento | detalhe
+    grupo = Column(String, nullable=False)
+    rubrica = Column(String, nullable=False)
+    valor = Column(Float, nullable=False)
+    realizado = Column(Integer, nullable=False, default=0)  # 1 = coluna REA (já realizado) no ficheiro
+    ficheiro = Column(String, nullable=True)
+    importado_em = Column(DateTime, default=_utcnow_naive, nullable=False)

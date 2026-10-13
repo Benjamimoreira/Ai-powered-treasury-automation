@@ -66,6 +66,7 @@ COMANDOS = {
     "preencher_mapa": ("pyw", ["painel_preenchimento.py"]),
     "atualizar_mapa_saldos": ("py", ["atualizar_mapa_saldos.py"]),
     "enviar_mapa_smtp": ("py", ["enviar_mapa_smtp.py"]),
+    "aplicar_previsao_mensal": ("py", ["aplicar_previsao_mensal.py"]),
 }
 
 log = logging.getLogger("agente_pedidos")

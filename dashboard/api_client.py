@@ -408,6 +408,24 @@ def listar_tarefas_agendadas() -> list:
     return r.json()["tarefas"]
 
 
+def previsao_mensal() -> dict:
+    """Previsão de tesouraria por mês com o realizado do Mapa ao lado."""
+    r = requests.get(f"{API_BASE_URL}/previsao-mensal", timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def importar_previsao_mensal(nome: str, conteudo: bytes) -> dict:
+    """Carrega o ficheiro "Previsão Tesouraria_<MÊS>.xlsx" (substitui os meses que ele tem)."""
+    import base64
+    r = requests.post(f"{API_BASE_URL}/previsao-mensal/importar",
+                      json={"ficheiro": nome, "conteudo_base64": base64.b64encode(conteudo).decode()}, timeout=60)
+    if r.status_code == 422:
+        raise ValueError(r.json().get("detail"))
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_deploys(limit: int = 10) -> list:
     """Deploys dos scripts, mais recentes primeiro (com passo/total_passos)."""
     r = requests.get(f"{API_BASE_URL}/monitorizacao/deploys", params={"limit": limit}, timeout=10)
