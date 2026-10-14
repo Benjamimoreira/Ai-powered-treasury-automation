@@ -16,10 +16,12 @@ class _Resposta:
         return self._corpo
 
 
-def _api_falsa(monkeypatch, corpo_sync=None, falha=None):
+def _api_falsa(monkeypatch, corpo_sync=None, falha=None, cabecalhos=None):
     reportados = []
 
-    def post(url, json=None, params=None, timeout=None):
+    def post(url, json=None, params=None, headers=None, timeout=None):
+        if cabecalhos is not None:
+            cabecalhos.append(headers)
         if url.endswith("/atualizar-dados"):
             if falha:
                 raise falha
@@ -53,6 +55,14 @@ def test_reporta_erros_da_importacao_e_api_em_baixo(monkeypatch):
     reportados = _api_falsa(monkeypatch, falha=requests.ConnectionError("API em baixo"))
     assert "erro" in sincronizador.sincronizar()
     assert reportados[0]["status"] == "erro"
+
+
+def test_manda_a_chave_da_api(monkeypatch):
+    monkeypatch.setattr(sincronizador, "CABECALHOS", {"X-API-Key": "chave"})
+    cabecalhos = []
+    _api_falsa(monkeypatch, {"erros": ["x"]}, cabecalhos=cabecalhos)
+    sincronizador.sincronizar()
+    assert cabecalhos and all(h == {"X-API-Key": "chave"} for h in cabecalhos)
 
 
 def test_horario_em_hora_de_lisboa():

@@ -92,6 +92,7 @@ services:
     image: ${IMAGE_PREFIX:-ghcr.io/benjamimoreira/ai-powered-treasury-automation}/api:${IMAGE_TAG:-latest}
     environment:
       API_BASE_URL: http://api:8000
+      API_TOKEN: ${API_TOKEN:-}
       SYNC_INTERVALO_MINUTOS: ${SYNC_INTERVALO_MINUTOS:-15}
       SYNC_HORA_INICIO: ${SYNC_HORA_INICIO:-7}
       SYNC_HORA_FIM: ${SYNC_HORA_FIM:-21}
@@ -103,21 +104,24 @@ services:
   # Tracing de LLMs (Arize Phoenix, open source): cada chamada ao LLM da api
   # fica registada com prompt, resposta, latência, tokens e custo estimado.
   # Um só container, e os traces não saem desta máquina (RGPD - ver
-  # docs/GOVERNANCA_IA.md). UI em http://localhost:6006.
+  # docs/GOVERNANCA_IA.md). UI em http://localhost:6006 - só neste PC: não
+  # tem login e mostra prompts e respostas com dados financeiros.
   phoenix:
     image: arizephoenix/phoenix:version-12.0.0
     ports:
-      - "6006:6006"
+      - "127.0.0.1:6006:6006"
     environment:
       PHOENIX_WORKING_DIR: /mnt/data
     volumes:
       - phoenix_data:/mnt/data
     restart: unless-stopped
 
+  # Dozzle: só neste PC (sem login; os logs têm códigos de empresa/utilizador
+  # do banco).
   log-viewer:
     image: amir20/dozzle:latest
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:

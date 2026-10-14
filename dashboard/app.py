@@ -365,6 +365,31 @@ def grafico_ranking_imputacoes(linhas: list, titulo: str):
 
 st.set_page_config(page_title="Predição Financeira & Tesouraria", page_icon="💶", layout="wide")
 
+
+def _exigir_password() -> None:
+    """Com DASHBOARD_PASSWORD no .env, pede-a antes de mostrar o que quer
+    que seja: o dashboard tem a chave da API e botões de Correr/Deploy, por
+    isso abri-lo é o mesmo que ter a API. Sem a variável fica aberto."""
+    import hmac
+    import time
+
+    senha = os.environ.get("DASHBOARD_PASSWORD", "")
+    if not senha or st.session_state.get("_autenticado"):
+        return
+    with st.form("entrar"):
+        st.markdown("### Predição Financeira & Tesouraria")
+        tentativa = st.text_input("Password", type="password")
+        if st.form_submit_button("Entrar"):
+            if hmac.compare_digest(tentativa.encode(), senha.encode()):
+                st.session_state["_autenticado"] = True
+                st.rerun()
+            time.sleep(2)  # trava tentativas em série
+            st.error("Password errada.")
+    st.stop()
+
+
+_exigir_password()
+
 # Cabeçalho de relatório financeiro: faixa azul-marinho, título, data e a
 # hora da última atualização dos dados (GET /sync/estado), com o traço
 # vermelho VIDÓR por baixo.

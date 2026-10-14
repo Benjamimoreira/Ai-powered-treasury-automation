@@ -9,6 +9,9 @@ from pathlib import Path
 for _var in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2"):
     os.environ[_var] = "false"
 os.environ["PHOENIX_COLLECTOR_ENDPOINT"] = ""
+# API sem chave nos testes (o API_TOKEN do .env obrigava todos a mandá-la);
+# test_seguranca.py liga-a quando precisa.
+os.environ["API_TOKEN"] = ""
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

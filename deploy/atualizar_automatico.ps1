@@ -94,7 +94,12 @@ try {
     if ($ComposeFile -eq "docker-compose.yml") {
         try {
             # Sem notícias há 30 min = agente morreu a meio (mesma regra que SEM_NOTICIAS na API).
-            $ativos = @((Invoke-RestMethod -TimeoutSec 5 "$ApiUrl/monitorizacao/deploys?estado=a_correr&limit=5").deploys |
+            # chave da API (app/seguranca.py), do .env deste repositório
+            $cabecalhos = @{}
+            $linhaToken = Get-Content (Join-Path $Pasta ".env") -Encoding UTF8 -ErrorAction SilentlyContinue |
+                Where-Object { $_ -match '^API_TOKEN=(.+)$' } | Select-Object -First 1
+            if ($linhaToken) { $cabecalhos["X-API-Key"] = ($linhaToken -replace '^API_TOKEN=', '').Trim() }
+            $ativos = @((Invoke-RestMethod -TimeoutSec 5 -Headers $cabecalhos "$ApiUrl/monitorizacao/deploys?estado=a_correr&limit=5").deploys |
                 Where-Object { [datetime]$_.atualizado_em -gt (Get-Date).AddMinutes(-30) })
             if ($ativos.Count -gt 0) {
                 Log "Deploy a correr ($($ativos[0].alvo), #$($ativos[0].id)) - reinicio adiado para a próxima volta."

@@ -34,6 +34,8 @@ HORA_INICIO = int(os.environ.get("SYNC_HORA_INICIO", "7"))
 HORA_FIM = int(os.environ.get("SYNC_HORA_FIM", "21"))
 FUSO = ZoneInfo("Europe/Lisbon")
 NOME_SCRIPT = "sincronizar_onedrive"
+# chave da API (app/seguranca.py) - /atualizar-dados exige-a
+CABECALHOS = {"X-API-Key": os.environ["API_TOKEN"].strip()} if os.environ.get("API_TOKEN", "").strip() else {}
 
 log = logging.getLogger("sincronizador")
 
@@ -47,7 +49,7 @@ def _reportar(status: str, erro=None, linhas=None, duracao=None) -> None:
         requests.post(
             f"{API_URL}/monitorizacao/scripts/{NOME_SCRIPT}/executar",
             json={"status": status, "erro": erro, "log": linhas or [], "duracao_segundos": duracao},
-            timeout=10,
+            headers=CABECALHOS, timeout=10,
         )
     except requests.RequestException as exc:
         log.warning("não foi possível reportar à Monitorização: %s", exc)
@@ -58,7 +60,8 @@ def sincronizar() -> dict:
     dados novos ou erros. Devolve a resposta da API (ou {"erro": ...})."""
     inicio = time.monotonic()
     try:
-        r = requests.post(f"{API_URL}/atualizar-dados", params={"dias_atras": DIAS_ATRAS}, timeout=600)
+        r = requests.post(f"{API_URL}/atualizar-dados", params={"dias_atras": DIAS_ATRAS},
+                          headers=CABECALHOS, timeout=600)
         r.raise_for_status()
         resultado = r.json()
     except requests.RequestException as exc:

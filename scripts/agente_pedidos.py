@@ -94,11 +94,27 @@ def _executavel(lancador: str) -> list:
     return [_lancador(lancador), "-3"]
 
 
+def _token_api() -> str:
+    """Chave da API (app/seguranca.py): da variável de ambiente API_TOKEN ou,
+    como o agente corre fora do Docker, do .env do repositório."""
+    if os.environ.get("API_TOKEN", "").strip():
+        return os.environ["API_TOKEN"].strip()
+    try:
+        for linha in (Path(__file__).resolve().parent.parent / ".env").read_text(encoding="utf-8-sig").splitlines():
+            if linha.startswith("API_TOKEN="):
+                return linha.split("=", 1)[1].strip().strip('"\'')
+    except OSError:
+        pass
+    return ""
+
+
 def _api(metodo: str, caminho: str, corpo=None):
     dados = json.dumps(corpo).encode() if corpo is not None else None
-    pedido = urllib.request.Request(
-        f"{API_URL}{caminho}", data=dados, method=metodo, headers={"Content-Type": "application/json"},
-    )
+    cabecalhos = {"Content-Type": "application/json"}
+    token = _token_api()
+    if token:
+        cabecalhos["X-API-Key"] = token
+    pedido = urllib.request.Request(f"{API_URL}{caminho}", data=dados, method=metodo, headers=cabecalhos)
     with urllib.request.urlopen(pedido, timeout=10) as resposta:
         return json.loads(resposta.read() or b"null")
 

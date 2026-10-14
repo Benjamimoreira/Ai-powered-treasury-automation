@@ -1,8 +1,11 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
+from app import seguranca
 from app.db import models  # noqa: F401  (garante que os modelos são registados antes do create_all)
 from app.db.session import engine
 from app.routers import (ambiguos, anomalias, chat, comercial, faturas, monitorizacao, previsao_mensal, reconciliacao,
@@ -27,6 +30,9 @@ async def lifespan(app: FastAPI):
     garantimos que o Agent é fechado corretamente no shutdown, se
     alguma vez chegou a ser criado."""
     models.criar_tabelas(engine)
+    if not seguranca.token():
+        logging.getLogger("uvicorn.error").warning(
+            "API_TOKEN não definido no .env - a API aceita pedidos de qualquer PC da rede sem chave.")
     from app.services.llm_tracing import iniciar_tracing
 
     iniciar_tracing()
@@ -38,6 +44,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="API de Análise de Tesouraria", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def exigir_chave(request: Request, call_next):
+    """Ver app/seguranca.py: com API_TOKEN definido, pedidos sem X-API-Key
+    válido dão 401 (exceto os reportes dos scripts e os PDFs assinados)."""
+    if not seguranca.pedido_autorizado(request.method, request.url.path,
+                                       request.headers.get(seguranca.CABECALHO), request.query_params):
+        return JSONResponse(status_code=401,
+                            content={"detail": f"Chave da API em falta ou inválida (cabeçalho {seguranca.CABECALHO})."})
+    return await call_next(request)
+
 
 app.include_router(reconciliacao.router)
 app.include_router(ambiguos.router)

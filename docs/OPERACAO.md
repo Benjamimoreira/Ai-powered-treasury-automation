@@ -215,13 +215,23 @@ O servidor só corre o dashboard (`docker-compose.dashboard.yml`); a produção
 continua neste PC. No servidor:
 
 ```bash
-echo "API_PRODUCAO_URL=http://<ip-do-pc-de-producao>:8000" > .env
+cat > .env <<EOF
+API_PRODUCAO_URL=http://<ip-do-pc-de-producao>:8000
+API_TOKEN=<o mesmo API_TOKEN do .env do PC de produção>
+DASHBOARD_PASSWORD=<password para abrir o dashboard>
+EOF
 docker compose -f docker-compose.dashboard.yml pull
 docker compose -f docker-compose.dashboard.yml up -d
 ```
 
-No PC de produção, abrir a porta 8000 só para o servidor (a API não tem
-autenticação - ver secção 10):
+Sem `API_TOKEN` e `DASHBOARD_PASSWORD` o compose recusa arrancar. A API do PC
+de produção só aceita pedidos com essa chave (cabeçalho `X-API-Key`, ver
+`app/seguranca.py`); ficam abertos só os reportes dos scripts agendados e os
+links assinados dos PDFs. Phoenix (6006) e Dozzle (8080) só abrem no próprio
+PC de produção.
+
+No PC de produção, abrir a porta 8000 só para o servidor (a chave viaja em
+HTTP simples, por isso limitar também quem lá chega):
 
 ```powershell
 New-NetFirewallRule -DisplayName "API tesouraria (servidor)" -Direction Inbound -Protocol TCP `

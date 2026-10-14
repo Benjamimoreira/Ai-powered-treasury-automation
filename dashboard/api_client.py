@@ -1,7 +1,10 @@
 """Cliente HTTP fino para a API de reconciliação - o dashboard nunca
 acede à base de dados diretamente, só fala com a API (mesma separação
 backend/frontend do roteiro)."""
+import hashlib
+import hmac
 import os
+import time
 from typing import Optional
 
 import requests as _requests
@@ -21,6 +24,9 @@ class _RequestsComRetentativas:
                            backoff_factor=0.6, allowed_methods=None, raise_on_status=False)
         for prefixo in ("http://", "https://"):
             self._sessao.mount(prefixo, HTTPAdapter(max_retries=tentativas))
+        # chave da API (app/seguranca.py) - em todos os pedidos do dashboard
+        if API_TOKEN:
+            self._sessao.headers["X-API-Key"] = API_TOKEN
 
     def get(self, *args, **kwargs):
         return self._sessao.get(*args, **kwargs)
@@ -40,6 +46,8 @@ class _RequestsComRetentativas:
     def __getattr__(self, nome):  # requests.HTTPError, requests.exceptions, ...
         return getattr(_requests, nome)
 
+
+API_TOKEN = os.environ.get("API_TOKEN", "").strip()
 
 requests = _RequestsComRetentativas()
 
@@ -506,8 +514,15 @@ def listar_faturas_recebidas(
 
 def url_pdf_fatura(fatura_id: int) -> str:
     """URL pública (não a interna do Docker) do PDF de uma fatura, para
-    usar num link clicável na dashboard."""
-    return f"{API_PUBLIC_URL}/faturas/recebidas/{fatura_id}/pdf"
+    usar num link clicável na dashboard. O browser não manda a chave da
+    API, por isso o link leva uma assinatura válida 12 h (mesma conta que
+    app/seguranca.py:assinar_pdf - o dashboard não importa o pacote app)."""
+    url = f"{API_PUBLIC_URL}/faturas/recebidas/{fatura_id}/pdf"
+    if not API_TOKEN:
+        return url
+    expira = int(time.time() + 12 * 3600)
+    assinatura = hmac.new(API_TOKEN.encode(), f"pdf:{fatura_id}:{expira}".encode(), hashlib.sha256).hexdigest()
+    return f"{url}?expira={expira}&assinatura={assinatura}"
 
 
 def sugerir_ambiguo(caso_id: int) -> dict:
