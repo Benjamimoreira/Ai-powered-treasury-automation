@@ -2,7 +2,7 @@
 
 Este documento junta tudo o que define o aspeto do dashboard: o tema, as cores, o CSS, o formato dos números e a forma como o separador **Visão Geral** está montado. Serve de referência para pôr outro separador, ou outra app, com o mesmo aspeto.
 
-O fundo da página é **cinza-rato** (`#e4e7eb`). As caixas e os cartões dos KPIs são brancos e destacam-se do fundo.
+O fundo da página é **cinza-rato** (`#c8cacd`). As caixas e os cartões dos KPIs são brancos e destacam-se do fundo.
 
 ## 1. Tema base: [.streamlit/config.toml](../.streamlit/config.toml)
 
@@ -12,7 +12,7 @@ Define o fundo da página, o fundo branco das caixas e o vermelho dos botões e 
 [theme]
 base = "light"
 primaryColor = "#c8102e"
-backgroundColor = "#e4e7eb"
+backgroundColor = "#c8cacd"
 secondaryBackgroundColor = "#ffffff"
 textColor = "#1b2433"
 font = "sans serif"
@@ -143,10 +143,10 @@ O CSS:
 ```css
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
 :root {
-    --azul: #0b1f3a; --azul-2: #16325c; --tinta: #1b2433; --cinza: #5b6577;
+    --azul: #0b1f3a; --azul-2: #16325c; --tinta: #1b2433; --cinza: #454d5c;
     --linha: #dfe3ea; --fundo-suave: #f7f8fa;
     --vermelho: #c8102e; --vermelho-escuro: #8e0b20; --vermelho-linha: rgba(200, 16, 46, .45);
-    --fundo: #e4e7eb;
+    --fundo: #c8cacd;
 }
 /* fundo cinza-rato: as caixas e os cartões brancos destacam-se da página */
 .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] { background: var(--fundo) !important; }
@@ -260,7 +260,7 @@ O gráfico das contas com mais saldo usa o `rotulo_conta` ([app.py:199-205](../d
 
 ## De onde vem cada cor e cada linha
 
-- **Fundo da página** (`#e4e7eb`, cinza-rato): `backgroundColor` no `config.toml` e a regra `.stApp` no CSS. É preciso a regra do CSS porque, sem `!important`, o fundo do tema do Streamlit prevalece.
+- **Fundo da página** (`#c8cacd`, cinza-rato): `backgroundColor` no `config.toml` e a regra `.stApp` no CSS. É preciso a regra do CSS porque, sem `!important`, o fundo do tema do Streamlit prevalece.
 - **Fundo branco das caixas, borda vermelha e topo vermelho de 3px**: o bloco `/* caixas */` do CSS. Só funciona com o patch `_container_com_classe`, que dá a classe `st-key-caixa-N` a cada `st.container(border=True)`.
 - **Cartões dos KPIs**: fundo branco, borda `#c3cad5` à volta toda e traço azul de 3px em cima. Com a borda `#dfe3ea` (a das outras linhas) não se via no fundo cinza e os cartões pareciam ter só o traço de cima.
 - **Grelhas dos gráficos**: vêm do tema Altair. As linhas horizontais são `#e6e9ef`, não há grelha vertical (`axisX grid False`), os eixos e os traços são `#cfd5de` e o fundo é branco sem moldura (`view stroke transparent`).

@@ -449,10 +449,10 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
     :root {
-        --azul: #0b1f3a; --azul-2: #16325c; --tinta: #1b2433; --cinza: #5b6577;
+        --azul: #0b1f3a; --azul-2: #16325c; --tinta: #1b2433; --cinza: #454d5c;
         --linha: #dfe3ea; --fundo-suave: #f7f8fa;
         --vermelho: #c8102e; --vermelho-escuro: #8e0b20; --vermelho-linha: rgba(200, 16, 46, .45);
-        --fundo: #e4e7eb;
+        --fundo: #c8cacd;
     }
     /* fundo cinza-rato: as caixas e os cartões brancos destacam-se da página */
     .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] { background: var(--fundo) !important; }
