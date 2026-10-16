@@ -12,6 +12,8 @@ os.environ["PHOENIX_COLLECTOR_ENDPOINT"] = ""
 # API sem chave nos testes (o API_TOKEN do .env obrigava todos a mandá-la);
 # test_seguranca.py liga-a quando precisa.
 os.environ["API_TOKEN"] = ""
+# sem o ciclo de reextração automática das discrepâncias (app/main.py)
+os.environ["REEXTRACAO_AUTOMATICA"] = "0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

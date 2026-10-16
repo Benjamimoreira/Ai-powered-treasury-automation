@@ -208,9 +208,20 @@ class PrevisaoCashflowOut(BaseModel):
     banda_incerteza: Optional[BandaIncertezaOut] = None
 
 
+class MetricasModeloOut(BaseModel):
+    rmse: float
+    mae: float
+    mape: Optional[float] = None
+    mase: Optional[float] = None
+    janelas: int
+    rmse_por_janela: List[float]
+
+
 class AvaliacaoModelosOut(BaseModel):
     dias_teste: int
+    janelas: int = 1
     rmse_por_modelo: Dict[str, float]
+    metricas_por_modelo: Dict[str, MetricasModeloOut] = {}
     melhor_modelo: Optional[str] = None
     falhas: Dict[str, str]
 

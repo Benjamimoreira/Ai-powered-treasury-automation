@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -10,6 +11,28 @@ from app.db import models  # noqa: F401  (garante que os modelos são registados
 from app.db.session import engine
 from app.routers import (ambiguos, anomalias, chat, comercial, faturas, monitorizacao, previsao_mensal, reconciliacao,
                          rendas, saldos, sync)
+
+
+async def _reextrair_discrepancias() -> None:
+    """De 10 em 10 min pede a reextração de uma discrepância ainda não
+    tentada (ver app/services/reextracao_automatica.py). Desliga-se com
+    REEXTRACAO_AUTOMATICA=0."""
+    from app.db.session import SessionLocal
+    from app.services import reextracao_automatica
+
+    def uma_vez() -> None:
+        db = SessionLocal()
+        try:
+            reextracao_automatica.pedir_proxima(db)
+        finally:
+            db.close()
+
+    while True:
+        await asyncio.sleep(reextracao_automatica.DE_QUANTO_EM_QUANTO.total_seconds())
+        try:
+            await asyncio.to_thread(uma_vez)
+        except Exception:
+            logging.getLogger("uvicorn.error").exception("Reextração automática das discrepâncias falhou")
 
 
 @asynccontextmanager
@@ -38,7 +61,11 @@ async def lifespan(app: FastAPI):
     iniciar_tracing()
     app.state.agent = None
     app.state.agent_lock = asyncio.Lock()
+    ciclo = asyncio.create_task(_reextrair_discrepancias()) if os.environ.get(
+        "REEXTRACAO_AUTOMATICA", "1") != "0" else None
     yield
+    if ciclo is not None:
+        ciclo.cancel()
     if app.state.agent is not None:
         await app.state.agent.cleanup()
 

@@ -836,43 +836,137 @@ def _serializar_banda(dias_futuros: list, banda: Optional[tuple]) -> Optional[di
     }
 
 
-def _avaliar_valores(valores: list, dias_teste: int) -> dict:
-    """Núcleo comum da avaliação treino/teste (RMSE por modelo), usado
-    tanto para o saldo como para o cash-flow - só muda de onde vem a
-    lista de valores. `teste_real` fica sempre com os valores reais (não
-    suavizados) - só o treino é winsorizado, para o RMSE continuar a medir
-    o erro contra a realidade, não contra uma versão already-limada dela."""
-    treino = valores[:-dias_teste]
-    teste_real = valores[-dias_teste:]
-    treino_suave = _suavizar_outliers(treino)
-    limite_sensato = _limite_sensato(valores)
+def _metricas_erro(reais: list, previstos: list, treino: list) -> dict:
+    """Métricas de erro de uma previsão contra os valores reais:
+    - rmse: raiz do erro quadrático médio (EUR) - castiga mais os erros
+      grandes, é o critério usado para escolher o melhor modelo;
+    - mae: erro absoluto médio (EUR) - "em média engana-se X €", o mais
+      fácil de explicar;
+    - mape: erro percentual absoluto médio (%) - só sobre os dias com
+      valor real diferente de zero (no cash-flow há muitos dias a zero,
+      onde a percentagem não existe); None se forem todos zero;
+    - mase: MAE a dividir pelo MAE do palpite ingénuo "amanhã igual a
+      hoje" no treino - < 1 bate o palpite ingénuo, > 1 perde para ele;
+      None se o treino for constante (escala zero)."""
+    reais = np.asarray(reais, dtype=float)
+    previstos = np.asarray(previstos, dtype=float)
+    erros = reais - previstos
+    nao_zero = np.abs(reais) > 1e-9
+    mae = float(np.mean(np.abs(erros)))
+    escala = float(np.mean(np.abs(np.diff(np.asarray(treino, dtype=float))))) if len(treino) > 1 else 0.0
+    return {
+        "rmse": float(np.sqrt(np.mean(erros ** 2))),
+        "mae": mae,
+        "mape": float(np.mean(np.abs(erros[nao_zero] / reais[nao_zero])) * 100) if nao_zero.any() else None,
+        "mase": mae / escala if escala > 1e-9 else None,
+    }
 
-    rmse_por_modelo = {}
+
+def _media_ou_none(valores: list) -> Optional[float]:
+    valores = [v for v in valores if v is not None]
+    return float(np.mean(valores)) if valores else None
+
+
+# Backtesting (validação com origem móvel): em vez de um único corte nos
+# últimos `dias_teste` dias - que pode calhar numa semana atípica e dar
+# um vencedor por sorte - repete a avaliação em JANELAS_BACKTEST blocos
+# seguidos de `dias_teste` dias, cada um treinado só com o que havia antes
+# dele, e faz a média das métricas.
+JANELAS_BACKTEST = 4
+
+
+def _backtest_valores(valores: list, dias_teste: int, janelas: int = JANELAS_BACKTEST,
+                      dias: list = None, tamanho: int = None) -> dict:
+    """Avaliação treino/teste repetida em `janelas` blocos de `dias_teste`
+    dias, do mais recente para trás. Em cada bloco os modelos treinam com
+    os `tamanho` pontos anteriores menos o teste (como em produção, ver
+    JANELA_TREINO_MODELOS; None = tudo o que houver antes). Com `dias`
+    (cash-flow) avalia também o gradient_boosting. Só o treino é
+    winsorizado: o teste fica com os valores reais, para as métricas
+    medirem o erro contra a realidade, não contra uma versão limada dela.
+    Um modelo que falhe num bloco fica avaliado nos restantes; o melhor
+    modelo (menor RMSE médio) escolhe-se entre os que correram em todos os
+    blocos, para não ganhar quem só foi avaliado nos blocos fáceis."""
+    resultados = {}
     falhas = {}
-    for nome, funcao in _FUNCOES_MODELO.items():
-        try:
-            previsto = _prever_com_guarda(funcao, treino_suave, dias_teste, limite_sensato)
-            rmse_por_modelo[nome] = _rmse(teste_real, previsto)
-        except Exception as e:
-            falhas[nome] = str(e)
+    n_falhas = {}
+    n_janelas = 0
 
-    melhor_modelo = min(rmse_por_modelo, key=rmse_por_modelo.get) if rmse_por_modelo else None
+    def _registar_falha(nome, erro):
+        falhas.setdefault(nome, str(erro))
+        n_falhas[nome] = n_falhas.get(nome, 0) + 1
+
+    for k in range(janelas):
+        fim = len(valores) - k * dias_teste
+        inicio = 0 if tamanho is None else max(0, fim - tamanho)
+        corte = fim - dias_teste
+        if corte - inicio < MIN_PONTOS:
+            break
+        n_janelas += 1
+        bloco = valores[inicio:fim]
+        treino, teste_real = bloco[:-dias_teste], bloco[-dias_teste:]
+        treino_suave = _suavizar_outliers(treino)
+        limite_sensato = _limite_sensato(bloco)
+
+        for nome, funcao in _FUNCOES_MODELO.items():
+            try:
+                previsto = _prever_com_guarda(funcao, treino_suave, dias_teste, limite_sensato)
+                resultados.setdefault(nome, []).append(_metricas_erro(teste_real, previsto, treino))
+            except Exception as e:
+                _registar_falha(nome, e)
+
+        if dias is not None:
+            try:
+                previsto_gb, _ = _prever_gradient_boosting(dias[inicio:corte], treino_suave, dias_teste)
+                if not _previsao_sensata(previsto_gb, limite_sensato):
+                    raise ValueError("previsão do gradient boosting divergiu para além do plausível")
+                resultados.setdefault("gradient_boosting", []).append(_metricas_erro(teste_real, previsto_gb, treino))
+            except Exception as e:
+                _registar_falha("gradient_boosting", e)
+
+    metricas_por_modelo = {
+        nome: {
+            "rmse": _media_ou_none([m["rmse"] for m in lista]),
+            "mae": _media_ou_none([m["mae"] for m in lista]),
+            "mape": _media_ou_none([m["mape"] for m in lista]),
+            "mase": _media_ou_none([m["mase"] for m in lista]),
+            "janelas": len(lista),
+            "rmse_por_janela": [m["rmse"] for m in lista],
+        }
+        for nome, lista in resultados.items()
+    }
+    falhas = {
+        nome: erro if nome not in metricas_por_modelo else f"falhou em {n_falhas[nome]} de {n_janelas} janelas: {erro}"
+        for nome, erro in falhas.items()
+    }
+    completos = [m for m, r in metricas_por_modelo.items() if r["janelas"] == n_janelas] or list(metricas_por_modelo)
+    melhor_modelo = min(completos, key=lambda m: metricas_por_modelo[m]["rmse"]) if completos else None
 
     return {
         "dias_teste": dias_teste,
-        "rmse_por_modelo": rmse_por_modelo,
+        "janelas": n_janelas,
+        "rmse_por_modelo": {m: r["rmse"] for m, r in metricas_por_modelo.items()},
+        "metricas_por_modelo": metricas_por_modelo,
         "melhor_modelo": melhor_modelo,
         "falhas": falhas,
     }
 
 
-def avaliar_modelos(db: Session, empresa: Optional[str] = None, dias_teste: int = 5) -> dict:
-    """Avaliação honesta (treino/teste): retira os últimos `dias_teste`
-    dias como conjunto de teste, treina cada modelo só com o resto, e
-    compara a previsão de cada um com o valor real que já conhecemos
-    (RMSE - erro quadrático médio, mesma unidade EUR). Responde à pergunta
-    "qual modelo acerta mais nesta conta", em vez de só mostrar previsões
-    lado a lado sem validação. `empresa=None` avalia o saldo total (ver
+def _avaliar_valores(valores: list, dias_teste: int) -> dict:
+    """Um único corte treino/teste nos últimos `dias_teste` pontos de
+    `valores` (já recortados à janela pretendida) - o que os pesos do
+    ensemble e a banda de incerteza usam (ver _pesos_ensemble)."""
+    return _backtest_valores(valores, dias_teste, janelas=1)
+
+
+def avaliar_modelos(db: Session, empresa: Optional[str] = None, dias_teste: int = 5,
+                    janelas: int = JANELAS_BACKTEST) -> dict:
+    """Avaliação honesta com backtesting: retira `janelas` blocos de
+    `dias_teste` dias, treina cada modelo só com o que havia antes de cada
+    bloco, e compara a previsão com o valor real que já conhecemos (RMSE,
+    MAE, MAPE e MASE - ver _metricas_erro). Responde à pergunta "qual
+    modelo acerta mais nesta conta", em vez de só mostrar previsões lado a
+    lado sem validação. `empresa=None` avalia o saldo total (ver
     prever_saldo)."""
     alvo = empresa or "saldo total (todas as entidades)"
     historico = _historico_saldo(db, empresa)
@@ -883,15 +977,16 @@ def avaliar_modelos(db: Session, empresa: Optional[str] = None, dias_teste: int 
         )
 
     valores = [h.saldo_contabilistico for h in historico]
-    return _avaliar_valores(_janela_recente(valores), dias_teste)
+    return _backtest_valores(valores, dias_teste, janelas, tamanho=JANELA_TREINO_MODELOS)
 
 
-def avaliar_cashflow(db: Session, empresa: str = None, dias_teste: int = 5) -> dict:
-    """Mesma avaliação treino/teste de `avaliar_modelos`, mas sobre o
-    cash-flow líquido diário em vez do saldo - e inclui também o
-    gradient_boosting (só disponível para cash-flow), para responder
-    honestamente se o modelo de ML bate os de séries temporais puras
-    nesta série, em vez de assumir que sim."""
+def avaliar_cashflow(db: Session, empresa: str = None, dias_teste: int = 5,
+                     janelas: int = JANELAS_BACKTEST) -> dict:
+    """Mesmo backtesting de `avaliar_modelos`, mas sobre o cash-flow
+    líquido diário em vez do saldo - e inclui também o gradient_boosting
+    (só disponível para cash-flow), para responder honestamente se o
+    modelo de ML bate os de séries temporais puras nesta série, em vez de
+    assumir que sim."""
     serie = _movimentos_por_dia(db, empresa)
     if len(serie) < MIN_PONTOS + dias_teste:
         alvo = empresa or "todas as entidades"
@@ -900,25 +995,10 @@ def avaliar_cashflow(db: Session, empresa: str = None, dias_teste: int = 5) -> d
             f"dias, preciso de pelo menos {MIN_PONTOS + dias_teste} para treino+teste)."
         )
 
-    dias_todos = [s["dia"] for s in serie]
-    liquidos_todos = [s["liquido"] for s in serie]
-    liquidos, dias = _janela_recente(liquidos_todos, dias_todos)
-    resultado = _avaliar_valores(liquidos, dias_teste)
-
-    dias_treino, liquidos_treino = dias[:-dias_teste], liquidos[:-dias_teste]
-    teste_real = liquidos[-dias_teste:]
-    try:
-        previsto_gb, _ = _prever_gradient_boosting(dias_treino, _suavizar_outliers(liquidos_treino), dias_teste)
-        if not _previsao_sensata(previsto_gb, _limite_sensato(liquidos)):
-            raise ValueError("previsão do gradient boosting divergiu para além do plausível")
-        rmse_gb = _rmse(teste_real, previsto_gb)
-        resultado["rmse_por_modelo"]["gradient_boosting"] = rmse_gb
-        if rmse_gb < resultado["rmse_por_modelo"][resultado["melhor_modelo"]]:
-            resultado["melhor_modelo"] = "gradient_boosting"
-    except Exception as e:
-        resultado["falhas"]["gradient_boosting"] = str(e)
-
-    return resultado
+    return _backtest_valores(
+        [s["liquido"] for s in serie], dias_teste, janelas,
+        dias=[s["dia"] for s in serie], tamanho=JANELA_TREINO_MODELOS,
+    )
 
 
 # Na carteira agregada (todas as contas do grupo) há movimentos em

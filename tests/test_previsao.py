@@ -5,6 +5,8 @@ import pytest
 from app.db.models import MovimentoBancario, SaldoDiario
 from app.services.previsao import (
     MIN_PONTOS_ML,
+    _backtest_valores,
+    _metricas_erro,
     avaliar_cashflow,
     avaliar_modelos,
     prever_cashflow,
@@ -281,3 +283,53 @@ def test_avaliar_cashflow_inclui_gradient_boosting_no_rmse(db_session):
     resultado = avaliar_cashflow(db_session, "EMPRESA GB,LDA", dias_teste=5)
 
     assert "gradient_boosting" in resultado["rmse_por_modelo"]
+
+
+def test_metricas_erro_calcula_rmse_mae_mape_e_mase():
+    m = _metricas_erro([100.0, 0.0, 200.0], [110.0, 10.0, 180.0], treino=[0.0, 10.0, 30.0])
+
+    assert m["mae"] == pytest.approx(40.0 / 3)
+    assert m["rmse"] == pytest.approx(((100 + 100 + 400) / 3) ** 0.5)
+    # o dia com real = 0 fica de fora do MAPE (a percentagem não existe)
+    assert m["mape"] == pytest.approx((10 / 100 + 20 / 200) / 2 * 100)
+    # palpite ingénuo no treino erra em média (10 + 20) / 2 = 15
+    assert m["mase"] == pytest.approx((40.0 / 3) / 15.0)
+
+
+def test_metricas_erro_sem_escala_nem_valores_nao_nulos_devolve_none():
+    m = _metricas_erro([0.0, 0.0], [1.0, -1.0], treino=[5.0, 5.0, 5.0])
+
+    assert m["mape"] is None
+    assert m["mase"] is None
+
+
+def test_backtest_avalia_varias_janelas_sem_ver_o_futuro():
+    valores = [100.0 + 10 * i for i in range(40)]
+
+    resultado = _backtest_valores(valores, dias_teste=5, janelas=4, tamanho=30)
+
+    assert resultado["janelas"] == 4
+    metricas = resultado["metricas_por_modelo"]["regressao_linear"]
+    assert metricas["janelas"] == 4
+    assert len(metricas["rmse_por_janela"]) == 4
+    assert metricas["mae"] == pytest.approx(0.0, abs=0.5)
+    assert resultado["rmse_por_modelo"]["regressao_linear"] == metricas["rmse"]
+
+
+def test_backtest_para_quando_o_treino_fica_curto():
+    resultado = _backtest_valores([float(i) for i in range(15)], dias_teste=3, janelas=10)
+
+    # com 15 pontos e MIN_PONTOS = 5 de treino: cortes em 12, 9, 6 -> 3 janelas
+    assert resultado["janelas"] == 3
+
+
+def test_avaliar_cashflow_devolve_metricas_do_backtest(db_session):
+    for i in range(40):
+        _adicionar_movimento(db_session, "EMPRESA BT,LDA", DIA_INICIAL + timedelta(days=i), 100.0 + 10 * i)
+    db_session.commit()
+
+    resultado = avaliar_cashflow(db_session, "EMPRESA BT,LDA", dias_teste=5, janelas=3)
+
+    assert resultado["janelas"] == 3
+    for metricas in resultado["metricas_por_modelo"].values():
+        assert {"rmse", "mae", "mape", "mase", "janelas", "rmse_por_janela"} <= set(metricas)

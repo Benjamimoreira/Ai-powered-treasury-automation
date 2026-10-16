@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models import FaturaRecebidaOut, RegistarFaturasRequest, RegistarFaturasResponse
-from app.services.faturas import listar_faturas, obter_fatura, registar_faturas
+from app.services.faturas import caminho_pdf, importar_e_reportar, listar_faturas, obter_fatura, registar_faturas
 
 router = APIRouter(prefix="/faturas", tags=["faturas"])
 
@@ -18,6 +18,18 @@ FORNECEDORES_RAIZ = os.environ.get("FORNECEDORES_RAIZ")
 @router.post("/recebidas", response_model=RegistarFaturasResponse)
 def registar(pedido: RegistarFaturasRequest, db: Session = Depends(get_db)):
     return registar_faturas(db, pedido.linhas)
+
+
+@router.post("/recebidas/importar")
+def importar(ano: Optional[int] = None, mes: Optional[int] = None, reportar_sem_novas: bool = True,
+             db: Session = Depends(get_db)):
+    """Vai buscar as faturas ao Excel mensal do SharePoint (por omissão o mês
+    corrente) e regista a corrida na Monitorização como
+    importar_faturas_recebidas. O sincronizador chama-o com
+    reportar_sem_novas=false, para não encher o histórico de corridas vazias."""
+    if (ano is None) != (mes is None):
+        raise HTTPException(status_code=422, detail="Indicar ano e mes juntos (ou nenhum).")
+    return importar_e_reportar(db, [(ano, mes)] if ano else None, reportar_sem_novas=reportar_sem_novas)
 
 
 @router.get("/recebidas", response_model=List[FaturaRecebidaOut])
@@ -45,21 +57,12 @@ def listar(
 def pdf(fatura_id: int, db: Session = Depends(get_db)):
     """Serve o PDF por HTTP (em vez de um link file://, que o Chrome
     bloqueia quando navegado a partir de uma página http://)."""
-    if not FORNECEDORES_RAIZ:
-        raise HTTPException(status_code=503, detail="FORNECEDORES_RAIZ não configurado neste ambiente.")
-
     fatura = obter_fatura(db, fatura_id)
     if fatura is None or not fatura.pdf_relativo:
         raise HTTPException(status_code=404, detail="Fatura sem PDF associado.")
 
-    raiz = os.path.realpath(FORNECEDORES_RAIZ)
-    # pdf_relativo é gravado com barras invertidas (Windows, de onde vem o
-    # script) - num container Linux "\" não é separador de caminho, por
-    # isso sem isto o ficheiro nunca era encontrado
-    relativo_posix = fatura.pdf_relativo.replace("\\", "/")
-    caminho = os.path.realpath(os.path.join(raiz, relativo_posix))
-    # nunca sair da pasta montada (defesa contra pdf_relativo malformado)
-    if os.path.commonpath([raiz, caminho]) != raiz or not os.path.isfile(caminho):
+    caminho = caminho_pdf(fatura, FORNECEDORES_RAIZ)
+    if caminho is None:
         raise HTTPException(status_code=404, detail="Ficheiro PDF não encontrado.")
 
     # content_disposition_type="inline" - com filename mas sem isto, o

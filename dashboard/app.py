@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import re
 import sys
+import threading
 import unicodedata
 
 dashboard_dir = str(Path(__file__).resolve().parent)
@@ -422,16 +423,22 @@ st.markdown(
 # Caixas (st.container(border=True)) com a classe "st-key-caixa-N", para o
 # CSS abaixo as conseguir pintar: o Streamlit 1.65 não marca no HTML quais
 # os contentores com borda. O contador volta a 0 em cada execução da página,
-# por isso as chaves são estáveis entre reruns.
+# por isso as chaves são estáveis entre reruns. É por thread: o st.container
+# substituído é do módulo streamlit, partilhado por todas as sessões, e com
+# um contador simples duas sessões ao mesmo tempo usavam o contador uma da
+# outra (StreamlitDuplicateElementKey 'caixa-4'). Cada sessão corre o
+# script na sua thread.
 _container_original = getattr(st, "_container_original", st.container)
 st._container_original = _container_original
-_contador_caixas = [0]
+st._contador_caixas = getattr(st, "_contador_caixas", threading.local())
+st._contador_caixas.n = 0
 
 
 def _container_com_classe(*args, border=None, key=None, **kwargs):
     if border and key is None:
-        _contador_caixas[0] += 1
-        key = f"caixa-{_contador_caixas[0]}"
+        contador = st._contador_caixas
+        contador.n = getattr(contador, "n", 0) + 1
+        key = f"caixa-{contador.n}"
     return _container_original(*args, border=border, key=key, **kwargs)
 
 
@@ -696,6 +703,65 @@ def _secao_fiabilidade(empresa, horizonte: int):
             for col in ("Saldo nesse dia", "Previsto", "Real", "Erro")
         },
     )
+
+
+NOMES_MODELOS = {
+    "regressao_linear": "Regressão linear", "media_movel": "Média móvel",
+    "suavizacao_exponencial": "Holt-Winters", "arima": "ARIMA", "markov_switching": "Markov switching",
+    "gradient_boosting": "Gradient Boosting (ML)",
+}
+
+
+def _secao_comparacao_modelos(empresa):
+    """Backtesting dos modelos de séries temporais / ML (app/services/previsao.py):
+    RMSE, MAE, MAPE e MASE médios em várias janelas de teste seguidas."""
+    st.markdown("**Comparação dos modelos (backtesting)**")
+    st.caption(
+        "Cada modelo é treinado só com os dados anteriores a cada janela de teste e comparado com o real, "
+        "em várias janelas seguidas (do mais recente para trás). **RMSE** castiga os erros grandes "
+        "(escolhe o melhor modelo) · **MAE** é o erro médio em € · **MAPE** é o erro em % (só nos dias com "
+        "valor diferente de zero) · **MASE** < 1 bate o palpite \"amanhã igual a hoje\", > 1 perde para ele."
+    )
+    c1, c2, c3 = st.columns(3)
+    serie = c1.segmented_control("Série", ["Cash-flow", "Saldo"], default="Cash-flow", key="fc_cmp_serie")
+    dias_teste = c2.number_input("Dias por janela de teste", 1, 30, 5, key="fc_cmp_dias")
+    janelas = c3.number_input("Janelas de teste", 1, 12, 4, key="fc_cmp_janelas")
+    try:
+        with st.spinner("A treinar os modelos em cada janela…"):
+            if serie == "Saldo":
+                av = (api.avaliar_previsao(empresa, dias_teste=dias_teste, janelas=janelas) if empresa
+                      else api.avaliar_previsao_saldo_total(dias_teste=dias_teste, janelas=janelas))
+            else:
+                av = api.avaliar_previsao_cashflow(empresa, dias_teste=dias_teste, janelas=janelas)
+    except Exception as e:
+        st.warning(f"Avaliação indisponível: {e}")
+        return
+    metricas = av.get("metricas_por_modelo") or {}
+    if not metricas:
+        st.info("Nenhum modelo conseguiu ser avaliado com este histórico.")
+        return
+    melhor = av.get("melhor_modelo")
+    st.caption(f"{av['janelas']} janela(s) de {av['dias_teste']} dias · melhor modelo (menor RMSE): "
+               f"**{NOMES_MODELOS.get(melhor, melhor)}**")
+    tabela = pd.DataFrame([{
+        "Modelo": ("★ " if nome == melhor else "") + NOMES_MODELOS.get(nome, nome),
+        "RMSE": m["rmse"], "MAE": m["mae"], "MAPE": m["mape"], "MASE": m["mase"],
+        "Janelas": m["janelas"], "RMSE por janela": m["rmse_por_janela"],
+    } for nome, m in sorted(metricas.items(), key=lambda kv: kv[1]["rmse"])])
+    st.dataframe(
+        tabela, hide_index=True, width="stretch",
+        column_config={
+            "RMSE": st.column_config.NumberColumn(format="euro"),
+            "MAE": st.column_config.NumberColumn(format="euro"),
+            "MAPE": st.column_config.NumberColumn(format="%.1f%%"),
+            "MASE": st.column_config.NumberColumn(format="%.2f"),
+            "RMSE por janela": st.column_config.LineChartColumn(help="Da janela mais recente para a mais antiga"),
+        },
+    )
+    if av.get("falhas"):
+        with st.expander(f"Modelos com falhas ({len(av['falhas'])})"):
+            for nome, erro in av["falhas"].items():
+                st.caption(f"**{NOMES_MODELOS.get(nome, nome)}**: {erro}")
 
 
 ENTIDADE_GRUPO = "Grupo (todas as contas)"
@@ -1390,6 +1456,10 @@ def _painel_forecast():
             # para uma empresa só corre quando pedido (~10 s por empresa)
             if empresa_fc is None or st.toggle("Calcular para esta empresa", persist_state="page", key="fc_backtest_empresa"):
                 _secao_fiabilidade(empresa_fc, horizonte_fc)
+            st.divider()
+            if st.toggle("Comparar os modelos de séries temporais e ML (backtesting)", persist_state="page",
+                         key="fc_comparar_modelos"):
+                _secao_comparacao_modelos(empresa_fc)
         with det_extra:
             if empresa_fc:
                 if historico_mov_fc:
@@ -1909,12 +1979,13 @@ def _linha_log(timestamp, titulo, nivel, mensagem, cor):
 
 # Scripts com botão "Correr" sempre visível na Monitorização (os outros só
 # aparecem quando estão em erro/atrasados).
-SCRIPTS_SEMPRE_CORRIVEIS = ["preencher_mapa", "enviar_mapa_smtp", "atualizar_mapa_saldos"]
+SCRIPTS_SEMPRE_CORRIVEIS = ["preencher_mapa", "enviar_mapa_smtp", "atualizar_mapa_saldos", "importar_faturas_recebidas"]
 # Nome do botão (pedido explícito 09/10/2026); os outros mostram o nome do script.
 NOMES_BOTAO_CORRER = {
     "preencher_mapa": "Atualizar Mapa Tesouraria",
     "enviar_mapa_smtp": "Enviar Mapa Tesouraria",
     "atualizar_mapa_saldos": "Atualizar Mapa Saldos",
+    "importar_faturas_recebidas": "Ir buscar faturas",
 }
 ESTADO_PEDIDO = {"pendente": "⏳ à espera do agente do Windows", "iniciado": "▶ lançado", "erro": "❌ não lançado"}
 ESTADO_DEPLOY = {"pendente": "⏳ À espera do agente do Windows", "a_correr": "🔄 A instalar",
@@ -2042,8 +2113,9 @@ def _reextracoes_discrepancias() -> None:
         dia = extracao.get("dia") or extracao.get("fim")
         with st.container(border=True):
             if dia:
+                origem = " · 🤖 automática" if extracao.get("origem") == "automatica" else ""
                 st.markdown(f"**{escape(str(extracao.get('empresa', '')))} · discrepância de "
-                            f"{pd.Timestamp(dia):%d/%m/%Y}** · extrai de {pd.Timestamp(extracao['inicio']):%d/%m} a "
+                            f"{pd.Timestamp(dia):%d/%m/%Y}**{origem} · extrai de {pd.Timestamp(extracao['inicio']):%d/%m} a "
                             f"{pd.Timestamp(extracao['fim']):%d/%m}")
             else:
                 st.markdown(f"**{d['descricao']}**")
@@ -2131,7 +2203,9 @@ def _secao_discrepancias_saldos() -> None:
                "os 6 anteriores), preenche o Mapa de Saldos e o Mapa de Pagamentos e Recebimentos desses dias e "
                "verifica outra vez a discrepância (até 3 vezes). Quando "
                "a discrepância desaparece, sai desta lista. A barra de progresso e, no fim, para onde foi o valor "
-               "aparecem no topo desta secção. 🔍 = ver já para onde foi o valor, sem extrair.")
+               "aparecem no topo desta secção. 🔍 = ver já para onde foi o valor, sem extrair. "
+               "🤖 As discrepâncias dos últimos 7 dias (sem ser hoje) são atualizadas sozinhas, uma de cada vez, "
+               "nos dias úteis das 9:00 às 14:30 e das 15:45 às 19:00 - cada uma uma vez.")
     # reextrações já pedidas/em curso: não deixar pedir a mesma outra vez
     try:
         em_curso = {
@@ -2317,7 +2391,13 @@ def _pedir_corrida(nome_script: str):
     except Exception as e:
         st.error(f"Não foi possível pedir '{nome_script}': {e}")
         return
-    if resposta.get("status") == "pedido":
+    if resposta.get("status") == "concluido":  # corre na própria API (importar_faturas_recebidas)
+        texto = f"{resposta.get('novas', 0)} faturas novas importadas. " + " · ".join(resposta.get("linhas") or [])
+        if resposta.get("erros"):
+            st.warning(texto + " - " + "; ".join(resposta["erros"]))
+        else:
+            st.success(texto + " Ver o separador Faturas (link \"Abrir PDF\").")
+    elif resposta.get("status") == "pedido":
         st.success(f"Pedido '{NOMES_BOTAO_CORRER.get(nome_script, nome_script)}' registado - o agente do Windows lança-o dentro de "
                    "~15 s. O estado em cima atualiza quando a corrida terminar.")
     else:
@@ -3071,8 +3151,9 @@ if aba_faturas.open:
                         },
                     )
                 st.caption(
-                    "Alimentado pelo recolher_faturas_recebidas.py (de hora a hora) - os mesmos dados "
-                    "do Excel mensal em Documentos a Tratar/AFaturas. Aumenta o limite se faltarem dias."
+                    "Importado do Excel mensal em Documentos a Tratar/AFaturas (escrito pelo "
+                    "recolher_faturas_recebidas.py) de 15 em 15 min, ou já com \"Ir buscar faturas\" na "
+                    "Monitorização. Aumenta o limite se faltarem dias."
                 )
             with col_top_fat, st.container(border=True):
                 st.markdown("**Fornecedores mais frequentes**")

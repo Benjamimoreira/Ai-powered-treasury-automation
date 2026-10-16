@@ -1,7 +1,7 @@
 from datetime import date
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -123,11 +123,11 @@ def previsao_ancorada_backtest(
 
 
 @router.get("/previsao/saldo-total-avaliacao", response_model=AvaliacaoModelosOut)
-def previsao_saldo_total_avaliacao(dias_teste: int = 5, db: Session = Depends(get_db)):
+def previsao_saldo_total_avaliacao(dias_teste: int = 5, janelas: int = Query(4, ge=1, le=12), db: Session = Depends(get_db)):
     """Avaliação treino/teste (RMSE) do saldo total, equivalente a
     `/previsao/avaliacao/{empresa}` para uma entidade só."""
     try:
-        return avaliar_modelos(db, None, dias_teste)
+        return avaliar_modelos(db, None, dias_teste, janelas)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -155,26 +155,27 @@ def previsao_cashflow_empresa(empresa: str, dias: int = 7, db: Session = Depends
 
 @router.get("/previsao/cashflow-avaliacao", response_model=AvaliacaoModelosOut)
 def previsao_cashflow_avaliacao(
-    empresa: Optional[str] = None, dias_teste: int = 5, db: Session = Depends(get_db)
+    empresa: Optional[str] = None, dias_teste: int = 5, janelas: int = Query(4, ge=1, le=12),
+    db: Session = Depends(get_db),
 ):
     """Avaliação treino/teste (RMSE) para o cash-flow, equivalente a
     `/previsao/avaliacao/{empresa}` para o saldo. `empresa` omitida =
     carteira agregada. Path próprio (em vez de `/previsao/cashflow/avaliacao`)
     para não colidir com `/previsao/cashflow/{empresa}`."""
     try:
-        return avaliar_cashflow(db, empresa, dias_teste)
+        return avaliar_cashflow(db, empresa, dias_teste, janelas)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
 
 @router.get("/previsao/avaliacao/{empresa}", response_model=AvaliacaoModelosOut)
-def previsao_avaliacao(empresa: str, dias_teste: int = 5, db: Session = Depends(get_db)):
+def previsao_avaliacao(empresa: str, dias_teste: int = 5, janelas: int = Query(4, ge=1, le=12), db: Session = Depends(get_db)):
     """Avaliação treino/teste: retira os últimos `dias_teste` dias,
     treina cada modelo só com o resto, e compara com o valor real
     (RMSE) - responde a "qual modelo acerta mais" com dados retidos, não
     só com a previsão visual."""
     try:
-        return avaliar_modelos(db, empresa, dias_teste)
+        return avaliar_modelos(db, empresa, dias_teste, janelas)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

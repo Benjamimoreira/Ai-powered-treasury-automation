@@ -95,7 +95,8 @@ def _validar_extracao(extracao: Optional[Dict[str, Any]]) -> Optional[Dict[str, 
     resultado = {"modo": "periodo", "inicio": inicio.isoformat(), "fim": fim.isoformat()}
     # reextração de uma discrepância: a empresa, o tipo e o dia dela (para a
     # verificar - a extração vai uma semana para trás desse dia)
-    for campo in ("empresa", "tipo"):
+    # origem "automatica": pedida pela reextracao_automatica.py, não pelo botão
+    for campo in ("empresa", "tipo", "origem"):
         if extracao.get(campo):
             resultado[campo] = str(extracao[campo])
     if extracao.get("dia"):

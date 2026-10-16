@@ -16,7 +16,7 @@ class _Resposta:
         return self._corpo
 
 
-def _api_falsa(monkeypatch, corpo_sync=None, falha=None, cabecalhos=None):
+def _api_falsa(monkeypatch, corpo_sync=None, falha=None, cabecalhos=None, faturas=None):
     reportados = []
 
     def post(url, json=None, params=None, headers=None, timeout=None):
@@ -26,11 +26,22 @@ def _api_falsa(monkeypatch, corpo_sync=None, falha=None, cabecalhos=None):
             if falha:
                 raise falha
             return _Resposta(corpo_sync)
+        if url.endswith("/faturas/recebidas/importar"):
+            if faturas is not None:
+                faturas.append(params)
+            return _Resposta({"novas": 0, "linhas": []})
         reportados.append(json)
         return _Resposta({})
 
     monkeypatch.setattr(sincronizador.requests, "post", post)
     return reportados
+
+
+def test_importa_as_faturas_sem_reportar_corridas_vazias(monkeypatch):
+    faturas = []
+    _api_falsa(monkeypatch, {"erros": []}, faturas=faturas)
+    sincronizador.sincronizar()
+    assert faturas == [{"reportar_sem_novas": "false"}]
 
 
 def test_so_reporta_quando_ha_dados_novos(monkeypatch):

@@ -83,7 +83,21 @@ def sincronizar() -> dict:
         _reportar("warning", erro="; ".join(erros), linhas=linhas, duracao=duracao)
     elif any(novos.values()):
         _reportar("ok", linhas=linhas, duracao=duracao)
+    importar_faturas()
     return resultado
+
+
+def importar_faturas() -> None:
+    """Faturas recebidas do Excel mensal do SharePoint. A própria API regista
+    a corrida na Monitorização (importar_faturas_recebidas), só quando há
+    faturas novas ou erros."""
+    try:
+        r = requests.post(f"{API_URL}/faturas/recebidas/importar", params={"reportar_sem_novas": "false"},
+                          headers=CABECALHOS, timeout=300)
+        r.raise_for_status()
+        log.info("faturas: %s", "; ".join(r.json().get("linhas") or []) or "nada de novo")
+    except requests.RequestException as exc:
+        log.error("importação das faturas falhou: %s", exc)
 
 
 def esperar_pela_api(tentativas: int = 60, pausa: float = 5) -> None:

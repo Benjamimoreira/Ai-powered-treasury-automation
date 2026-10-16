@@ -197,8 +197,10 @@ def previsao_saldo(empresa: str, dias: int = 7) -> dict:
     return r.json()
 
 
-def avaliar_previsao(empresa: str, dias_teste: int = 5) -> dict:
-    r = requests.get(f"{API_BASE_URL}/previsao/avaliacao/{empresa}", params={"dias_teste": dias_teste})
+def avaliar_previsao(empresa: str, dias_teste: int = 5, janelas: int = 4) -> dict:
+    r = requests.get(
+        f"{API_BASE_URL}/previsao/avaliacao/{empresa}", params={"dias_teste": dias_teste, "janelas": janelas}, timeout=300,
+    )
     r.raise_for_status()
     return r.json()
 
@@ -247,8 +249,10 @@ def backtest_previsao_ancorada(empresa: Optional[str] = None, dias: int = 30, co
     return r.json()
 
 
-def avaliar_previsao_saldo_total(dias_teste: int = 5) -> dict:
-    r = requests.get(f"{API_BASE_URL}/previsao/saldo-total-avaliacao", params={"dias_teste": dias_teste})
+def avaliar_previsao_saldo_total(dias_teste: int = 5, janelas: int = 4) -> dict:
+    r = requests.get(
+        f"{API_BASE_URL}/previsao/saldo-total-avaliacao", params={"dias_teste": dias_teste, "janelas": janelas}, timeout=300,
+    )
     r.raise_for_status()
     return r.json()
 
@@ -278,11 +282,11 @@ def previsao_cashflow(empresa: Optional[str] = None, dias: int = 7) -> dict:
     return r.json()
 
 
-def avaliar_previsao_cashflow(empresa: Optional[str] = None, dias_teste: int = 5) -> dict:
-    params = {"dias_teste": dias_teste}
+def avaliar_previsao_cashflow(empresa: Optional[str] = None, dias_teste: int = 5, janelas: int = 4) -> dict:
+    params = {"dias_teste": dias_teste, "janelas": janelas}
     if empresa:
         params["empresa"] = empresa
-    r = requests.get(f"{API_BASE_URL}/previsao/cashflow-avaliacao", params=params)
+    r = requests.get(f"{API_BASE_URL}/previsao/cashflow-avaliacao", params=params, timeout=300)
     r.raise_for_status()
     return r.json()
 
@@ -351,7 +355,8 @@ def listar_monitorizacao_scripts() -> dict:
 
 
 def correr_script(script: str) -> dict:
-    r = requests.post(f"{API_BASE_URL}/monitorizacao/scripts/{script}/correr", timeout=10)
+    # 120 s: o importar_faturas_recebidas corre na própria API (lê o Excel)
+    r = requests.post(f"{API_BASE_URL}/monitorizacao/scripts/{script}/correr", timeout=120)
     r.raise_for_status()
     return r.json()
 

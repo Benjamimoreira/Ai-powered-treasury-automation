@@ -1,15 +1,177 @@
 """Faturas recebidas em faturas@vidor.pt, reportadas pelo
 recolher_faturas_recebidas.py (pasta "Fornecedores", fora do Docker) via
 POST /faturas/recebidas - guarda na BD o mesmo que já vai para o Excel
-mensal, para a dashboard mostrar sem precisar de abrir o ficheiro."""
-from datetime import date
+mensal, para a dashboard mostrar sem precisar de abrir o ficheiro.
+
+Desde 09/10/2026 o script deixou de reportar à API (continua a escrever o
+Excel e os PDFs no SharePoint), por isso a API também as vai buscar ao
+Excel mensal: importar_faturas_excel (botão na Monitorização e o
+sincronizador de 15 em 15 min)."""
+import os
+import time
+from datetime import date, datetime
 from typing import List, Optional
+from urllib.parse import unquote
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.db.models import FaturaRecebida
 from app.models import FaturaRecebidaIn
+
+# Pasta do SharePoint (dentro de ONEDRIVE_RAIZ) onde o recolher_faturas_recebidas.py
+# grava, por ano, o Excel mensal "MM-Faturas Recebidas.xlsx" e os PDFs em
+# "Faturas Recebidas\AAAA-MM\". O pdf_relativo é relativo à pasta do ano.
+PASTA_FATURAS = os.path.join("DOCUMENTOS A TRATAR", "AFaturas")
+NOME_SCRIPT_IMPORTACAO = "importar_faturas_recebidas"
+
+
+def pasta_faturas_do_ano(ano: int) -> Optional[str]:
+    raiz = os.environ.get("ONEDRIVE_RAIZ")
+    return os.path.join(raiz, PASTA_FATURAS, str(ano)) if raiz else None
+
+
+def caminho_excel_faturas(ano: int, mes: int) -> Optional[str]:
+    pasta = pasta_faturas_do_ano(ano)
+    return os.path.join(pasta, f"{mes:02d}-Faturas Recebidas.xlsx") if pasta else None
+
+
+def _texto(valor) -> Optional[str]:
+    if valor is None or valor == "":
+        return None
+    return str(valor)
+
+
+def ler_excel_faturas(caminho: str, ano: int) -> List[FaturaRecebidaIn]:
+    """Linhas da folha "Todas" do Excel mensal (colunas dia, hora, remetente,
+    ..., valor_fatura, hiperligacao_pdf, id). O dia vem como "DD-MM" (o ano é
+    o da pasta) e o PDF é a hiperligação da célula "Abrir PDF", relativa à
+    pasta do ano e com %20 & cia."""
+    import openpyxl
+
+    # sem read_only: as hiperligações só são lidas no modo normal
+    livro = openpyxl.load_workbook(caminho, data_only=True)
+    folha = livro["Todas"] if "Todas" in livro.sheetnames else livro.worksheets[0]
+    cabecalho = [str(c.value).strip().lower() if c.value is not None else "" for c in folha[1]]
+    coluna = {nome: i for i, nome in enumerate(cabecalho) if nome}
+
+    linhas = []
+    for celulas in folha.iter_rows(min_row=2):
+        def valor(nome):
+            i = coluna.get(nome)
+            return celulas[i].value if i is not None else None
+
+        outlook_id = _texto(valor("id"))
+        dia = valor("dia")
+        if not outlook_id or not dia:
+            continue
+        if isinstance(dia, datetime):
+            dia = dia.date()
+        if isinstance(dia, date):
+            data = datetime.combine(dia, datetime.min.time())
+        else:
+            dd, mm = str(dia).strip().split("-")[:2]
+            data = datetime(ano, int(mm), int(dd))
+        hora = valor("hora")
+        if hora:
+            hh, mi = str(hora).strip().split(":")[:2]
+            data = data.replace(hour=int(hh), minute=int(mi))
+
+        pdf_relativo = None
+        i_pdf = coluna.get("hiperligacao_pdf")
+        if i_pdf is not None and celulas[i_pdf].hyperlink and celulas[i_pdf].hyperlink.target:
+            pdf_relativo = unquote(celulas[i_pdf].hyperlink.target).replace("/", "\\")
+
+        n_anexos = valor("n_anexos_pdf")
+        linhas.append(FaturaRecebidaIn(
+            outlook_id=outlook_id,
+            data_recebido=data,
+            remetente=_texto(valor("remetente")),
+            assunto=_texto(valor("assunto")),
+            motivo=_texto(valor("motivo")),
+            empresa=_texto(valor("empresa")),
+            fornecedor=_texto(valor("fornecedor")),
+            nif_fornecedor=_texto(valor("nif_fornecedor")),
+            n_anexos_pdf=int(n_anexos) if isinstance(n_anexos, (int, float)) else None,
+            debito=_texto(valor("debito")),
+            credito=_texto(valor("credito")),
+            saldo=_texto(valor("saldo")),
+            valor_fatura=_texto(valor("valor_fatura")),
+            pdf_relativo=pdf_relativo,
+        ))
+    return linhas
+
+
+def meses_a_importar(hoje: date) -> List[tuple]:
+    """Mês corrente e, nos primeiros 5 dias, também o anterior (as faturas
+    do fim do mês podem chegar ao Excel depois da meia-noite)."""
+    meses = [(hoje.year, hoje.month)]
+    if hoje.day <= 5:
+        meses.insert(0, (hoje.year - 1, 12) if hoje.month == 1 else (hoje.year, hoje.month - 1))
+    return meses
+
+
+def importar_faturas_excel(db: Session, meses: Optional[List[tuple]] = None) -> dict:
+    """Importa para a BD as faturas do(s) Excel mensal(ais) que ainda lá não
+    estão (pelo id do Outlook). Devolve {"novas", "duplicadas", "linhas", "erros"}."""
+    meses = meses or meses_a_importar(date.today())
+    novas = duplicadas = 0
+    linhas_log, erros = [], []
+    for ano, mes in meses:
+        caminho = caminho_excel_faturas(ano, mes)
+        if not caminho:
+            erros.append("ONEDRIVE_RAIZ não configurado.")
+            break
+        if not os.path.isfile(caminho):
+            erros.append(f"Excel não encontrado: {os.path.basename(caminho)} ({ano})")
+            continue
+        try:
+            linhas = ler_excel_faturas(caminho, ano)
+        except Exception as exc:  # ficheiro a meio de sincronizar, aberto no Excel, ...
+            erros.append(f"{os.path.basename(caminho)}: {exc}")
+            continue
+        resultado = registar_faturas(db, linhas)
+        novas += resultado["novas"]
+        duplicadas += resultado["duplicadas"]
+        linhas_log.append(f"{mes:02d}/{ano}: {len(linhas)} no Excel, {resultado['novas']} novas")
+    return {"novas": novas, "duplicadas": duplicadas, "linhas": linhas_log, "erros": erros}
+
+
+def importar_e_reportar(db: Session, meses: Optional[List[tuple]] = None, reportar_sem_novas: bool = True) -> dict:
+    """importar_faturas_excel + registo da corrida na Monitorização
+    (importar_faturas_recebidas). Sem novas nem erros só regista se
+    reportar_sem_novas - o sincronizador não, para não encher o histórico."""
+    from app.services.monitorizacao import registar_execucao
+
+    inicio = time.monotonic()
+    resultado = importar_faturas_excel(db, meses)
+    if resultado["erros"] or resultado["novas"] or reportar_sem_novas:
+        registar_execucao(
+            db, NOME_SCRIPT_IMPORTACAO,
+            "warning" if resultado["erros"] else "ok",
+            erro="; ".join(resultado["erros"]) or None,
+            log=resultado["linhas"] + resultado["erros"],
+            duracao_segundos=time.monotonic() - inicio,
+        )
+    return resultado
+
+
+def caminho_pdf(fatura: FaturaRecebida, fornecedores_raiz: Optional[str] = None) -> Optional[str]:
+    """Caminho do PDF da fatura, ou None. Procura na pasta do ano no
+    SharePoint (onde o script grava hoje) e, para faturas antigas, em
+    FORNECEDORES_RAIZ (onde gravava antes). Nunca sai da pasta de cada raiz."""
+    if not fatura.pdf_relativo:
+        return None
+    # pdf_relativo é gravado com barras invertidas (Windows, de onde vem o
+    # script) - num container Linux "\" não é separador de caminho
+    relativo = fatura.pdf_relativo.replace("\\", "/")
+    for raiz in filter(None, [pasta_faturas_do_ano(fatura.dia.year), fornecedores_raiz]):
+        raiz = os.path.realpath(raiz)
+        caminho = os.path.realpath(os.path.join(raiz, relativo))
+        # defesa contra pdf_relativo malformado ("..\..")
+        if os.path.commonpath([raiz, caminho]) == raiz and os.path.isfile(caminho):
+            return caminho
+    return None
 
 
 def registar_faturas(db: Session, linhas: List[FaturaRecebidaIn]) -> dict:

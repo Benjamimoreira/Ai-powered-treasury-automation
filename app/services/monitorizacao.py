@@ -115,6 +115,16 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
         "hora_execucao": "09:00, 16:30",
         "tolerancia_minutos": 30,
     },
+    # Faturas de faturas@vidor.pt: o recolher_faturas_recebidas.py (Outlook,
+    # fora do Docker) escreve o Excel mensal e os PDFs no SharePoint; isto
+    # importa-as do Excel para a BD (app/services/faturas.py). "na_api":
+    # o botão "Correr" corre-o logo na API, sem passar pelo agente.
+    "importar_faturas_recebidas": {
+        "descricao": "Faturas recebidas (faturas@vidor.pt): importa o Excel mensal do SharePoint "
+                     "(AFaturas) para o separador Faturas - os PDFs abrem a partir de lá",
+        "hora_execucao": "de 15 em 15 min (07h-21h) + a pedido",
+        "na_api": "sim",
+    },
 }
 
 
@@ -337,7 +347,7 @@ def listar_scripts(db: Session) -> List[Dict[str, Any]]:
             "descricao": info.get("descricao", f"Script {nome}"),
             "hora_execucao": hora_execucao,
             # só estes têm botão "Correr" (pedir_corrida recusa os outros)
-            "corrivel": "ficheiro" in info,
+            "corrivel": "ficheiro" in info or "na_api" in info,
             "a_correr_desde": _isoformat(desde) if (desde := em_execucao(db, nome)) else None,
             **_agendamento(nome, hora_execucao, tarefas),
             "status": ultima.status if ultima else "ok",
@@ -414,6 +424,11 @@ def pedir_corrida(db: Session, nome: str) -> Dict[str, Any]:
     script não é duplicado (dois cliques seguidos = uma corrida)."""
     nome = nome.strip().lower()
     info = SCRIPT_PADRAO.get(nome)
+    if info and "na_api" in info:
+        from app.services.faturas import importar_e_reportar
+
+        resultado = importar_e_reportar(db)
+        return {"nome": nome, "status": "concluido", **resultado}
     if not info or "ficheiro" not in info:
         raise ValueError(f"Script desconhecido: {nome}")
 
