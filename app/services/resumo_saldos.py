@@ -1,7 +1,7 @@
 """Resumo mensal dos saldos bancários (Análise de Extratos > Resumo mensal).
 
 Por mês: liquidez (saldo disponível de todas as contas juntas - a mesma
-série do gráfico da Visão Geral, saldos.serie_saldo_total) no início, no
+série do gráfico da Visão Geral, mapa_saldos_excel.serie_saldo_total) no início, no
 fim, média, mínimo e máximo; e o que entrou de vendas de imóveis, separado
 em CPCV, reforço de sinal e escritura (linhas de recebimento do Mapa - a
 mesma deteção da tabela "CPCVs / Escrituras", reconciliador._e_cpcv_ou_escritura,
@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import LinhaMapa
 from app.services.reconciliador import _e_cpcv_ou_escritura, remover_acentos
-from app.services.saldos import _serie_saldo_total_bruta
+from app.services.mapa_saldos_excel import serie_saldo_total_bruta
 
 TIPOS_VENDA = ("cpcv", "reforco_sinal", "escritura")
 
@@ -81,7 +81,7 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
         elif l.previsto:
             v[f"pendente_{tipo}"] += l.previsto
 
-    serie = [p for p in _serie_saldo_total_bruta(db) if inicio <= p["dia"] <= fim]
+    serie = [p for p in serie_saldo_total_bruta(db) if inicio <= p["dia"] <= fim]
 
     diario: List[Dict[str, Any]] = []
     for p in serie:

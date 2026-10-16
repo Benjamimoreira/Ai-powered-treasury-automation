@@ -137,6 +137,16 @@ def mapa_saldos(dia: Optional[str] = None) -> list:
     return r.json()
 
 
+def contas_mapa_saldos(dia: Optional[str] = None) -> Optional[dict]:
+    """Contas da folha do Mapa de Saldos (Excel); None se não houver Mapa."""
+    params = {"dia": dia} if dia else {}
+    r = requests.get(f"{API_BASE_URL}/saldos/mapa-saldos", params=params)
+    if r.status_code in (404, 503):
+        return None
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_empresas() -> list:
     r = requests.get(f"{API_BASE_URL}/empresas")
     r.raise_for_status()

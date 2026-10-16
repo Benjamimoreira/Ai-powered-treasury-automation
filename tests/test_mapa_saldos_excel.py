@@ -4,7 +4,7 @@ import openpyxl
 
 from app.db.models import SaldoDiario
 from app.services import mapa_saldos_excel
-from app.services.mapa_saldos_excel import saldo_total, totais_mapa_saldos
+from app.services.mapa_saldos_excel import contas_mapa_saldos, saldo_total, serie_saldo_total_bruta, totais_mapa_saldos
 
 
 def _criar_mapa(raiz, ano, mes, folhas):
@@ -97,3 +97,55 @@ def test_endpoint_saldo_total_devolve_fonte(client, tmp_path, monkeypatch):
     assert r.json()["fonte"] == "mapa_saldos"
     assert r.json()["dia_referencia"] == "2026-10-16"
     assert r.json()["saldo_contabilistico_total"] == 100.0
+
+
+def test_contas_com_variacao_face_a_folha_anterior(tmp_path):
+    _criar_mapa(tmp_path, 2026, 10, {
+        "16-10": [("CGD", "HCN", 150.0, 150.0), ("Abanca -", "HII", 10000, 10000), ("CGD", "Nova", 5.0, 5.0)],
+        "15-10": [("CGD", "HCN", 100.0, 90.0), ("Abanca -", "HII", 10000, 10000)],
+    })
+
+    resultado = contas_mapa_saldos(date(2026, 10, 16), raiz=str(tmp_path))
+
+    assert resultado["dia_referencia"] == "2026-10-16"
+    assert resultado["dia_anterior"] == "2026-10-15"
+    assert resultado["saldo_contabilistico_total"] == 10155.0
+    hcn, hii, nova = resultado["contas"]
+    assert (hcn["banco"], hcn["entidade"]) == ("CGD", "HCN")
+    assert hcn["variacao_contabilistico"] == 50.0
+    assert hcn["variacao_pct_contabilistico"] == 50.0
+    assert hcn["variacao_disponivel"] == 60.0
+    assert hii["variacao_contabilistico"] == 0
+    assert nova["variacao_contabilistico"] is None  # conta nova, sem folha anterior
+
+
+def test_serie_usa_o_mapa_e_os_extratos_antes_de_haver_mapa(db_session, tmp_path):
+    db_session.add(SaldoDiario(dia=date(2026, 9, 1), entidade="A", saldo_contabilistico=1.0, saldo_disponivel=1.0))
+    db_session.add(SaldoDiario(dia=date(2026, 10, 16), entidade="A", saldo_contabilistico=2.0, saldo_disponivel=2.0))
+    db_session.commit()
+    _criar_mapa(tmp_path, 2026, 10, {"15-10": [("CGD", "HCN", 100.0, 90.0)], "16-10": [("CGD", "HCN", 200.0, 190.0)]})
+
+    serie = serie_saldo_total_bruta(db_session, raiz=str(tmp_path))
+
+    assert [(p["dia"], p["saldo_contabilistico_total"]) for p in serie] == [
+        (date(2026, 9, 1), 1.0),     # ainda sem Mapa: extratos
+        (date(2026, 10, 15), 100.0),  # folha do Mapa
+        (date(2026, 10, 16), 200.0),  # folha do Mapa, não os 2.0 dos extratos
+    ]
+
+
+def test_endpoint_mapa_saldos_sem_mapa_devolve_404(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("ONEDRIVE_RAIZ", str(tmp_path))
+
+    assert client.get("/saldos/mapa-saldos", params={"dia": "2026-10-16"}).status_code == 404
+
+
+def test_endpoint_mapa_saldos_devolve_as_contas(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("ONEDRIVE_RAIZ", str(tmp_path))
+    _criar_mapa(tmp_path, 2026, 10, {"16-10": [("Santander", "Sublime", 5958.19, 5958.19)]})
+
+    r = client.get("/saldos/mapa-saldos", params={"dia": "2026-10-16"})
+
+    assert r.status_code == 200
+    assert r.json()["contas"][0]["banco"] == "Santander"
+    assert r.json()["saldo_contabilistico_total"] == 5958.19

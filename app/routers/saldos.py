@@ -27,14 +27,15 @@ from app.services.previsao import (
     prever_saldo_total_por_cashflow,
 )
 from app.services.previsao_ancorada import backtest_previsao_ancorada, listar_risco_liquidez, prever_saldo_ancorado
+from app.services.mapa_saldos_excel import contas_mapa_saldos
 from app.services.mapa_saldos_excel import saldo_total as saldo_total_do_mapa
+from app.services.mapa_saldos_excel import serie_saldo_total
 from app.services.resumo_saldos import resumo_mensal_saldos
 from app.services.saldos import consultar_saldo as consultar_saldo_servico
 from app.services.saldos import (
     listar_saldos_atuais,
     mapa_saldos,
     registar_saldos_do_dia,
-    serie_saldo_total,
 )
 
 router = APIRouter()
@@ -226,10 +227,25 @@ def saldos_mapa(dia: Optional[date] = None, db: Session = Depends(get_db)):
 
 @router.get("/saldos/serie-total")
 def saldos_serie_total(db: Session = Depends(get_db)):
-    """Evolução do saldo total (todas as entidades juntas) ao longo do
-    tempo - para o gráfico da Visão Geral. Rota definida antes de
-    `/saldos/{empresa}` para não ser apanhada por esse path param."""
+    """Evolução do saldo total (todas as contas juntas) ao longo do
+    tempo, como no Mapa de Saldos - para o gráfico da Visão Geral. Rota
+    definida antes de `/saldos/{empresa}` para não ser apanhada por esse
+    path param."""
     return {"serie": serie_saldo_total(db)}
+
+
+@router.get("/saldos/mapa-saldos")
+def saldos_mapa_saldos(dia: Optional[date] = None):
+    """As contas da folha do Mapa de Saldos de `dia` (ou a última antes
+    dele; hoje, sem `dia`), com a variação face à folha anterior - a tabela
+    do separador Saldos. 404 sem Mapa (o dashboard volta aos extratos)."""
+    try:
+        resultado = contas_mapa_saldos(dia)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Não consegui ler o Mapa de Saldos: {e}")
+    if resultado is None:
+        raise HTTPException(status_code=404, detail="Sem Mapa de Saldos para esse dia.")
+    return resultado
 
 
 @router.get("/saldos/resumo-mensal")

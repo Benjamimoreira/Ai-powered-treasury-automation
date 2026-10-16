@@ -1764,10 +1764,23 @@ if aba_visao_geral.open:
                 st.info("Sem histórico de saldos suficiente para desenhar a evolução.")
         with col_top, st.container(border=True):
             st.markdown("**Contas com mais saldo**")
+            # as contas do Mapa de Saldos (com outros bancos), como o total; sem
+            # Mapa, a última leitura de cada conta nos extratos
             try:
-                saldos_atuais = api.listar_saldos_atuais(dia_vg_str)
+                contas_vg = api.contas_mapa_saldos(dia_vg_str)
             except Exception:
-                saldos_atuais = []
+                contas_vg = None
+            if contas_vg:
+                saldos_atuais = [
+                    {"entidade": c["entidade"] if c["banco"] == "CGD" else f"{c['entidade']} · {c['banco']}",
+                     "saldo_contabilistico": c["saldo_contabilistico"] or 0}
+                    for c in contas_vg["contas"]
+                ]
+            else:
+                try:
+                    saldos_atuais = api.listar_saldos_atuais(dia_vg_str)
+                except Exception:
+                    saldos_atuais = []
             if saldos_atuais:
                 df_ranking = pd.DataFrame(saldos_atuais).sort_values("saldo_contabilistico", ascending=False).head(10)
                 df_ranking["entidade"] = [rotulo_conta(e, None, None) for e in df_ranking["entidade"]]
@@ -3093,24 +3106,46 @@ if aba_saldos.open:
         with st.container(border=True, horizontal=True, vertical_alignment="bottom"):
             dia_mapa = st.date_input("Dia do mapa (opcional)", value=None, persist_state="page", key="dia_mapa_saldos", width=220)
             st.caption(
-                "Última leitura de cada conta até ao dia escolhido (hoje, se vazio). Variação face à leitura "
-                "anterior de cada conta - nem todas têm leitura todos os dias. ⚠️ = última leitura com mais de "
-                f"{DIAS_LEITURA_ANTIGA} dias (continua a contar no total) ou extrato sem o nome da empresa."
+                "Folha do Mapa de Saldos do dia escolhido (hoje, se vazio; num dia sem folha, a última antes "
+                "dele), com a variação face à folha anterior. Sem Mapa, a última leitura de cada conta nos "
+                f"extratos CGD (⚠️ = leitura com mais de {DIAS_LEITURA_ANTIGA} dias)."
             )
 
+        # Fonte principal: o Mapa de Saldos (Excel da contabilidade, com os
+        # outros bancos); sem ele, a última leitura de cada conta nos extratos.
         try:
-            mapa = api.mapa_saldos(dia_mapa.isoformat() if dia_mapa else None)
+            mapa_excel = api.contas_mapa_saldos(dia_mapa.isoformat() if dia_mapa else None)
         except Exception as e:
-            st.error(f"Erro a consultar o mapa de saldos: {e}")
-            mapa = []
+            st.error(f"Erro a consultar o Mapa de Saldos: {e}")
+            mapa_excel = None
+        mapa = []
+        if not mapa_excel:
+            try:
+                mapa = api.mapa_saldos(dia_mapa.isoformat() if dia_mapa else None)
+            except Exception as e:
+                st.error(f"Erro a consultar o mapa de saldos: {e}")
 
-        if mapa:
+        if mapa_excel:
+            df_contas = pd.DataFrame(mapa_excel["contas"])
+            total_contabilistico = mapa_excel["saldo_contabilistico_total"]
+            total_disponivel = mapa_excel["saldo_disponivel_total"]
+            n_contas = mapa_excel["entidades"]
+            n_subiram = int((df_contas["variacao_contabilistico"] > 0).sum())
+            n_desceram = int((df_contas["variacao_contabilistico"] < 0).sum())
+            n_negativos = int((df_contas["saldo_contabilistico"] < 0).sum())
+            dia_fluxo = dia_mapa.isoformat() if dia_mapa else mapa_excel["dia_referencia"]
+        elif mapa:
             df_mapa = pd.DataFrame(mapa).sort_values("entidade")
+            total_contabilistico = df_mapa["saldo_contabilistico"].sum()
+            total_disponivel = df_mapa["saldo_disponivel"].sum()
+            n_contas = len(df_mapa)
             n_subiram = int((df_mapa["variacao_contabilistico"] > 0).sum())
             n_desceram = int((df_mapa["variacao_contabilistico"] < 0).sum())
             n_negativos = int((df_mapa["saldo_contabilistico"] < 0).sum())
             # recebimentos/pagamentos do dia do mapa (o escolhido, ou o da leitura mais recente)
             dia_fluxo = dia_mapa.isoformat() if dia_mapa else str(df_mapa["dia"].max())
+
+        if mapa_excel or mapa:
             try:
                 fluxo_dia = next((r for r in api.resumo_diario() if r["dia"] == dia_fluxo), None)
             except Exception as e:
@@ -3118,8 +3153,10 @@ if aba_saldos.open:
                 fluxo_dia = None
             rotulo_dia_fluxo = f"{pd.to_datetime(dia_fluxo):%d/%m/%Y}"
             with st.container(horizontal=True):
-                st.metric("Saldo contabilístico total", f"{_n(df_mapa['saldo_contabilistico'].sum())} €", border=True)
-                st.metric("Saldo disponível total", f"{_n(df_mapa['saldo_disponivel'].sum())} €", border=True)
+                ajuda_total = (f"Linha \"Saldo\" do Mapa de Saldos, folha {pd.to_datetime(mapa_excel['dia_referencia']):%d/%m/%Y}."
+                               if mapa_excel else "Soma da última leitura de cada conta nos extratos CGD.")
+                st.metric("Saldo contabilístico total", f"{_n(total_contabilistico)} €", border=True, help=ajuda_total)
+                st.metric("Saldo disponível total", f"{_n(total_disponivel)} €", border=True, help=ajuda_total)
                 st.metric(
                     f"Recebimentos ({rotulo_dia_fluxo})", f"{_n(fluxo_dia['recebimentos'] if fluxo_dia else 0)} €",
                     f"{_n(fluxo_dia['recebimentos_externos'])} € fora do grupo" if fluxo_dia else None,
@@ -3134,9 +3171,10 @@ if aba_saldos.open:
                     help="Soma dos movimentos a débito de todas as contas nesse dia. O valor pequeno exclui "
                          "as transferências entre empresas do grupo.",
                 )
-                st.metric("Contas", len(df_mapa), border=True)
+                st.metric("Contas", n_contas, border=True)
                 st.metric("Subiram / desceram", f"{n_subiram} / {n_desceram}", border=True,
-                          help="Face à leitura anterior de cada conta.")
+                          help="Face à folha anterior do Mapa de Saldos." if mapa_excel
+                          else "Face à leitura anterior de cada conta.")
                 st.metric("Contas negativas", n_negativos, "atenção" if n_negativos else None,
                           delta_color="inverse", border=True)
 
@@ -3149,7 +3187,49 @@ if aba_saldos.open:
         col_mapa, col_empresa = st.columns([3, 2])
         with col_mapa, st.container(border=True):
             st.markdown("**Mapa de saldos de todas as empresas**")
-            if not mapa:
+            if mapa_excel:
+                rotulo_anterior = (f" (folha anterior: {pd.to_datetime(mapa_excel['dia_anterior']):%d/%m/%Y})"
+                                   if mapa_excel["dia_anterior"] else "")
+                st.caption(f"Mapa de Saldos, folha {pd.to_datetime(mapa_excel['dia_referencia']):%d/%m/%Y}{rotulo_anterior}.")
+                df_contas["Var. (contab.)"] = [variacao_saldo(v, p) for v, p in
+                                               zip(df_contas["variacao_contabilistico"], df_contas["variacao_pct_contabilistico"])]
+                df_contas["Var. (disp.)"] = [variacao_saldo(v, p) for v, p in
+                                             zip(df_contas["variacao_disponivel"], df_contas["variacao_pct_disponivel"])]
+                tabela_contas = df_contas[[
+                    "banco", "entidade", "saldo_contabilistico", "Var. (contab.)", "saldo_disponivel", "Var. (disp.)",
+                    "observacoes",
+                ]].rename(columns={
+                    "banco": "Banco", "entidade": "Entidade",
+                    "saldo_contabilistico": "Saldo contabilístico", "saldo_disponivel": "Saldo disponível",
+                    "observacoes": "Observações",
+                })
+                linha_total = pd.DataFrame([{
+                    "Banco": "Total", "Entidade": "",
+                    "Saldo contabilístico": total_contabilistico, "Var. (contab.)": "",
+                    "Saldo disponível": total_disponivel, "Var. (disp.)": "", "Observações": "",
+                }])
+                tabela_contas_com_total = pd.concat([tabela_contas, linha_total], ignore_index=True)
+
+                def _destacar_total_mapa(linha):
+                    estilo = "font-weight: bold; border-top: 2px solid currentColor" if linha["Banco"] == "Total" else ""
+                    return [estilo] * len(linha)
+
+                st.dataframe(
+                    tabela_contas_com_total.style.apply(_destacar_total_mapa, axis=1),
+                    width="stretch",
+                    hide_index=True,
+                    height=int(35 * len(tabela_contas_com_total) + 38 + 3),
+                    column_config={
+                        "Banco": st.column_config.TextColumn(width="small"),
+                        "Entidade": st.column_config.TextColumn(width="medium"),
+                        "Saldo contabilístico": st.column_config.NumberColumn(format="euro", width="small"),
+                        "Var. (contab.)": st.column_config.TextColumn(width="small"),
+                        "Saldo disponível": st.column_config.NumberColumn(format="euro", width="small"),
+                        "Var. (disp.)": st.column_config.TextColumn(width="small"),
+                        "Observações": st.column_config.TextColumn(width="medium"),
+                    },
+                )
+            elif not mapa:
                 st.info("Sem saldos guardados (precisas de correr /saldos/atualizar primeiro).")
             else:
                 df_mapa["Var. (contab.)"] = [variacao_saldo(v, p) for v, p in
