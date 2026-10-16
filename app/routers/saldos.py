@@ -27,13 +27,13 @@ from app.services.previsao import (
     prever_saldo_total_por_cashflow,
 )
 from app.services.previsao_ancorada import backtest_previsao_ancorada, listar_risco_liquidez, prever_saldo_ancorado
+from app.services.mapa_saldos_excel import saldo_total as saldo_total_do_mapa
 from app.services.resumo_saldos import resumo_mensal_saldos
 from app.services.saldos import consultar_saldo as consultar_saldo_servico
 from app.services.saldos import (
     listar_saldos_atuais,
     mapa_saldos,
     registar_saldos_do_dia,
-    saldo_total_geral,
     serie_saldo_total,
 )
 
@@ -201,10 +201,11 @@ def previsao_risco(empresa: str, dias: int = 7, db: Session = Depends(get_db)):
 
 @router.get("/saldo-total", response_model=SaldoTotalOut)
 def saldo_total(dia: Optional[date] = None, db: Session = Depends(get_db)):
-    """Soma o último saldo conhecido de cada entidade até `dia` (ou o mais
-    recente de sempre, sem `dia`) - nem todos os dias têm leitura de todas
-    as contas, por isso não é simplesmente a soma das leituras desse dia."""
-    return saldo_total_geral(db, dia)
+    """Saldo total do Mapa de Saldos (folha de `dia`, ou a última antes
+    dele; hoje, sem `dia`) - o mesmo valor que a contabilidade vê, com as
+    contas de outros bancos. Sem Mapa, soma o último saldo conhecido de cada
+    entidade nos extratos CGD (`fonte` diz qual foi usada)."""
+    return saldo_total_do_mapa(db, dia)
 
 
 @router.get("/saldos", response_model=List[SaldoOut])

@@ -26,7 +26,8 @@ from app.services.reconciliador import (
     resolver_ambiguo,
 )
 from app.services.saldos import consultar_saldo as consultar_saldo_servico
-from app.services.saldos import listar_saldos_atuais, saldo_total_geral
+from app.services.mapa_saldos_excel import saldo_total as saldo_total_do_mapa
+from app.services.saldos import listar_saldos_atuais
 from app.db.models import CasoAmbiguo
 
 mcp = FastMCP("tesouraria")
@@ -163,12 +164,12 @@ def listar_empresas_tool() -> list:
 
 @mcp.tool()
 def saldo_total_tool() -> dict:
-    """Soma o último saldo conhecido de cada entidade - visão geral,
-    não de um único dia (nem todos os dias têm leitura de todas as
-    contas)."""
+    """Saldo total de hoje, como no Mapa de Saldos (todas as contas,
+    incluindo outros bancos); sem Mapa, a soma do último saldo conhecido
+    de cada entidade nos extratos CGD."""
     db = SessionLocal()
     try:
-        return saldo_total_geral(db)
+        return saldo_total_do_mapa(db)
     finally:
         db.close()
 

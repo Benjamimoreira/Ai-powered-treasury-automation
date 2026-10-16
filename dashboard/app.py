@@ -1683,6 +1683,25 @@ if aba_visao_geral.open:
             serie_total = []
         serie_total_ate_dia = [p for p in serie_total if p["dia"] <= dia_vg_str]
 
+        # Saldo total = linha "Saldo" do Mapa de Saldos (com outros bancos);
+        # a variação a 30 dias compara com o Mapa de há 30 dias, para não
+        # misturar com a soma dos extratos CGD da série do gráfico.
+        delta_30_dias = None
+        ajuda_saldo_total = "Soma dos extratos CGD (último saldo conhecido de cada conta)."
+        if totais and totais.get("fonte") == "mapa_saldos":
+            ajuda_saldo_total = (
+                f"Linha \"Saldo\" do Mapa de Saldos, folha {date.fromisoformat(totais['dia_referencia']):%d/%m/%Y} "
+                "(todas as contas, incluindo outros bancos)."
+            )
+            try:
+                totais_30 = api.saldo_total((dia_vg - timedelta(days=30)).isoformat())
+                if totais_30.get("fonte") == "mapa_saldos":
+                    delta_30_dias = totais["saldo_contabilistico_total"] - totais_30["saldo_contabilistico_total"]
+            except Exception:
+                pass
+        elif totais and len(serie_total_ate_dia) > 30:
+            delta_30_dias = totais["saldo_contabilistico_total"] - serie_total_ate_dia[-31]["saldo_contabilistico_total"]
+
         # --- KPIs
         with st.container(horizontal=True):
             st.metric(
@@ -1702,13 +1721,13 @@ if aba_visao_geral.open:
             if totais:
                 st.metric(
                     "Saldo contabilístico total", f"{_n(totais['saldo_contabilistico_total'])} €",
-                    (f"{_n(totais['saldo_contabilistico_total'] - serie_total_ate_dia[-31]['saldo_contabilistico_total'], sinal=True)} € em 30 dias"
-                     if len(serie_total_ate_dia) > 30 else None),
-                    border=True,
+                    f"{_n(delta_30_dias, sinal=True)} € em 30 dias" if delta_30_dias is not None else None,
+                    border=True, help=ajuda_saldo_total,
                     chart_data=[p["saldo_contabilistico_total"] for p in serie_total_ate_dia[-30:]] or None,
                     chart_type="area",
                 )
-                st.metric("Saldo disponível total", f"{_n(totais['saldo_disponivel_total'])} €", border=True)
+                st.metric("Saldo disponível total", f"{_n(totais['saldo_disponivel_total'])} €", border=True,
+                          help=ajuda_saldo_total)
                 st.metric("Contas incluídas", totais["entidades"], border=True)
 
         # --- saldo total + top contas

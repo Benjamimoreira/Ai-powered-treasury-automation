@@ -133,6 +133,8 @@ class SaldoTotalOut(BaseModel):
     entidades: int
     saldo_contabilistico_total: float
     saldo_disponivel_total: float
+    fonte: str = "extratos"  # "mapa_saldos" | "extratos"
+    dia_referencia: Optional[date] = None  # folha do Mapa de Saldos usada
 
 
 class AtualizarDadosResponse(BaseModel):

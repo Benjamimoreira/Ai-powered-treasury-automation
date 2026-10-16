@@ -100,8 +100,9 @@ def test_listar_empresas_tool(db_session, session_factory, monkeypatch):
     assert set(resultado) == {"ANCORA APOGEU,LDA", "PALAVRADICIONAL,LDA"}
 
 
-def test_saldo_total_tool(db_session, session_factory, monkeypatch):
+def test_saldo_total_tool(db_session, session_factory, monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_server, "SessionLocal", session_factory)
+    monkeypatch.setenv("ONEDRIVE_RAIZ", str(tmp_path))  # sem Mapa de Saldos -> soma dos extratos
     db_session.add(SaldoDiario(
         dia=DIA, entidade="Ancora Apogeu", saldo_contabilistico=100.0, saldo_disponivel=90.0,
     ))
