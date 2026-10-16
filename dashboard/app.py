@@ -363,7 +363,7 @@ def grafico_ranking_imputacoes(linhas: list, titulo: str):
     ).properties(height=altura, title=titulo)
 
 
-st.set_page_config(page_title="Predição Financeira & Tesouraria", page_icon="💶", layout="wide")
+st.set_page_config(page_title="Sistema de Gestão da Tesouraria", page_icon="💶", layout="wide")
 
 
 def _exigir_password() -> None:
@@ -377,7 +377,7 @@ def _exigir_password() -> None:
     if not senha or st.session_state.get("_autenticado"):
         return
     with st.form("entrar"):
-        st.markdown("### Predição Financeira & Tesouraria")
+        st.markdown("### Sistema de Gestão da Tesouraria")
         tentativa = st.text_input("Password", type="password")
         if st.form_submit_button("Entrar"):
             if hmac.compare_digest(tentativa.encode(), senha.encode()):
@@ -411,7 +411,7 @@ st.markdown(
         <div class="cabecalho-meta">{date.today().strftime('%d/%m/%Y')} &nbsp;·&nbsp; Dados atualizados às {_hora_ultima_atualizacao()}</div>
       </div>
       <div class="cabecalho-linha" style="margin-top:6px;">
-        <div class="cabecalho-titulo">Plataforma de Análise de Tesouraria</div>
+        <div class="cabecalho-titulo">Sistema de Gestão da Tesouraria</div>
         <div class="cabecalho-sub">Análise financeira consolidada · liquidez, fluxos e previsão</div>
       </div>
     </div>
@@ -3856,7 +3856,7 @@ st.markdown(
         VIDÓR &middot; Documento interno &middot; Uso exclusivo
       </div>
       <div style="color:#8f97a3;font-size:0.75rem;letter-spacing:.04em;">
-        Plataforma de Análise de Tesouraria &middot; {date.today().year}
+        Sistema de Gestão da Tesouraria &middot; {date.today().year}
       </div>
     </div>
     """,
