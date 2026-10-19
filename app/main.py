@@ -9,8 +9,8 @@ from fastapi.responses import JSONResponse
 from app import seguranca
 from app.db import models  # noqa: F401  (garante que os modelos são registados antes do create_all)
 from app.db.session import engine
-from app.routers import (ambiguos, anomalias, chat, comercial, faturas, monitorizacao, previsao_mensal, reconciliacao,
-                         rendas, saldos, sync)
+from app.routers import (ambiguos, anomalias, chat, comercial, faturas, monitorizacao, previsao_mensal,
+                         previsoes_manuais, reconciliacao, rendas, saldos, sync)
 
 
 async def _reextrair_discrepancias() -> None:
@@ -95,6 +95,7 @@ app.include_router(chat.router)
 app.include_router(comercial.router)
 app.include_router(rendas.router)
 app.include_router(previsao_mensal.router)
+app.include_router(previsoes_manuais.router)
 
 
 @app.get("/")

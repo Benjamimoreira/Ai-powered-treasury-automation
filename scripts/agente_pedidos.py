@@ -67,6 +67,7 @@ COMANDOS = {
     "atualizar_mapa_saldos": ("py", ["atualizar_mapa_saldos.py"]),
     "enviar_mapa_smtp": ("py", ["enviar_mapa_smtp.py"]),
     "aplicar_previsao_mensal": ("py", ["aplicar_previsao_mensal.py"]),
+    "aplicar_previsoes_manuais": ("py", ["aplicar_previsoes_manuais.py"]),
 }
 
 log = logging.getLogger("agente_pedidos")

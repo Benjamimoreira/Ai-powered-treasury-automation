@@ -62,6 +62,12 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
         "hora_execucao": "a pedido",
         "ficheiro": "aplicar_previsao_mensal.py",
     },
+    "aplicar_previsoes_manuais": {
+        "descricao": "Linhas de Valor Previsto acrescentadas no dashboard (Predição > Acrescentar previsão) "
+                     "na folha do dia do Mapa de Pagamentos e Recebimentos",
+        "hora_execucao": "a pedido",
+        "ficheiro": "aplicar_previsoes_manuais.py",
+    },
     "enviar_mapa_smtp": {
         "descricao": "Envio diário do Mapa de Pagamentos e Recebimentos por email",
         "hora_execucao": "16:30",

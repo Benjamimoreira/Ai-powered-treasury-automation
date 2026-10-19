@@ -449,6 +449,44 @@ def importar_previsao_mensal(nome: str, conteudo: bytes) -> dict:
     return r.json()
 
 
+def criar_previsao_manual(dia: int, mes: int, ano: int, tipo: str, descricao: str, valor: float,
+                          imputacao: str) -> dict:
+    """Linha de Valor Previsto para a folha do dia do Mapa (o agente do Windows escreve-a)."""
+    r = requests.post(f"{API_BASE_URL}/previsoes-manuais", json={
+        "dia": dia, "mes": mes, "ano": ano, "tipo": tipo, "descricao": descricao, "valor": valor,
+        "imputacao": imputacao}, timeout=15)
+    if r.status_code == 422:
+        detalhe = r.json().get("detail")
+        raise ValueError(detalhe if isinstance(detalhe, str) else "Dados inválidos")
+    r.raise_for_status()
+    return r.json()
+
+
+def listar_previsoes_manuais(limit: int = 50) -> list:
+    r = requests.get(f"{API_BASE_URL}/previsoes-manuais", params={"limit": limit}, timeout=10)
+    r.raise_for_status()
+    return r.json()["previsoes"]
+
+
+def imputacoes_previsao(tipo: Optional[str] = None) -> list:
+    r = requests.get(f"{API_BASE_URL}/previsoes-manuais/imputacoes", params={"tipo": tipo} if tipo else {},
+                     timeout=10)
+    r.raise_for_status()
+    return r.json()["imputacoes"]
+
+
+def apagar_previsao_manual(previsao_id: int) -> None:
+    r = requests.delete(f"{API_BASE_URL}/previsoes-manuais/{previsao_id}", timeout=10)
+    r.raise_for_status()
+
+
+def aplicar_previsoes_manuais() -> dict:
+    """Volta a pedir a escrita no Mapa das pendentes/com erro."""
+    r = requests.post(f"{API_BASE_URL}/previsoes-manuais/aplicar", timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+
 def listar_deploys(limit: int = 10) -> list:
     """Deploys dos scripts, mais recentes primeiro (com passo/total_passos)."""
     r = requests.get(f"{API_BASE_URL}/monitorizacao/deploys", params={"limit": limit}, timeout=10)

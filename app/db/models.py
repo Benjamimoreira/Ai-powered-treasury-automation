@@ -366,3 +366,25 @@ class PrevisaoMensal(Base):
     realizado = Column(Integer, nullable=False, default=0)  # 1 = coluna REA (já realizado) no ficheiro
     ficheiro = Column(String, nullable=True)
     importado_em = Column(DateTime, default=_utcnow_naive, nullable=False)
+
+
+class PrevisaoManual(Base):
+    """Uma linha de Valor Previsto acrescentada à mão no dashboard (Predição >
+    Acrescentar previsão), para a folha do dia do Mapa de Pagamentos e
+    Recebimentos. A API não escreve no Mapa (o OneDrive está só de leitura no
+    Docker): grava a linha "pendente" e pede ao agente do Windows o
+    aplicar_previsoes_manuais.py (PT2), que a escreve na folha do dia e a
+    marca "aplicada" (ou "erro", com o motivo - volta a tentar na corrida
+    seguinte)."""
+    __tablename__ = "previsoes_manuais"
+
+    id = Column(Integer, primary_key=True)
+    dia = Column(Date, nullable=False, index=True)
+    tipo = Column(String, nullable=False)  # recebimento | pagamento
+    descricao = Column(String, nullable=False)
+    valor = Column(Float, nullable=False)  # sempre positivo, como o Valor Previsto do Mapa
+    imputacao = Column(String, nullable=False)
+    estado = Column(String, nullable=False, default="pendente", index=True)  # pendente|aplicada|erro
+    erro = Column(String, nullable=True)
+    criado_em = Column(DateTime, default=_utcnow_naive, nullable=False)
+    aplicada_em = Column(DateTime, nullable=True)

@@ -1697,10 +1697,95 @@ def _secao_previsao_mensal() -> None:
                     st.caption(f"Total: {_n(parte['valor'].sum(), 2)} €")
 
 
+ESTADOS_PREVISAO_MANUAL = {"pendente": "⏳ À espera do agente", "aplicada": "✅ No Mapa", "erro": "⚠️ Erro"}
+
+
+def _secao_previsao_manual() -> None:
+    """Uma linha de Valor Previsto escrita na folha do dia do Mapa de
+    Pagamentos e Recebimentos - a API guarda-a e o agente do Windows corre o
+    aplicar_previsoes_manuais.py (PT2), ver app/services/previsoes_manuais.py."""
+    with st.container(border=True):
+        st.markdown("**Acrescentar previsão ao Mapa de Pagamentos e Recebimentos**")
+        try:
+            opcoes_imputacao = api.imputacoes_previsao()
+        except Exception:
+            opcoes_imputacao = []
+        hoje = date.today()
+        with st.form("form_previsao_manual", clear_on_submit=True, border=False):
+            with st.container(horizontal=True):
+                dia = st.number_input("Dia", min_value=1, max_value=31, value=hoje.day, step=1, width=110)
+                mes = st.number_input("Mês", min_value=1, max_value=12, value=hoje.month, step=1, width=110)
+                ano = st.number_input("Ano", min_value=2020, max_value=2100, value=hoje.year, step=1, width=130)
+                tipo = st.segmented_control("Tipo", ["pagamento", "recebimento"], default="pagamento",
+                                            format_func={"pagamento": "Pagamento", "recebimento": "Recebimento"}.get)
+            descricao = st.text_input("Descrição")
+            with st.container(horizontal=True):
+                valor = st.number_input("Valor previsto (€)", min_value=0.0, step=100.0, format="%.2f", width=220)
+                imputacao = st.selectbox("Imputação", opcoes_imputacao, index=None, accept_new_options=True,
+                                         placeholder="Escolhe ou escreve uma nova")
+            enviar = st.form_submit_button("Acrescentar ao Mapa", type="primary")
+        if enviar:
+            try:
+                r = api.criar_previsao_manual(int(dia), int(mes), int(ano), tipo or "pagamento", descricao,
+                                              float(valor), imputacao or "")
+                if r.get("mapa") == "pedido":
+                    st.success(f"Previsão guardada - o agente do Windows vai escrevê-la no Mapa, folha do dia "
+                               f"{date.fromisoformat(r['dia']):%d/%m/%Y}.")
+                else:
+                    st.warning(f"Previsão guardada, mas a escrita no Mapa não foi pedida ({r.get('mapa')}).")
+            except ValueError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Não foi possível guardar a previsão: {e}")
+
+        try:
+            previsoes = api.listar_previsoes_manuais(limit=30)
+        except Exception as e:
+            st.error(f"Erro a consultar as previsões acrescentadas: {e}")
+            return
+        if not previsoes:
+            return
+        df = pd.DataFrame(previsoes)
+        df["dia"] = pd.to_datetime(df["dia"])
+        df["valor"] = df.apply(lambda l: l["valor"] if l["tipo"] == "recebimento" else -l["valor"], axis=1)
+        df["estado"] = df["estado"].map(ESTADOS_PREVISAO_MANUAL).fillna(df["estado"])
+        st.dataframe(
+            df[["dia", "descricao", "valor", "imputacao", "estado", "erro"]], hide_index=True, width="stretch",
+            column_config={
+                "dia": st.column_config.DateColumn("Dia", format="DD/MM/YYYY"),
+                "descricao": "Descrição",
+                "valor": st.column_config.NumberColumn("Valor previsto", format="euro",
+                                                       help="Positivo = recebimento, negativo = pagamento"),
+                "imputacao": "Imputação",
+                "estado": "Estado",
+                "erro": "Motivo do erro",
+            })
+        por_aplicar = [p for p in previsoes if p["estado"] != "aplicada"]
+        if por_aplicar:
+            with st.container(horizontal=True, vertical_alignment="bottom"):
+                if st.button("Tentar escrever no Mapa outra vez", key="reaplicar_previsoes_manuais",
+                             help="Ex.: depois de fechar o Mapa no Excel."):
+                    r = api.aplicar_previsoes_manuais()
+                    (st.success if r.get("mapa") == "pedido" else st.warning)(
+                        "Pedido ao agente do Windows." if r.get("mapa") == "pedido" else str(r.get("mapa")))
+                escolhida = st.selectbox(
+                    "Apagar previsão ainda não aplicada", [p["id"] for p in por_aplicar], index=None,
+                    format_func=lambda i: next(f"{p['dia'][8:10]}/{p['dia'][5:7]} - {p['descricao']}"
+                                               for p in por_aplicar if p["id"] == i),
+                    key="apagar_previsao_manual", width=320)
+                if escolhida is not None and st.button("Apagar", key="botao_apagar_previsao_manual"):
+                    api.apagar_previsao_manual(escolhida)
+                    st.rerun()
+        st.caption("Escrita como linha de Valor Previsto (com a imputação, sem empresa) na secção de "
+                   "recebimentos ou de pagamentos da folha desse dia - entra na Previsão do Resumo do Mapa. "
+                   "Uma previsão já no Mapa corrige-se ou apaga-se no próprio Excel.")
+
+
 if aba_forecast.open:
     with aba_forecast:
         _painel_forecast()
         _secao_previsao_mensal()
+        _secao_previsao_manual()
 
 if aba_visao_geral.open:
     with aba_visao_geral:

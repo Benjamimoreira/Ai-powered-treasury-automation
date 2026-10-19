@@ -180,6 +180,23 @@ comparado com o realizado do Mapa.
 | POST | `/previsao-mensal/importar` | ✏️⚙️ | dash | Corpo `{"ficheiro": "Previsão Tesouraria_OUT2026.xlsx", "conteudo_base64": "<xlsx em base64>"}`. Substitui os meses que o ficheiro tem. Depois pede (melhor esforço) o `aplicar_previsao_mensal` ao agente, que escreve a folha "Previsão" de cada Mapa mensal. Devolve `{ficheiro, linhas, meses, …, mapas: "pedido" \| "não pedido: <motivo>"}`. 422 se o base64 ou o ficheiro forem inválidos. |
 | GET | `/previsao-mensal` | | dash | `{ficheiro, importado_em, meses: [...]}`: por mês, previsto (recebimentos, pagamentos, líquido, vendas diretas, sinais e reforços) ao lado do realizado, e as linhas do ficheiro. |
 
+## Previsões manuais (linhas no Mapa)
+
+Linhas de Valor Previsto acrescentadas no dashboard (Predição > Acrescentar
+previsão). A API guarda-as e o `aplicar_previsoes_manuais.py` (PT2), pedido
+ao agente, escreve cada uma na folha do dia do Mapa de Pagamentos e
+Recebimentos (secção de recebimentos ou pagamentos, com a imputação e sem
+empresa) e marca-a `aplicada` ou `erro`.
+
+| Método | Caminho | E | Quem | Descrição |
+|---|---|---|---|---|
+| POST | `/previsoes-manuais` | ✏️⚙️ | dash | Corpo `{"dia": 27, "mes": 10, "ano": 2026, "tipo": "recebimento\|pagamento", "descricao": …, "valor": 1234.5, "imputacao": …}` (valor positivo). Guarda como `pendente` e pede o `aplicar_previsoes_manuais` ao agente (melhor esforço: `mapa: "pedido" \| "não pedido: <motivo>"`). 422 se a data não existe, o valor não é positivo ou falta a descrição/imputação. |
+| GET | `/previsoes-manuais?por_aplicar=false&limit=50` | | dash, script | Mais recentes primeiro. `por_aplicar=true`: só `pendente` e `erro`, mais antigas primeiro (o que o script escreve). |
+| GET | `/previsoes-manuais/imputacoes?tipo=` | | dash | Imputações já usadas no Mapa e nas previsões manuais, por ordem alfabética. |
+| POST | `/previsoes-manuais/aplicar` | ⚙️ | dash | Volta a pedir o script (ex.: depois de um erro por o Mapa estar aberto no Excel). |
+| POST | `/previsoes-manuais/{id}/estado` | ✏️ | script | Corpo `{"estado": "aplicada\|erro", "erro": …}`. 409 se não existe ou já estava aplicada. |
+| DELETE | `/previsoes-manuais/{id}` | ✏️ | dash | Só as que ainda não estão no Mapa (409 se aplicada). |
+
 ## Anomalias
 
 | Método | Caminho | Descrição |
