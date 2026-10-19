@@ -27,69 +27,112 @@ from datetime import date
 from typing import Any, Dict, Optional
 
 import openpyxl
-from openpyxl.utils import range_boundaries
+from openpyxl.utils import get_column_letter, range_boundaries
 
 from app.services.onedrive_sync import caminho_mapa
 
 logger = logging.getLogger(__name__)
 
-_REF = re.compile(r"^\+?(?:'([^']+)'|([A-Za-z0-9_]+))!\$?([A-Z]{1,3})\$?(\d+)$")
-_LOCAL = re.compile(r"^\+?\$?([A-Z]{1,3})\$?(\d+)$")
-_SOMA = re.compile(r"^(?:SUM|SUBTOTAL\(\d+,)\(?\$?([A-Z]{1,3})\$?(\d+):\$?([A-Z]{1,3})\$?(\d+)\)$", re.I)
-_TABELA = re.compile(r"^SUBTOTAL\(\d+,([A-Za-z0-9_]+)\[([^\]]+)\]\)$", re.I)
+_REF_FOLHA = re.compile(r"(?:'([^']+)'|([A-Za-z0-9_]+))!\$?([A-Z]{1,3})\$?(\d+)")
+_REF_LOCAL = re.compile(r"(?<![A-Za-z0-9_!:'])\$?([A-Z]{1,3})\$?(\d+)(?![\d(:\[])")
+_FUNCAO = re.compile(r"(SUM|SUBTOTAL)\(([^()]*)\)", re.I)
+_ARITMETICA = re.compile(r"^[0-9.+\-*/() eE]+$")
 _CACHE: Dict[tuple, Optional[Dict[int, Dict[str, Any]]]] = {}
 
 
+class _Incalculavel(Exception):
+    pass
+
+
 class _Calculadora:
+    """Calcula células como o Excel, só para as formas que o Mapa usa: números,
+    referências (noutra folha ou na mesma), SUM/SUBTOTAL de intervalos ou de
+    colunas de Tabela e aritmética (+ - * /, ex. "=5.92+3.95" escrito à mão
+    numa linha). O que não se sabe calcular (ex. #REF!) torna o resultado
+    None - nunca um total errado."""
+
     def __init__(self, wb):
         self.wb = wb
+        self._memo: Dict[tuple, float] = {}
 
-    def valor(self, ws, coord: str, profundidade: int = 0) -> Optional[float]:
+    def valor(self, ws, coord: str) -> Optional[float]:
+        try:
+            return self._celula(ws, coord, 0)
+        except (_Incalculavel, RecursionError, KeyError, ValueError, ZeroDivisionError, SyntaxError):
+            return None
+
+    def _celula(self, ws, coord: str, prof: int) -> float:
+        chave = (ws.title, coord)
+        if chave in self._memo:
+            return self._memo[chave]
         v = ws[coord].value
-        if v is None:
-            return 0.0
+        if v is None or (isinstance(v, str) and not v.startswith("=")):
+            return 0.0  # vazio ou texto: o Excel ignora na soma
+        if isinstance(v, bool):
+            return float(v)
         if isinstance(v, (int, float)):
             return float(v)
-        if not isinstance(v, str) or not v.startswith("=") or profundidade > 5:
-            return None
-        return self._formula(ws, v[1:].replace(" ", ""), profundidade)
+        if not isinstance(v, str) or prof > 30:
+            raise _Incalculavel(v)
+        resultado = self._expressao(ws, v[1:], prof)
+        self._memo[chave] = resultado
+        return resultado
 
-    def _formula(self, ws, f: str, prof: int) -> Optional[float]:
-        m = _REF.match(f)
-        if m:
-            nome = m.group(1) or m.group(2)
-            return self.valor(self.wb[nome], f"{m.group(3)}{m.group(4)}", prof + 1) if nome in self.wb.sheetnames else None
-        m = _LOCAL.match(f)
-        if m:
-            return self.valor(ws, f"{m.group(1)}{m.group(2)}", prof + 1)
-        m = _SOMA.match(f)
-        if m:
-            c1, r1, c2, r2 = range_boundaries(f"{m.group(1)}{m.group(2)}:{m.group(3)}{m.group(4)}")
-            return float(sum(x for row in ws.iter_rows(min_row=r1, max_row=r2, min_col=c1, max_col=c2, values_only=True)
-                             for x in row if isinstance(x, (int, float))))
-        m = _TABELA.match(f)
-        if m:
-            return self._coluna_tabela(m.group(1), m.group(2))
-        if "+" in f.lstrip("+") and not any(c in f for c in "*/(-"):
-            partes = [self._formula(ws, p, prof + 1) for p in f.lstrip("+").split("+")]
-            return None if any(p is None for p in partes) else float(sum(partes))
-        return None
+    def _expressao(self, ws, f: str, prof: int) -> float:
+        f = f.strip()
+        if "#" in f:  # #REF!, #N/A...
+            raise _Incalculavel(f)
+        while _FUNCAO.search(f):  # de dentro para fora, se houver funções dentro de funções
+            f = _FUNCAO.sub(lambda m: repr(self._funcao(ws, m.group(1).upper(), m.group(2), prof)), f)
+        f = _REF_FOLHA.sub(lambda m: repr(self._celula(self._folha(m.group(1) or m.group(2)),
+                                                       f"{m.group(3)}{m.group(4)}", prof + 1)), f)
+        f = _REF_LOCAL.sub(lambda m: repr(self._celula(ws, f"{m.group(1)}{m.group(2)}", prof + 1)), f)
+        if not _ARITMETICA.match(f):
+            raise _Incalculavel(f)
+        return float(eval(f, {"__builtins__": {}}, {}))  # só números e + - * / ( )
 
-    def _coluna_tabela(self, nome: str, coluna: str) -> Optional[float]:
+    def _folha(self, nome: str):
+        if nome not in self.wb.sheetnames:
+            raise _Incalculavel(nome)
+        return self.wb[nome]
+
+    def _funcao(self, ws, nome: str, args: str, prof: int) -> float:
+        partes = [a.strip() for a in args.split(",")]
+        if nome == "SUBTOTAL":
+            partes = partes[1:]  # o 1.º argumento é o tipo (9/109 = soma)
+        total = 0.0
+        for parte in partes:
+            if re.fullmatch(r"-?[0-9.]+(?:e-?\d+)?", parte):  # já calculado (função dentro de função)
+                total += float(parte)
+                continue
+            m = re.match(r"^([A-Za-z0-9_]+)\[([^\]]+)\]$", parte)
+            if m:
+                total += self._coluna_tabela(m.group(1), m.group(2), prof)
+                continue
+            folha = ws
+            if "!" in parte:
+                nome_folha, parte = parte.rsplit("!", 1)
+                folha = self._folha(nome_folha.strip("'"))
+            c1, r1, c2, r2 = range_boundaries(parte.replace("$", ""))
+            for r in range(r1, r2 + 1):
+                for c in range(c1, c2 + 1):
+                    total += self._celula(folha, f"{get_column_letter(c)}{r}", prof + 1)
+        return total
+
+    def _coluna_tabela(self, nome: str, coluna: str, prof: int) -> float:
         dono = next((w for w in self.wb.worksheets if nome in w.tables), None)
         if dono is None:
-            return None
+            raise _Incalculavel(nome)
         tabela = dono.tables[nome]
         c1, r1, c2, r2 = range_boundaries(tabela.ref)
-        # a fórmula chega sem espaços ("Valor Pago" -> "ValorPago"): comparar sem eles
+        # a fórmula pode chegar sem espaços ("Valor Pago" -> "ValorPago"): comparar sem eles
         sem_espacos = lambda texto: re.sub(r"\s+", "", str(texto or "")).lower()
         cabecalho = [sem_espacos(dono.cell(r1, c).value) for c in range(c1, c2 + 1)]
         if sem_espacos(coluna) not in cabecalho:
-            return None
-        col = c1 + cabecalho.index(sem_espacos(coluna))
+            raise _Incalculavel(coluna)
+        col = get_column_letter(c1 + cabecalho.index(sem_espacos(coluna)))
         fim = r2 - (tabela.totalsRowCount or 0)
-        return float(sum(x for (x,) in dono.iter_rows(min_row=r1 + 1, max_row=fim, min_col=col, max_col=col,
-                                                       values_only=True) if isinstance(x, (int, float))))
+        return sum(self._celula(dono, f"{col}{r}", prof + 1) for r in range(r1 + 1, fim + 1))
 
 
 def _linhas_de_texto(valor) -> int:

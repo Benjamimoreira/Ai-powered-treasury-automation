@@ -105,3 +105,26 @@ def test_le_o_resumo_antigo_de_janeiro_a_maio(tmp_path):
     assert (dias[2]["saldo_disponivel"], dias[2]["saldo_bancario"]) == (None, None)  # #REF!: sem valor
     assert dias[3]["saldo_bancario"] == 1234.5
     assert (dias[2]["cpcv"], dias[2]["n_cpcv"]) == (None, None)  # esta forma do Resumo não tem CPCVs
+
+
+def test_valores_escritos_como_formula_nas_linhas_contam(tmp_path):
+    """Nas folhas antigas há valores escritos à mão como fórmula ("=5.92+3.95")
+    e totais com SUBTOTAL - o total tem de ser o do Excel."""
+    wb = openpyxl.Workbook()
+    res = wb.active
+    res.title = "Resumo"
+    res["B2"], res["K2"] = "Recebimentos", "Pagamentos"
+    res["B3"], res["C3"], res["K3"], res["L3"] = "Previsão", "Recebido", "Previsão", "Pago"
+    dia = wb.create_sheet("05")
+    dia["D5"], dia["D6"], dia["D7"] = 100, "=5.92+3.95", "=D5*2"
+    dia["D20"] = "=SUBTOTAL(9,D5:D19)"
+    dia["J5"], dia["J6"] = "=10+0.5", "#texto"
+    dia["J20"] = "=SUM(SUM(J5:J6),1)"
+    res["A5"], res["C5"], res["L5"] = 5, "='05'!D20", "='05'!J20"
+    res["A6"], res["C6"] = 6, "='06'!D20+#REF!"
+    caminho = tmp_path / "mapa.xlsx"
+    wb.save(caminho)
+    dias = resumo_mapa_excel.ler_resumo(str(caminho))
+    assert round(dias[5]["recebido"], 2) == 309.87  # 100 + 9.87 + 200
+    assert dias[5]["pago"] == 11.5
+    assert dias[6]["recebido"] is None  # erro no Mapa: sem valor, nunca um total errado
