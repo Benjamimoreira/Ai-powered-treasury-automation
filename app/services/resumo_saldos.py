@@ -7,6 +7,13 @@ em CPCV, reforço de sinal e escritura (linhas de recebimento do Mapa - a
 mesma deteção da tabela "CPCVs / Escrituras", reconciliador._e_cpcv_ou_escritura,
 mais as linhas "Reforço Sinal - <ref>").
 
+Recebido e pago de cada dia vêm dos movimentos dos extratos bancários, pelo
+dia do banco - não das linhas do Mapa de Pagamentos e Recebimentos, que põe
+os movimentos do fim de semana na folha de segunda e fazia contar duas
+vezes o que já tinha saído do saldo de sábado (19/10/2026: 202 107,71 +
+37 447,71 dava 239 555,42 contra 242 141,15). Assim, saldo de um dia +
+recebido − pago do dia seguinte = saldo do dia seguinte.
+
 Também devolve a liquidez dia a dia com essas entradas, para o gráfico do
 mês escolhido no dashboard.
 """
@@ -16,7 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.db.models import LinhaMapa
+from app.db.models import LinhaMapa, MovimentoBancario
 from app.services.reconciliador import _e_cpcv_ou_escritura, remover_acentos
 from app.services.mapa_saldos_excel import serie_saldo_total_bruta
 
@@ -56,21 +63,26 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
 
     # vendas por dia: recebido (pago) e ainda por confirmar no extrato (só previsto)
     vendas_dia: Dict[date, Dict[str, float]] = defaultdict(_vazio_vendas)
-    # recebido/pago de cada dia (linhas do Mapa já confirmadas no extrato) -
-    # o "Resumo" do Mapa de Pagamentos e Recebimentos
+    # recebido/pago de cada dia: movimentos dos extratos, pelo dia do banco
+    # (ver docstring do módulo)
     recebido_dia: Dict[date, float] = defaultdict(float)
     pago_dia: Dict[date, float] = defaultdict(float)
+    movimentos = (
+        db.query(MovimentoBancario)
+        .filter(MovimentoBancario.dia >= inicio, MovimentoBancario.dia <= fim)
+        .all()
+    )
+    for m in movimentos:
+        if m.valor >= 0:
+            recebido_dia[m.dia] += m.valor
+        else:
+            pago_dia[m.dia] += -m.valor
     linhas = (
         db.query(LinhaMapa)
         .filter(LinhaMapa.dia >= inicio, LinhaMapa.dia <= fim)
         .all()
     )
     for l in linhas:
-        if l.pago is not None:
-            if l.tipo == "recebimento":
-                recebido_dia[l.dia] += l.pago
-            elif l.tipo == "pagamento":
-                pago_dia[l.dia] += abs(l.pago)  # os pagamentos ficam negativos em linhas_mapa
         tipo = tipo_venda(l)
         if tipo is None:
             continue

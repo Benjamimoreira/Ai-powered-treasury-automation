@@ -3658,11 +3658,14 @@ def _escala_tipo_venda():
 
 
 def _resumo_mapa_do_mes(ano: int, mes: int, resumo: dict, diario: list) -> None:
-    """Resumo do Mapa de Pagamentos e Recebimentos de um mês: recebido,
-    pago, CPCVs, reforços de sinal, escrituras, saldo bancário e saldo
+    """Resumo de um mês: recebido e pago (movimentos dos extratos, pelo dia
+    do banco), CPCVs (do Mapa de Pagamentos e Recebimentos), reforços de sinal, escrituras, saldo bancário e saldo
     bancário disponível - o total do mês e dia a dia."""
     with st.container(border=True):
-        st.markdown(f"**Resumo do Mapa de Pagamentos e Recebimentos - {MESES_NOME_COMPLETO[mes - 1]} {ano}**")
+        st.markdown(f"**Resumo dos extratos bancários - {MESES_NOME_COMPLETO[mes - 1]} {ano}**")
+        st.caption("Recebido e pago: movimentos dos extratos, no dia em que o banco os fez (os do fim de semana "
+                   "ficam no sábado/domingo, não na segunda). CPCVs, reforços de sinal e escrituras: Mapa de "
+                   "Pagamentos e Recebimentos.")
         with st.container(horizontal=True):
             st.metric("Recebido", f"{_n(resumo.get('recebido', 0), 2)} €", border=True)
             st.metric("Pago", f"{_n(resumo.get('pago', 0), 2)} €", border=True)
@@ -3682,7 +3685,7 @@ def _resumo_mapa_do_mes(ano: int, mes: int, resumo: dict, diario: list) -> None:
             st.info("Sem saldos registados neste mês.")
             return
         dias = dias.sort_values("dia")
-        # liquidez diária = o que entrou menos o que saiu nesse dia (Mapa)
+        # liquidez diária = o que entrou menos o que saiu nesse dia (extratos)
         dias["liquidez_diaria"] = dias["recebido"] - dias["pago"]
         total = {"Dia": "Total", **{c: dias[c].sum() for c in ("recebido", "pago", "liquidez_diaria", *TIPOS_VENDA_RESUMO)},
                  "saldo_contabilistico": None, "liquidez": None}

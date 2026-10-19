@@ -64,10 +64,14 @@ def test_resumo_mensal_liquidez_e_vendas(client, db_session):
 
 
 def test_resumo_mensal_tem_recebido_pago_e_saldo_bancario(client, db_session):
+    from app.db.models import MovimentoBancario
     db_session.add_all([
         SaldoDiario(dia=date(2026, 9, 1), entidade="A,LDA", saldo_contabilistico=120, saldo_disponivel=100),
-        _linha(date(2026, 9, 1), "Renda", pago=500, imputacao="Rendas"),
-        _linha(date(2026, 9, 1), "Fornecedor", pago=-200, imputacao="Obras", tipo="pagamento"),
+        MovimentoBancario(dia=date(2026, 9, 1), empresa="A,LDA", descricao="Renda", valor=500, ficheiro_origem="x"),
+        MovimentoBancario(dia=date(2026, 9, 1), empresa="A,LDA", descricao="Fornecedor", valor=-200,
+                          ficheiro_origem="x"),
+        # as linhas do Mapa já não contam para recebido/pago (só para as vendas)
+        _linha(date(2026, 9, 1), "Renda", pago=999, imputacao="Rendas"),
         _linha(date(2026, 9, 1), "Por confirmar", previsto=50, imputacao="Rendas"),
     ])
     db_session.commit()
@@ -77,6 +81,26 @@ def test_resumo_mensal_tem_recebido_pago_e_saldo_bancario(client, db_session):
     assert setembro["saldo_contabilistico_fim"] == 120 and setembro["saldo_fim"] == 100
     dia = next(d for d in corpo["diario"] if d["dia"] == "2026-09-01")
     assert (dia["recebido"], dia["pago"], dia["saldo_contabilistico"], dia["liquidez"]) == (500, 200, 120, 100)
+
+
+def test_resumo_mensal_fim_de_semana_no_dia_do_banco(client, db_session):
+    """O Mapa põe os movimentos de sábado na folha de segunda; o resumo
+    usa o dia do extrato, para saldo de sexta − sábado + segunda bater."""
+    from app.db.models import MovimentoBancario
+    db_session.add_all([
+        SaldoDiario(dia=date(2026, 10, 16), entidade="A,LDA", saldo_contabilistico=1000, saldo_disponivel=1000),
+        SaldoDiario(dia=date(2026, 10, 17), entidade="A,LDA", saldo_contabilistico=900, saldo_disponivel=900),
+        SaldoDiario(dia=date(2026, 10, 19), entidade="A,LDA", saldo_contabilistico=1400, saldo_disponivel=1400),
+        MovimentoBancario(dia=date(2026, 10, 17), empresa="A,LDA", descricao="Mbway", valor=-100,
+                          ficheiro_origem="x"),
+        MovimentoBancario(dia=date(2026, 10, 19), empresa="A,LDA", descricao="TRF", valor=500, ficheiro_origem="x"),
+        _linha(date(2026, 10, 19), "Mbway", pago=-100, tipo="pagamento"),
+        _linha(date(2026, 10, 19), "TRF", pago=500),
+    ])
+    db_session.commit()
+    diario = {d["dia"]: d for d in client.get("/saldos/resumo-mensal", params={"ano": 2026}).json()["diario"]}
+    assert (diario["2026-10-17"]["pago"], diario["2026-10-19"]["pago"]) == (100, 0)
+    assert diario["2026-10-17"]["liquidez"] + diario["2026-10-19"]["recebido"] - diario["2026-10-19"]["pago"]         == diario["2026-10-19"]["liquidez"]
 
 
 def test_discrepancias_de_um_dia_ou_intervalo(client, db_session):
