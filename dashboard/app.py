@@ -3663,9 +3663,13 @@ def _resumo_mapa_do_mes(ano: int, mes: int, resumo: dict, diario: list) -> None:
     bancário disponível - o total do mês e dia a dia."""
     with st.container(border=True):
         st.markdown(f"**Resumo dos extratos bancários - {MESES_NOME_COMPLETO[mes - 1]} {ano}**")
+        internas = resumo.get("transferencias_internas") or 0
         st.caption("Recebido e pago: movimentos dos extratos, no dia em que o banco os fez (os do fim de semana "
-                   "ficam no sábado/domingo, não na segunda). CPCVs, reforços de sinal e escrituras: Mapa de "
-                   "Pagamentos e Recebimentos.")
+                   "ficam no sábado/domingo, não na segunda), sem as transferências entre empresas do grupo no "
+                   "mesmo dia" + (f" ({_n(internas, 2)} € este mês - anulam-se no saldo total)" if internas else "")
+                   + ". O saldo disponível só sobe quando o banco liberta o dinheiro (ex. um depósito ainda cativo "
+                   "conta no recebido e no saldo bancário, não no disponível). CPCVs, reforços de sinal e "
+                   "escrituras: Mapa de Pagamentos e Recebimentos.")
         with st.container(horizontal=True):
             st.metric("Recebido", f"{_n(resumo.get('recebido', 0), 2)} €", border=True)
             st.metric("Pago", f"{_n(resumo.get('pago', 0), 2)} €", border=True)

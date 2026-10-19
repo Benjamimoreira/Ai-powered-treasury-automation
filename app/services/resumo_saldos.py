@@ -14,6 +14,11 @@ vezes o que já tinha saído do saldo de sábado (19/10/2026: 202 107,71 +
 37 447,71 dava 239 555,42 contra 242 141,15). Assim, saldo de um dia +
 recebido − pago do dia seguinte = saldo do dia seguinte.
 
+Sem as transferências entre empresas do grupo no mesmo dia (um pagamento
+numa empresa e um recebimento do mesmo valor noutra): anulam-se no saldo
+total, mas somadas inchavam o recebido e o pago (09/10/2026: 328 216,91
+recebido e 354 404,51 pago). Ficam à parte, em transferencias_internas.
+
 Também devolve a liquidez dia a dia com essas entradas, para o gráfico do
 mês escolhido no dashboard.
 """
@@ -58,6 +63,23 @@ def _vazio_vendas() -> Dict[str, float]:
     return campos
 
 
+def transferencias_internas_mesmo_dia(movimentos: list) -> set:
+    """Ids dos pares pagamento/recebimento do mesmo valor (ao cêntimo), no
+    mesmo dia, em empresas diferentes - dinheiro que só mudou de empresa
+    dentro do grupo. Cada movimento entra no máximo num par."""
+    por_dia_valor: Dict[tuple, List[MovimentoBancario]] = defaultdict(list)
+    for m in movimentos:
+        if m.valor < 0:
+            por_dia_valor[(m.dia, round(-m.valor, 2))].append(m)
+    ids = set()
+    for m in sorted((m for m in movimentos if m.valor > 0), key=lambda m: (m.dia, m.id)):
+        candidatos = [p for p in por_dia_valor.get((m.dia, round(m.valor, 2)), [])
+                      if p.id not in ids and p.empresa != m.empresa]
+        if candidatos:
+            ids.update((m.id, candidatos[0].id))
+    return ids
+
+
 def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
     inicio, fim = date(ano, 1, 1), date(ano, 12, 31)
 
@@ -67,13 +89,18 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
     # (ver docstring do módulo)
     recebido_dia: Dict[date, float] = defaultdict(float)
     pago_dia: Dict[date, float] = defaultdict(float)
+    internas_dia: Dict[date, float] = defaultdict(float)
     movimentos = (
         db.query(MovimentoBancario)
         .filter(MovimentoBancario.dia >= inicio, MovimentoBancario.dia <= fim)
         .all()
     )
+    internos = transferencias_internas_mesmo_dia(movimentos)
     for m in movimentos:
-        if m.valor >= 0:
+        if m.id in internos:
+            if m.valor > 0:
+                internas_dia[m.dia] += m.valor
+        elif m.valor >= 0:
             recebido_dia[m.dia] += m.valor
         else:
             pago_dia[m.dia] += -m.valor
@@ -104,6 +131,7 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
             "saldo_contabilistico": round(p["saldo_contabilistico_total"], 2),
             "recebido": round(recebido_dia.get(p["dia"], 0.0), 2),
             "pago": round(pago_dia.get(p["dia"], 0.0), 2),
+            "transferencias_internas": round(internas_dia.get(p["dia"], 0.0), 2),
             **{t: round(v[t], 2) for t in TIPOS_VENDA},
         })
 
@@ -137,6 +165,7 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
         linha["total_vendas"] = round(sum(vendas_mes[t] for t in TIPOS_VENDA), 2)
         linha["recebido"] = round(sum(v for d, v in recebido_dia.items() if d.month == mes), 2)
         linha["pago"] = round(sum(v for d, v in pago_dia.items() if d.month == mes), 2)
+        linha["transferencias_internas"] = round(sum(v for d, v in internas_dia.items() if d.month == mes), 2)
         meses.append(linha)
 
     return {"ano": ano, "meses": meses, "diario": diario}

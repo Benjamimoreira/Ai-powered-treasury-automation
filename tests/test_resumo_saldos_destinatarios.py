@@ -170,3 +170,26 @@ def test_auditoria_e_destino_contam_o_fim_de_semana_na_segunda(client, db_sessio
     destino = client.get("/monitorizacao/discrepancias-saldos/destino",
                          params={"dia": "2026-10-12", "empresa": "Palavra"}).json()
     assert destino["itens"] == [] and destino["soma_extrato"] == -2920.02
+
+
+def test_resumo_mensal_sem_transferencias_entre_empresas_no_mesmo_dia(client, db_session):
+    """Uma transferência de A para B no mesmo dia anula-se no saldo total:
+    não conta no recebido nem no pago, fica em transferencias_internas.
+    Uma de A para B noutro dia conta (o saldo total mexe nesses dias)."""
+    from app.db.models import MovimentoBancario
+    db_session.add_all([
+        SaldoDiario(dia=date(2026, 10, 8), entidade="A,LDA", saldo_contabilistico=1000, saldo_disponivel=1000),
+        SaldoDiario(dia=date(2026, 10, 9), entidade="A,LDA", saldo_contabilistico=1100, saldo_disponivel=1100),
+        SaldoDiario(dia=date(2026, 10, 12), entidade="A,LDA", saldo_contabilistico=1100, saldo_disponivel=1100),
+        MovimentoBancario(dia=date(2026, 10, 9), empresa="A,LDA", descricao="TRF PARA B", valor=-300, ficheiro_origem="x"),
+        MovimentoBancario(dia=date(2026, 10, 9), empresa="B,LDA", descricao="TRF DE A", valor=300, ficheiro_origem="x"),
+        MovimentoBancario(dia=date(2026, 10, 9), empresa="A,LDA", descricao="Cliente", valor=100, ficheiro_origem="x"),
+        MovimentoBancario(dia=date(2026, 10, 9), empresa="A,LDA", descricao="TRF PARA B", valor=-50, ficheiro_origem="x"),
+        MovimentoBancario(dia=date(2026, 10, 12), empresa="B,LDA", descricao="TRF DE A", valor=50, ficheiro_origem="x"),
+    ])
+    db_session.commit()
+    r = client.get("/saldos/resumo-mensal", params={"ano": 2026}).json()
+    dia = {d["dia"]: d for d in r["diario"]}["2026-10-09"]
+    assert (dia["recebido"], dia["pago"], dia["transferencias_internas"]) == (100, 50, 300)
+    outubro = [m for m in r["meses"] if m["mes"] == 10][0]
+    assert (outubro["recebido"], outubro["pago"], outubro["transferencias_internas"]) == (150, 50, 300)
