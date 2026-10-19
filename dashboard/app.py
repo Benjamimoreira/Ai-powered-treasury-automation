@@ -3662,14 +3662,23 @@ def _resumo_mapa_do_mes(ano: int, mes: int, resumo: dict, diario: list) -> None:
     do banco), CPCVs (do Mapa de Pagamentos e Recebimentos), reforços de sinal, escrituras, saldo bancário e saldo
     bancário disponível - o total do mês e dia a dia."""
     with st.container(border=True):
-        st.markdown(f"**Resumo dos extratos bancários - {MESES_NOME_COMPLETO[mes - 1]} {ano}**")
+        do_mapa = resumo.get("fonte") == "mapa"
+        st.markdown(f"**{'Resumo do Mapa de Pagamentos e Recebimentos' if do_mapa else 'Resumo dos extratos bancários'}"
+                    f" - {MESES_NOME_COMPLETO[mes - 1]} {ano}**")
         internas = resumo.get("transferencias_internas") or 0
-        st.caption("Recebido e pago: movimentos dos extratos, no dia em que o banco os fez (os do fim de semana "
-                   "ficam no sábado/domingo, não na segunda), sem as transferências entre empresas do grupo no "
-                   "mesmo dia" + (f" ({_n(internas, 2)} € este mês - anulam-se no saldo total)" if internas else "")
-                   + ". O saldo disponível só sobe quando o banco liberta o dinheiro (ex. um depósito ainda cativo "
-                   "conta no recebido e no saldo bancário, não no disponível). CPCVs, reforços de sinal e "
-                   "escrituras: Mapa de Pagamentos e Recebimentos.")
+        if do_mapa:
+            st.caption("Os valores da folha Resumo do Mapa de Pagamentos e Recebimentos deste mês: Recebido e Pago "
+                       "(totais das folhas de cada dia - os movimentos do fim de semana ficam na folha de segunda), "
+                       "Saldo Bancário Disponível, saldo bancário (disponível + indisponível), CPCVs e escrituras "
+                       "(Valor Recebido). Os reforços de sinal não têm coluna no Resumo: vêm das linhas do Mapa e "
+                       "não entram no total das vendas.")
+        else:
+            st.caption("Recebido e pago: movimentos dos extratos, no dia em que o banco os fez (os do fim de semana "
+                       "ficam no sábado/domingo, não na segunda), sem as transferências entre empresas do grupo no "
+                       "mesmo dia" + (f" ({_n(internas, 2)} € este mês - anulam-se no saldo total)" if internas else "")
+                       + ". O saldo disponível só sobe quando o banco liberta o dinheiro (ex. um depósito ainda "
+                       "cativo conta no recebido e no saldo bancário, não no disponível). CPCVs, reforços de sinal e "
+                       "escrituras: Mapa de Pagamentos e Recebimentos.")
         with st.container(horizontal=True):
             st.metric("Recebido", f"{_n(resumo.get('recebido', 0), 2)} €", border=True)
             st.metric("Pago", f"{_n(resumo.get('pago', 0), 2)} €", border=True)

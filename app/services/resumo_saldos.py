@@ -21,6 +21,12 @@ recebido e 354 404,51 pago). Ficam à parte, em transferencias_internas.
 
 Também devolve a liquidez dia a dia com essas entradas, para o gráfico do
 mês escolhido no dashboard.
+
+Num mês com Mapa de Pagamentos e Recebimentos (pedido 19/10/2026: o resumo
+tem de bater com o Mapa do mês), recebido, pago, saldo bancário, saldo
+bancário disponível, CPCVs e escrituras vêm da folha Resumo desse Mapa
+(resumo_mapa_excel.py) - "fonte": "mapa". O que está acima fica só para os
+meses sem Mapa (ou quando o Mapa não se consegue ler).
 """
 from collections import defaultdict
 from datetime import date
@@ -31,6 +37,7 @@ from sqlalchemy.orm import Session
 from app.db.models import LinhaMapa, MovimentoBancario
 from app.services.reconciliador import _e_cpcv_ou_escritura, remover_acentos
 from app.services.mapa_saldos_excel import serie_saldo_total_bruta
+from app.services.resumo_mapa_excel import resumo_do_mes
 
 TIPOS_VENDA = ("cpcv", "reforco_sinal", "escritura")
 
@@ -80,6 +87,35 @@ def transferencias_internas_mesmo_dia(movimentos: list) -> set:
     return ids
 
 
+def _totais_do_mapa(itens: list) -> Dict[str, Any]:
+    """Os totais de um mês tirados do Resumo do Mapa - itens = [(dia, valores)]
+    por ordem."""
+    dias = [d for _, d in itens]
+    soma = lambda chave: round(sum(d[chave] or 0.0 for d in dias), 2)
+    com_saldo = [d for d in dias if d["saldo_disponivel"] is not None]
+    dias_saldo = [dia for dia, d in itens if d["saldo_disponivel"] is not None]
+    totais: Dict[str, Any] = {
+        "fonte": "mapa", "recebido": soma("recebido"), "pago": soma("pago"), "transferencias_internas": None,
+        "cpcv": soma("cpcv"), "n_cpcv": sum(d["n_cpcv"] for d in dias),
+        "escritura": soma("escritura"), "n_escritura": sum(d["n_escritura"] for d in dias),
+    }
+    # reforços de sinal não têm coluna no Resumo: ficam à parte, fora do total
+    totais["total_vendas"] = round(totais["cpcv"] + totais["escritura"], 2)
+    if com_saldo:
+        liquidez = [d["saldo_disponivel"] for d in com_saldo]
+        totais.update({
+            "dias_com_saldo": len(com_saldo),
+            "saldo_contabilistico_fim": round(com_saldo[-1]["saldo_bancario"], 2),
+            "saldo_inicio": round(liquidez[0], 2), "saldo_fim": round(liquidez[-1], 2),
+            "variacao": round(liquidez[-1] - liquidez[0], 2),
+            "liquidez_media": round(sum(liquidez) / len(liquidez), 2),
+            "liquidez_minima": round(min(liquidez), 2), "liquidez_maxima": round(max(liquidez), 2),
+            "dia_minimo": dias_saldo[liquidez.index(min(liquidez))].isoformat(),
+            "dia_maximo": dias_saldo[liquidez.index(max(liquidez))].isoformat(),
+        })
+    return totais
+
+
 def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
     inicio, fim = date(ano, 1, 1), date(ano, 12, 31)
 
@@ -122,17 +158,62 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
 
     serie = [p for p in serie_saldo_total_bruta(db) if inicio <= p["dia"] <= fim]
 
+    # o Resumo do Mapa de cada mês (até ao mês de hoje): manda nesses dias
+    mapa: Dict[date, Dict[str, Any]] = {}
+    meses_com_mapa = set()
+    for mes in range(1, 13):
+        if date(ano, mes, 1) > date.today():
+            break
+        dias_mapa = resumo_do_mes(ano, mes)
+        if dias_mapa:
+            mapa.update(dias_mapa)
+            meses_com_mapa.add(mes)
+    # CPCVs/escrituras que o Resumo desse mês não tem (jan-jun): das linhas do Mapa
+    for dia, m in mapa.items():
+        v = vendas_dia.get(dia) or _vazio_vendas()
+        for tipo in ("cpcv", "escritura"):
+            if m[tipo] is None:
+                m[tipo] = v[tipo]
+            if m[f"n_{tipo}"] is None:
+                m[f"n_{tipo}"] = v[f"n_{tipo}"]
+    # o saldo do Mapa num dia sem saldo na linha (fim de semana) é o do dia antes
+    ultimo = None
+    for dia in sorted(mapa):
+        if mapa[dia]["saldo_disponivel"] is None and ultimo is not None:
+            mapa[dia] = {**mapa[dia], "saldo_disponivel": ultimo["saldo_disponivel"],
+                         "saldo_bancario": ultimo["saldo_bancario"]}
+        elif mapa[dia]["saldo_disponivel"] is not None:
+            ultimo = mapa[dia]
+    por_dia_serie = {p["dia"]: p for p in serie}
+
     diario: List[Dict[str, Any]] = []
-    for p in serie:
-        v = vendas_dia.get(p["dia"]) or _vazio_vendas()
+    for dia in sorted(set(por_dia_serie) | {d for d in mapa if d <= date.today()}):
+        p, m = por_dia_serie.get(dia), mapa.get(dia)
+        v = vendas_dia.get(dia) or _vazio_vendas()
+        if m is not None:
+            liquidez = m["saldo_disponivel"] if m["saldo_disponivel"] is not None else (p and p["saldo_disponivel_total"])
+            contabilistico = m["saldo_bancario"] if m["saldo_bancario"] is not None else (
+                p and p["saldo_contabilistico_total"])
+            if liquidez is None:
+                continue
+            diario.append({
+                "dia": dia.isoformat(), "liquidez": round(liquidez, 2),
+                "saldo_contabilistico": round(contabilistico or 0.0, 2),
+                "recebido": round(m["recebido"] or 0.0, 2), "pago": round(m["pago"] or 0.0, 2),
+                "transferencias_internas": None,
+                "cpcv": round(m["cpcv"] or 0.0, 2), "reforco_sinal": round(v["reforco_sinal"], 2),
+                "escritura": round(m["escritura"] or 0.0, 2), "fonte": "mapa",
+            })
+            continue
         diario.append({
-            "dia": p["dia"].isoformat(),
+            "dia": dia.isoformat(),
             "liquidez": round(p["saldo_disponivel_total"], 2),
             "saldo_contabilistico": round(p["saldo_contabilistico_total"], 2),
-            "recebido": round(recebido_dia.get(p["dia"], 0.0), 2),
-            "pago": round(pago_dia.get(p["dia"], 0.0), 2),
-            "transferencias_internas": round(internas_dia.get(p["dia"], 0.0), 2),
+            "recebido": round(recebido_dia.get(dia, 0.0), 2),
+            "pago": round(pago_dia.get(dia, 0.0), 2),
+            "transferencias_internas": round(internas_dia.get(dia, 0.0), 2),
             **{t: round(v[t], 2) for t in TIPOS_VENDA},
+            "fonte": "extratos",
         })
 
     meses: List[Dict[str, Any]] = []
@@ -166,6 +247,9 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
         linha["recebido"] = round(sum(v for d, v in recebido_dia.items() if d.month == mes), 2)
         linha["pago"] = round(sum(v for d, v in pago_dia.items() if d.month == mes), 2)
         linha["transferencias_internas"] = round(sum(v for d, v in internas_dia.items() if d.month == mes), 2)
+        linha["fonte"] = "extratos"
+        if mes in meses_com_mapa:
+            linha.update(_totais_do_mapa([(d, v) for d, v in sorted(mapa.items()) if d.month == mes and d <= date.today()]))
         meses.append(linha)
 
     return {"ano": ano, "meses": meses, "diario": diario}
