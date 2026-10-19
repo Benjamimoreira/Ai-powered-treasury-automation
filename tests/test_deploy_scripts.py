@@ -401,7 +401,7 @@ def test_reauditar_primeiro_tira_as_que_ja_batem_e_encolhe_a_extracao():
 
     def api_falsa(metodo, caminho, corpo=None):
         if caminho == "/auditoria/2026-09-03/registar":
-            return {"diferencas_por_empresa": []}  # já batia: o Mapa tinha sido corrigido à mão
+            return {"diferencas_por_empresa": []}  # já batia: um preencher antigo corrigiu a folha
         if caminho == "/auditoria/2026-09-28/registar":
             return {"diferencas_por_empresa": [{"empresa": "HCC", "diferenca": 80}]}
         if caminho.endswith("/resolvida"):

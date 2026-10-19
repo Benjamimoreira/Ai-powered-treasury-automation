@@ -551,9 +551,11 @@ def _esperar_preencher_livre(ctx: Contexto) -> None:
 
 def _reauditar_primeiro(ctx: Contexto) -> None:
     """Antes de ir ao banco: as diferenças da auditoria voltam a ser vistas
-    com o Mapa relido do OneDrive (a auditoria guardada pode ser de antes de
-    alguém corrigir o Mapa à mão). As que já batem certo ficam resolvidas e
-    saem da corrida; a extração passa a cobrir só as que sobram."""
+    com o Mapa relido do OneDrive (até 19/10/2026 a API só relia o Mapa de
+    hoje e ontem: depois de uma reextração antiga o preencher mudava a folha
+    desse dia e a auditoria continuava a ver a primeira versão importada). As
+    que já batem certo ficam resolvidas e saem da corrida; a extração passa
+    a cobrir só as que sobram."""
     extracao = ctx.estado["extracao"]
     lista = extracao["discrepancias"]
     ctx.estado["total_discrepancias"] = len(lista)
