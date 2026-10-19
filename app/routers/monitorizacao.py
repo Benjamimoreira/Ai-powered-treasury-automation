@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -7,8 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.services.atualizacao_dados import sincronizar_apos_script
-from app.services.deploy_scripts import ALVOS_COM_EXTRACAO, ALVOS_DEPLOY, listar_deploys, obter_deploy, pedir_deploy, registar_progresso
-from app.services.destino_discrepancia import destino_discrepancia
+from app.db.models import DeployScripts
+from app.services.deploy_scripts import ALVOS_COM_EXTRACAO, ALVOS_DEPLOY, ESTADOS_ATIVOS, listar_deploys, obter_deploy, pedir_deploy, registar_progresso
+from app.services.correcoes_discrepancias import correcoes_seguras, discrepancias_atuais
+from app.services.destino_discrepancia import JANELA_DIAS, destino_discrepancia
 from app.services.discrepancias_saldos import listar_discrepancias, marcar_resolvida
 from app.services.destinatarios_mapa import adicionar_destinatario, listar_destinatarios, remover_destinatario
 from app.services.monitorizacao import (
@@ -253,6 +255,52 @@ def discrepancia_resolvida(payload: DiscrepanciaResolvidaRequest, db: Session = 
     """A tarefa do botão "Atualizar" confirmou que já não há discrepância."""
     marcar_resolvida(db, payload.dia, payload.empresa, payload.tipo)
     return {"ok": True}
+
+
+@router.post("/discrepancias-saldos/corrigir-todas")
+def corrigir_todas_as_discrepancias(db: Session = Depends(get_db)):
+    """Botão "Corrigir todas agora": a mesma corrida que a automática
+    (reextracao_automatica.py), já, e também com as já tentadas. 409 se já
+    há uma a correr ou não há nenhuma por corrigir."""
+    from app.services.reextracao_automatica import DIAS_ATRAS_BOTAO, pedir_proxima
+
+    deploy = pedir_proxima(db, ignorar_horario=True, incluir_tentadas=True, dias_atras=DIAS_ATRAS_BOTAO)
+    if deploy is None:
+        raise HTTPException(status_code=409, detail="Já há uma correção a correr, ou não há discrepâncias por corrigir "
+                                                    f"(dos últimos {DIAS_ATRAS_BOTAO} dias, sem hoje).")
+    return deploy
+
+
+class CorrecoesSegurasRequest(BaseModel):
+    discrepancias: Optional[List[dict]] = Field(None, description="[{dia, empresa}]; sem isto, as dos últimos `dias`")
+    dias: int = 8
+    sincronizar: bool = True
+
+
+@router.post("/discrepancias-saldos/correcoes-seguras")
+def correcoes_seguras_discrepancias(payload: CorrecoesSegurasRequest, db: Session = Depends(get_db)):
+    """As linhas do Mapa a mudar de dia que o corrigir_discrepancias.py (PT2)
+    aplica - só as que não deixam dúvida (ver correcoes_discrepancias.py).
+    sincronizar: relê primeiro do OneDrive o Mapa dos dias à volta de cada
+    discrepância (as linhas e os números de linha têm de ser os de agora)."""
+    from app.services.onedrive_sync import atualizar_dados_do_dia  # import tardio, como na auditoria
+
+    discrepancias = payload.discrepancias
+    if discrepancias is None:
+        # a meio de uma corrida "corrigir_discrepancias": as dessa corrida
+        corrida = (db.query(DeployScripts)
+                   .filter(DeployScripts.alvo == "corrigir_discrepancias", DeployScripts.estado.in_(ESTADOS_ATIVOS))
+                   .order_by(DeployScripts.id.desc()).first())
+        discrepancias = ((corrida.extracao or {}).get("discrepancias") if corrida is not None else None)             or discrepancias_atuais(db, payload.dias)
+    if payload.sincronizar:
+        dias = set()
+        for d in discrepancias:
+            if d.get("dia"):
+                centro = date.fromisoformat(str(d["dia"]))
+                dias.update(centro + timedelta(days=i) for i in range(-JANELA_DIAS, JANELA_DIAS + 1))
+        for dia in sorted(d for d in dias if d < date.today()):
+            atualizar_dados_do_dia(db, dia, forcar_mapa=True)
+    return {"discrepancias": len(discrepancias), "correcoes": correcoes_seguras(db, discrepancias)}
 
 
 @router.get("/ia")

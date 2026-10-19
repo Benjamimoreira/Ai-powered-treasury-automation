@@ -76,7 +76,9 @@ def auditoria_registar(dia: date, db: Session = Depends(get_db)):
     chamada automática a partir de scripts externos."""
     from app.services.onedrive_sync import atualizar_dados_do_dia  # import tardio: onedrive_sync já importa deste módulo
 
-    atualizar_dados_do_dia(db, dia)
+    # forcar_mapa: o Mapa de um dia antigo também é relido (ex. depois de uma
+    # reextração ou de corrigir_discrepancias ter mudado a folha)
+    atualizar_dados_do_dia(db, dia, forcar_mapa=True)
     resultado = registar_auditoria_dia(db, dia)
     return AuditoriaResponse(dia=dia, **resultado)
 

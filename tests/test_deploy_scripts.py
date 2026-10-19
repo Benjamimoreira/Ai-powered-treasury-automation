@@ -61,7 +61,7 @@ def test_agente_corre_um_deploy_de_cada_vez_e_expira_os_antigos(monkeypatch):
             return {"deploys": deploys}
         enviados.append((caminho, corpo))
 
-    def correr_falso(alvo, reportar, extracao=None, api=None, lancar=None):
+    def correr_falso(alvo, reportar, extracao=None, api=None, lancar=None, lancar_script=None):
         corridos.append(alvo)
         reportar(estado="ok")
         return True
@@ -313,7 +313,7 @@ def test_deploy_que_esperou_por_outro_nao_expira(monkeypatch):
             return {"deploys": deploys}
         enviados.append((caminho, corpo))
 
-    def correr_falso(alvo, reportar, extracao=None, api=None, lancar=None):
+    def correr_falso(alvo, reportar, extracao=None, api=None, lancar=None, lancar_script=None):
         corridos.append(alvo)
         return True
 
@@ -329,3 +329,106 @@ def test_deploy_que_esperou_por_outro_nao_expira(monkeypatch):
     agente_pedidos._deploy_em_curso.join()
     assert corridos == ["scripts_cgd"]
     assert not any((c or {}).get("estado") == "erro" for _, c in enviados)
+
+
+def test_corrigir_discrepancias_numa_corrida(client):
+    lista = [{"dia": "2026-10-14", "empresa": "HCC", "tipo": "Extrato ≠ Mapa de Pagamentos (auditoria)"},
+             {"dia": "2026-10-12", "empresa": "Palavra", "tipo": "Extrato/Mapa ≠ Mapa de Saldos"}]
+    extracao = {"modo": "periodo", "inicio": "2026-10-06", "fim": "2026-10-14", "discrepancias": lista}
+    corpo = client.post("/monitorizacao/deploys", json={"alvo": "corrigir_discrepancias", "extracao": extracao}).json()
+    assert corpo["extracao"] == extracao
+    fora = dict(extracao, discrepancias=[dict(lista[0], dia="2026-10-20")])
+    assert client.post("/monitorizacao/deploys", json={"alvo": "corrigir_discrepancias", "extracao": fora}).status_code == 422
+    assert [p[0] for p in deploy_windows.passos_atualizar(extracao)] == [
+        "Reauditar com o Mapa relido (sem ir ao banco)",
+        "Extrair todas as empresas de 2026-10-06 a 2026-10-14 (uma sessão do banco)",
+        "Atualizar Mapa de Saldos e Mapa de Pagamentos e Recebimentos desses dias",
+        "Corrigir no Mapa o que é seguro (linhas noutro dia)",
+        "Verificar as 2 discrepância(s)",
+    ]
+
+
+def test_verificar_discrepancias_resolve_as_que_batem_e_resume_as_outras():
+    resolvidas = []
+
+    def api_falsa(metodo, caminho, corpo=None):
+        if caminho == "/auditoria/2026-10-14/registar":
+            return {"diferencas_por_empresa": []}  # HCC já bate certo
+        if caminho.startswith("/monitorizacao/discrepancias-saldos?"):
+            return {"discrepancias": [{"dia": "2026-10-12", "empresa": "Palavra", "tipo": "Extrato/Mapa ≠ Mapa de Saldos",
+                                       "visto_em": "2026-10-19T10:00:00Z", "mensagem": "continua"}]}
+        if caminho.endswith("/resolvida"):
+            resolvidas.append(corpo["empresa"])
+            return {"ok": True}
+        if caminho.startswith("/monitorizacao/discrepancias-saldos/destino"):
+            return {"itens": [{"lado": "extrato", "estado": "em_falta", "explicacao": "falta lançar 80 €"}],
+                    "diferenca": -80.0}
+        raise AssertionError(caminho)
+
+    ctx = deploy_windows.Contexto(lambda **campos: None)
+    ctx.api = api_falsa
+    extracao = {"modo": "periodo", "inicio": "2026-10-06", "fim": "2026-10-14", "discrepancias": [
+        {"dia": "2026-10-14", "empresa": "HCC", "tipo": "Extrato ≠ Mapa de Pagamentos (auditoria)"},
+        {"dia": "2026-10-12", "empresa": "Palavra", "tipo": "Extrato/Mapa ≠ Mapa de Saldos"}]}
+    ctx.estado.update(extracao=extracao, mapas_inicio="2026-10-19T09:00:00Z", correcoes="[OK] 1 linha mudada de dia")
+    deploy_windows._verificar_discrepancias(ctx)
+    assert resolvidas == ["HCC"]
+    assert ctx.estado["extracao"] == extracao
+    assert ctx.estado["resultado"].startswith("Concluído - 1 de 2 discrepância(s) resolvida(s). Mapa: [OK] 1 linha")
+    assert "Continuam (1, precisam de alguém): 12/10 Palavra Diferença -80.00 €: falta lançar 80 €" in ctx.estado["resultado"]
+
+
+def test_corrigir_no_mapa_lanca_o_script_e_espera(monkeypatch):
+    lancados = []
+    monkeypatch.setattr(deploy_windows, "_tarefa_a_correr", lambda nome: False)
+    monkeypatch.setattr(deploy_windows, "_agora_iso", lambda: "2026-10-19T09:00:00Z")
+    ctx = deploy_windows.Contexto(lambda **campos: None)
+    ctx.api = lambda metodo, caminho, corpo=None: {"logs": [
+        {"timestamp": "2026-10-19T09:01:00Z", "nivel": "ok", "mensagem": "[OK] 2 linha(s) mudada(s) de dia"}]}
+    ctx.lancar_script = lancados.append
+    deploy_windows._corrigir_no_mapa(ctx)
+    assert lancados == ["corrigir_discrepancias"]
+    assert ctx.estado["correcoes"] == "[OK] 2 linha(s) mudada(s) de dia"
+    # agente antigo, sem lancar_script: salta o passo sem falhar a corrida
+    ctx = deploy_windows.Contexto(lambda **campos: None)
+    ctx.api = lambda *a, **k: {}
+    deploy_windows._corrigir_no_mapa(ctx)
+    assert "correcoes" not in ctx.estado
+
+
+def test_reauditar_primeiro_tira_as_que_ja_batem_e_encolhe_a_extracao():
+    resolvidas = []
+
+    def api_falsa(metodo, caminho, corpo=None):
+        if caminho == "/auditoria/2026-09-03/registar":
+            return {"diferencas_por_empresa": []}  # já batia: o Mapa tinha sido corrigido à mão
+        if caminho == "/auditoria/2026-09-28/registar":
+            return {"diferencas_por_empresa": [{"empresa": "HCC", "diferenca": 80}]}
+        if caminho.endswith("/resolvida"):
+            resolvidas.append(corpo["dia"])
+            return {"ok": True}
+        raise AssertionError(caminho)
+
+    auditoria = "Extrato ≠ Mapa de Pagamentos (auditoria)"
+    ctx = deploy_windows.Contexto(lambda **campos: None)
+    ctx.api = api_falsa
+    ctx.estado["extracao"] = {"modo": "periodo", "inicio": "2026-08-26", "fim": "2026-09-28", "discrepancias": [
+        {"dia": "2026-09-03", "empresa": "HCC", "tipo": auditoria},
+        {"dia": "2026-09-28", "empresa": "HCC", "tipo": auditoria},
+        {"dia": "2026-09-24", "empresa": "Palavra", "tipo": "Saldo mudou sem movimentos"}]}
+    deploy_windows._reauditar_primeiro(ctx)
+    assert resolvidas == ["2026-09-03"]
+    extracao = ctx.estado["extracao"]
+    assert (extracao["inicio"], extracao["fim"]) == ("2026-09-18", "2026-09-28")
+    assert [d["dia"] for d in extracao["discrepancias"]] == ["2026-09-28", "2026-09-24"]
+    assert (ctx.estado["resolvidas_antes"], ctx.estado["total_discrepancias"]) == (1, 3)
+
+    # todas já batiam: os passos seguintes não vão ao banco
+    ctx = deploy_windows.Contexto(lambda **campos: None)
+    ctx.api = api_falsa
+    ctx.estado["extracao"] = {"modo": "periodo", "inicio": "2026-08-28", "fim": "2026-09-03",
+                              "discrepancias": [{"dia": "2026-09-03", "empresa": "HCC", "tipo": auditoria}]}
+    deploy_windows._reauditar_primeiro(ctx)
+    extrair = []
+    deploy_windows._se_houver_o_que_fazer(lambda c: extrair.append(1))(ctx)
+    assert extrair == [] and ctx.estado["resultado"].startswith("Concluído - 1 de 1 discrepância(s) resolvida(s) só por")

@@ -137,7 +137,7 @@ def _importar_movimentos_em_falta(db: Session, caminho: str, dia: date) -> int:
     return inseridos
 
 
-def _importar_dia(db: Session, dia: date) -> dict:
+def _importar_dia(db: Session, dia: date, forcar_mapa: bool = False) -> dict:
     """Importa um único dia (movimentos, saldos, mapa): o que ainda não
     existir localmente e, nos movimentos e saldos, o que mudou desde a
     última leitura do extrato. Partilhado entre `atualizar_dados_recentes`
@@ -188,10 +188,12 @@ def _importar_dia(db: Session, dia: date) -> dict:
                 pass  # folha do dia ainda não existe no Mapa - normal para o dia de hoje
             except Exception as e:
                 resultado["erro"] = f"mapa {dia.isoformat()}: {e}"
-    elif dia >= date.today() - timedelta(days=DIAS_MAPA_A_ACOMPANHAR):
+    elif forcar_mapa or dia >= date.today() - timedelta(days=DIAS_MAPA_A_ACOMPANHAR):
         # Hoje e ontem o preencher_mapa ainda mexe na folha (várias vezes por
         # dia): sem isto a BD ficava com a primeira versão importada e o
         # dashboard não mostrava as linhas que entretanto apareceram.
+        # forcar_mapa: dias mais antigos que o Mapa mudou (auditoria depois de
+        # uma reextração/correção - senão auditava a primeira versão importada).
         caminho_mapa_ficheiro = caminho_mapa(dia)
         if os.path.isfile(caminho_mapa_ficheiro):
             try:
@@ -255,14 +257,14 @@ def atualizar_dados_recentes(db: Session, dias_atras: int = 7) -> dict:
     }
 
 
-def atualizar_dados_do_dia(db: Session, dia: date) -> dict:
+def atualizar_dados_do_dia(db: Session, dia: date, forcar_mapa: bool = False) -> dict:
     """Importa um dia arbitrário (qualquer mês/ano, não só os últimos N
     dias a contar de hoje) - usado pelo dashboard quando o utilizador
     escolhe uma data em 'Visão Geral' para garantir que os movimentos, o
     saldo e a folha do Mapa desse dia (e por extensão do mês certo do
     ficheiro do Mapa) estão importados antes de mostrar os dados."""
     _onedrive_raiz()
-    r = _importar_dia(db, dia)
+    r = _importar_dia(db, dia, forcar_mapa=forcar_mapa)
     db.commit()
     return {
         "dias_com_movimentos_novos": [r["movimentos"]] if r["movimentos"] else [],

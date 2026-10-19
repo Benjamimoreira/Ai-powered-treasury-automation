@@ -68,6 +68,7 @@ COMANDOS = {
     "enviar_mapa_smtp": ("py", ["enviar_mapa_smtp.py"]),
     "aplicar_previsao_mensal": ("py", ["aplicar_previsao_mensal.py"]),
     "aplicar_previsoes_manuais": ("py", ["aplicar_previsoes_manuais.py"]),
+    "corrigir_discrepancias": ("py", ["corrigir_discrepancias.py"]),
 }
 
 log = logging.getLogger("agente_pedidos")
@@ -116,7 +117,8 @@ def _api(metodo: str, caminho: str, corpo=None):
     if token:
         cabecalhos["X-API-Key"] = token
     pedido = urllib.request.Request(f"{API_URL}{caminho}", data=dados, method=metodo, headers=cabecalhos)
-    with urllib.request.urlopen(pedido, timeout=10) as resposta:
+    # 60 s: nos deploys de discrepâncias a auditoria relê o Mapa do dia (passava dos 10 s)
+    with urllib.request.urlopen(pedido, timeout=60) as resposta:
         return json.loads(resposta.read() or b"null")
 
 
@@ -306,7 +308,8 @@ def correr_deploy(deploy: dict) -> bool:
         log.exception("não foi possível recarregar deploy_windows - a usar a versão já carregada")
     log.info("deploy %s (%s) a começar", deploy["id"], deploy["alvo"])
     ok = deploy_windows.correr(deploy["alvo"], _reportar_deploy(deploy["id"]), extracao=deploy.get("extracao"), api=_api,
-                               lancar=lambda argumentos: lancar("preencher_mapa", argumentos))
+                               lancar=lambda argumentos: lancar("preencher_mapa", argumentos),
+                               lancar_script=lambda nome: lancar(nome))
     log.info("deploy %s (%s) %s", deploy["id"], deploy["alvo"], "concluído" if ok else "falhou")
     return ok
 

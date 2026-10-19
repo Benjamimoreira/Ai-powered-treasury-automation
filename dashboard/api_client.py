@@ -407,6 +407,15 @@ def listar_alvos_deploy() -> list:
     return r.json()["alvos"]
 
 
+def corrigir_todas_discrepancias() -> dict:
+    """Uma corrida para todas as discrepâncias dos últimos 60 dias (sem hoje)."""
+    r = requests.post(f"{API_BASE_URL}/monitorizacao/discrepancias-saldos/corrigir-todas", timeout=15)
+    if r.status_code == 409:
+        raise ValueError(r.json().get("detail"))
+    r.raise_for_status()
+    return r.json()
+
+
 def pedir_deploy(alvo: str, extracao: Optional[dict] = None) -> dict:
     """Botão "Deploy": o agente do Windows corre-o e reporta o progresso.
     extracao (scripts_cgd): o que extrair a seguir - ver DeployRequest da API."""

@@ -22,7 +22,7 @@ def test_horario(db_session):
     assert not ra.dentro_do_horario(datetime(2026, 10, 15, 21, 0))   # noite: ninguém responde ao SMS
 
 
-def test_pede_a_maior_uma_de_cada_vez_e_so_uma_vez(db_session):
+def test_pede_todas_numa_corrida_e_so_uma_vez(db_session):
     _aviso(db_session, 13, "Vidor SGPS", 500)
     _aviso(db_session, 14, "HCC", 9000)
     _aviso(db_session, 15, "Hoje Lda", 9999)          # hoje: fica para as tarefas da tarde
@@ -32,36 +32,39 @@ def test_pede_a_maior_uma_de_cada_vez_e_so_uma_vez(db_session):
     db_session.commit()
 
     pedido = ra.pedir_proxima(db_session, AGORA)
-    assert pedido["extracao"] == {"modo": "periodo", "inicio": "2026-10-08", "fim": "2026-10-14", "dia": "2026-10-14",
-                                  "empresa": "HCC", "tipo": "Extrato/Mapa ≠ Mapa de Saldos", "origem": "automatica"}
-    # ainda pendente: não pede outra
+    assert pedido["alvo"] == "corrigir_discrepancias"
+    tipo = "Extrato/Mapa ≠ Mapa de Saldos"
+    # uma extração da semana antes da mais antiga até à mais recente, a maior primeiro
+    assert pedido["extracao"] == {"modo": "periodo", "inicio": "2026-10-07", "fim": "2026-10-14", "origem": "automatica",
+                                  "discrepancias": [{"dia": "2026-10-14", "empresa": "HCC", "tipo": tipo},
+                                                    {"dia": "2026-10-13", "empresa": "Vidor SGPS", "tipo": tipo}]}
+    # ainda a correr: não pede outra
     assert ra.pedir_proxima(db_session, AGORA) is None
 
     db_session.get(DeployScripts, pedido["id"]).estado = "ok"
     db_session.commit()
-    assert ra.pedir_proxima(db_session, AGORA)["extracao"]["empresa"] == "Vidor SGPS"
-
-    db_session.query(DeployScripts).update({"estado": "ok"})
-    db_session.commit()
     _aviso(db_session, 14, "HCC", 9000, visto=datetime(2026, 10, 15, 8, 50))  # continua a ser reportada
     assert ra.pedir_proxima(db_session, AGORA) is None  # já tentadas as duas
+    _aviso(db_session, 12, "Nova Lda", 300)
+    assert [d["empresa"] for d in ra.pedir_proxima(db_session, AGORA)["extracao"]["discrepancias"]] == ["Nova Lda"]
 
 
 def test_respeita_o_botao_e_o_horario(db_session):
     _aviso(db_session, 14, "HCC")
     assert ra.pedir_proxima(db_session, datetime(2026, 10, 15, 21, 0)) is None
-    # atualizada à mão há pouco: não repete
-    db_session.add(DeployScripts(alvo=ra.ALVO, estado="ok", pedido_em=datetime(2026, 10, 15, 7, 0), log=[], extracao={
+    # atualizada à mão há pouco (botão "Atualizar"): não repete
+    db_session.add(DeployScripts(alvo=ra.ALVO_BOTAO, estado="ok", pedido_em=datetime(2026, 10, 15, 7, 0), log=[], extracao={
         "modo": "periodo", "inicio": "2026-10-08", "fim": "2026-10-14", "dia": "2026-10-14", "empresa": "HCC",
         "tipo": "Extrato/Mapa ≠ Mapa de Saldos"}))
     db_session.commit()
     assert ra.pedir_proxima(db_session, AGORA) is None
 
 
-def test_nao_reextrai_o_que_so_esta_noutro_dia_no_mapa(db_session):
+def test_tambem_pede_o_que_so_esta_noutro_dia_no_mapa(db_session):
+    # já não fica de fora: a corrida pode mudar a linha de dia no Mapa
     _aviso(db_session, 14, "HCC")
     db_session.add(MovimentoBancario(empresa="HCC", dia=date(2026, 10, 14), descricao="Trf Mbway", valor=-374.5,
                                      ficheiro_origem="hcc.xlsx"))
     db_session.add(LinhaMapa(empresa="HCC", dia=date(2026, 10, 12), tipo="pagamento", linha=10, descricao="Mbway", pago=-374.5))
     db_session.commit()
-    assert ra.pedir_proxima(db_session, AGORA) is None
+    assert ra.pedir_proxima(db_session, AGORA)["extracao"]["discrepancias"][0]["empresa"] == "HCC"

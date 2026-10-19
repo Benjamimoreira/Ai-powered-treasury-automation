@@ -2184,7 +2184,8 @@ def _reextracoes_discrepancias() -> None:
     correm e, no fim, o resultado e para onde foi o valor. Atualiza-se de 3
     em 3 s e fica aqui mesmo depois de a discrepância sair da lista."""
     try:
-        deploys = [d for d in api.listar_deploys(limit=20) if d["alvo"] == "reextrair_discrepancia"]
+        deploys = [d for d in api.listar_deploys(limit=20)
+                   if d["alvo"] in ("reextrair_discrepancia", "corrigir_discrepancias")]
     except Exception:
         return
     limite = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=3)
@@ -2197,8 +2198,12 @@ def _reextracoes_discrepancias() -> None:
         extracao = d.get("extracao") or {}
         dia = extracao.get("dia") or extracao.get("fim")
         with st.container(border=True):
-            if dia:
-                origem = " · 🤖 automática" if extracao.get("origem") == "automatica" else ""
+            origem = " · 🤖 automática" if extracao.get("origem") == "automatica" else ""
+            if extracao.get("discrepancias"):
+                st.markdown(f"**Corrigir {len(extracao['discrepancias'])} discrepância(s) numa corrida**{origem} · "
+                            f"extrai todas as empresas de {pd.Timestamp(extracao['inicio']):%d/%m} a "
+                            f"{pd.Timestamp(extracao['fim']):%d/%m}")
+            elif dia:
                 st.markdown(f"**{escape(str(extracao.get('empresa', '')))} · discrepância de "
                             f"{pd.Timestamp(dia):%d/%m/%Y}**{origem} · extrai de {pd.Timestamp(extracao['inicio']):%d/%m} a "
                             f"{pd.Timestamp(extracao['fim']):%d/%m}")
@@ -2217,10 +2222,12 @@ def _reextracoes_discrepancias() -> None:
                 continue
             if d["estado"] == "ok":
                 mensagem = d.get("mensagem") or "Concluído"
-                (st.success if "resolvida" in mensagem or mensagem.startswith("Concluído em") else st.warning)(mensagem)
+                bem = (("resolvida" in mensagem and "continua" not in mensagem.lower())
+                       or mensagem.startswith("Concluído em"))
+                (st.success if bem else st.warning)(mensagem)
             elif d.get("erro"):
                 st.error(d["erro"])
-            if dia and extracao.get("empresa"):
+            if dia and extracao.get("empresa") and not extracao.get("discrepancias"):
                 # guardado por deploy: o fragmento corre de 3 em 3 s
                 cache = st.session_state.setdefault("destino_por_deploy", {})
                 if d["id"] not in cache:
@@ -2289,8 +2296,22 @@ def _secao_discrepancias_saldos() -> None:
                "verifica outra vez a discrepância (até 3 vezes). Quando "
                "a discrepância desaparece, sai desta lista. A barra de progresso e, no fim, para onde foi o valor "
                "aparecem no topo desta secção. 🔍 = ver já para onde foi o valor, sem extrair. "
-               "🤖 As discrepâncias dos últimos 7 dias (sem ser hoje) são atualizadas sozinhas, uma de cada vez, "
-               "nos dias úteis das 9:00 às 14:30 e das 15:45 às 19:00 - cada uma uma vez.")
+               "🤖 As discrepâncias dos últimos 7 dias (sem ser hoje) são corrigidas sozinhas, todas na mesma "
+               "corrida (uma extração de todas as empresas, um preencher, as correções seguras no Mapa e a "
+               "verificação de cada uma), nos dias úteis das 9:00 às 14:30 e das 15:45 às 19:00 - cada uma uma vez. "
+               "No Mapa só se muda de dia uma linha que está noutro dia que o banco quando não há dúvida (par "
+               "único, linha com o descritivo do banco e sem Valor Previsto, mesmo mês); o resto fica aqui.")
+    if st.button("🧹 Corrigir todas agora", key="corrigir_todas_discrepancias",
+                 help="A mesma corrida que a automática, já - com as discrepâncias dos últimos 60 dias (sem hoje), "
+                      "também as já tentadas. Primeiro relê o Mapa e fecha as que já batem certo, sem ir ao banco."):
+        try:
+            api.corrigir_todas_discrepancias()
+            st.success("Pedido: corrigir todas as discrepâncias dos últimos 60 dias numa corrida - o agente começa "
+                       "dentro de ~15 s; o progresso aparece no topo desta secção.")
+        except ValueError as e:
+            st.warning(str(e))
+        except Exception as e:
+            st.error(f"Não foi possível pedir a correção: {e}")
     # reextrações já pedidas/em curso: não deixar pedir a mesma outra vez
     try:
         em_curso = {
@@ -2444,7 +2465,8 @@ def _seccao_deploy_scripts() -> None:
         reinicia = {a["alvo"] for a in alvos if a.get("usa_extracao") or a.get("reinicia_anual")}
         extracao, resumo_extracao = _escolha_extracao_deploy()
 
-        individuais = [a for a in alvos if a["alvo"] not in ("scripts_cgd", "reextrair_discrepancia")]
+        individuais = [a for a in alvos if a["alvo"] not in ("scripts_cgd", "reextrair_discrepancia",
+                                                             "corrigir_discrepancias")]
         for a in individuais:
             nome, _, desc = a["descricao"].partition(" - ")
             ultimo = ultimos.get(a["alvo"])

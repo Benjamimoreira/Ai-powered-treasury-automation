@@ -68,6 +68,12 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
         "hora_execucao": "a pedido",
         "ficheiro": "aplicar_previsoes_manuais.py",
     },
+    "corrigir_discrepancias": {
+        "descricao": "Correções seguras das discrepâncias no Mapa de Pagamentos e Recebimentos (linhas noutro dia "
+                     "que o banco) - pedida pela corrida \"Corrigir todas as discrepâncias\"",
+        "hora_execucao": "a pedido",
+        "ficheiro": "corrigir_discrepancias.py",
+    },
     "enviar_mapa_smtp": {
         "descricao": "Envio diário do Mapa de Pagamentos e Recebimentos por email",
         "hora_execucao": "16:30",

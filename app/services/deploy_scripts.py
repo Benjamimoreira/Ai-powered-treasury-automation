@@ -26,6 +26,10 @@ ALVOS_DEPLOY: Dict[str, str] = {
     # botão "Atualizar" de uma discrepância (não instala nada): reextrair a
     # empresa nesse dia, preencher os Mapas desse dia e verificar
     "reextrair_discrepancia": "Atualizar uma discrepância (reextrair a empresa no dia)",
+    # todas as discrepâncias numa corrida (app/services/reextracao_automatica.py):
+    # uma extração de todas as empresas, um preencher, as correções seguras no
+    # Mapa (corrigir_discrepancias.py do PT2) e verificar cada uma
+    "corrigir_discrepancias": "Corrigir todas as discrepâncias numa corrida",
 }
 # Alvos da CGD: no fim do deploy fazem o que foi escolhido no dashboard -
 # "Hoje"/"Intervalo": extrair esses dias, atualizar os Mapas e o dashboard
@@ -107,6 +111,19 @@ def _validar_extracao(extracao: Optional[Dict[str, Any]]) -> Optional[Dict[str, 
         if not inicio <= dia <= fim:
             raise ValueError("O dia da discrepância tem de estar dentro do período a extrair.")
         resultado["dia"] = dia.isoformat()
+    # corrigir_discrepancias: as discrepâncias da corrida, cada uma com o dia
+    # dentro do período a extrair
+    if extracao.get("discrepancias"):
+        lista = []
+        for d in extracao["discrepancias"]:
+            try:
+                dia = date.fromisoformat(str(d["dia"]))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"Discrepância inválida: {d}") from exc
+            if not inicio <= dia <= fim or not d.get("empresa"):
+                raise ValueError(f"Discrepância fora do período ou sem empresa: {d}")
+            lista.append({"dia": dia.isoformat(), "empresa": str(d["empresa"]), "tipo": str(d.get("tipo") or "")})
+        resultado["discrepancias"] = lista
     return resultado
 
 

@@ -107,6 +107,7 @@ class Contexto:
         self.estado = {}
         self.api = None  # _api do agente (GET/POST à API) - para os passos que acompanham a cadeia
         self.lancar = None  # lança o preencher_mapa com argumentos de dia (agente_pedidos.lancar)
+        self.lancar_script = None  # lança outro script do PT2 pelo nome (agente_pedidos.COMANDOS)
 
     def linha(self, texto: str) -> None:
         self._pendentes.append(texto.rstrip())
@@ -539,9 +540,136 @@ def _verificar_discrepancia(ctx: Contexto) -> None:
         _atualizar_mapas(ctx)
 
 
+def _esperar_preencher_livre(ctx: Contexto) -> None:
+    if _tarefa_a_correr(TAREFA_PREENCHER):
+        ctx.linha("Está a correr um Atualizar Mapa Tesouraria - à espera que termine...")
+        ctx.enviar_linhas()
+        if not _esperar(ctx, "Ainda à espera do Atualizar Mapa Tesouraria",
+                        lambda: not _tarefa_a_correr(TAREFA_PREENCHER), ESPERA_MAPA):
+            raise FalhaDeploy("O Atualizar Mapa Tesouraria que estava a correr não terminou em 45 min.")
+
+
+def _reauditar_primeiro(ctx: Contexto) -> None:
+    """Antes de ir ao banco: as diferenças da auditoria voltam a ser vistas
+    com o Mapa relido do OneDrive (a auditoria guardada pode ser de antes de
+    alguém corrigir o Mapa à mão). As que já batem certo ficam resolvidas e
+    saem da corrida; a extração passa a cobrir só as que sobram."""
+    extracao = ctx.estado["extracao"]
+    lista = extracao["discrepancias"]
+    ctx.estado["total_discrepancias"] = len(lista)
+    sobram, resolvidas = [], 0
+    for d in lista:
+        tipo = d.get("tipo") or TIPO_AUDITORIA
+        if tipo != TIPO_AUDITORIA:
+            sobram.append(d)  # avisos de saldo: só uma corrida do preencher os volta a ver
+            continue
+        ctx.estado["extracao"] = {**extracao, "dia": d["dia"], "empresa": d["empresa"], "tipo": tipo}
+        try:
+            continua = _discrepancia_continua(ctx)
+        except Exception as exc:
+            ctx.linha(f"[AVISO] Não deu para reauditar {d['dia']} {d['empresa']}: {exc}")
+            continua = True
+        if continua:
+            sobram.append(d)
+            continue
+        ctx.api("POST", "/monitorizacao/discrepancias-saldos/resolvida",
+                {"dia": d["dia"], "empresa": d["empresa"], "tipo": tipo})
+        resolvidas += 1
+        ctx.linha(f"Já batia certo (só faltava reler o Mapa): {d['dia']} {d['empresa']}")
+    ctx.estado["resolvidas_antes"] = resolvidas
+    if not sobram:
+        ctx.estado["extracao"] = extracao
+        ctx.estado["nada_a_extrair"] = True
+        ctx.estado["resultado"] = (f"Concluído - {resolvidas} de {len(lista)} discrepância(s) resolvida(s) só por "
+                                   "reler o Mapa, sem ir ao banco.")
+        return
+    from datetime import date as _date, timedelta as _td
+
+    dias = [_date.fromisoformat(d["dia"]) for d in sobram]
+    ctx.estado["extracao"] = {**extracao, "discrepancias": sobram,
+                              "inicio": (min(dias) - _td(days=6)).isoformat(), "fim": max(dias).isoformat()}
+    ctx.linha(f"{resolvidas} resolvida(s) sem extrair; sobram {len(sobram)} - extração de "
+              f"{ctx.estado['extracao']['inicio']} a {ctx.estado['extracao']['fim']}.")
+
+
+def _se_houver_o_que_fazer(passo: Callable[[Contexto], None]) -> Callable[[Contexto], None]:
+    def correr_passo(ctx: Contexto) -> None:
+        if ctx.estado.get("nada_a_extrair"):
+            ctx.linha("Nada a fazer - já resolvidas.")
+            return
+        passo(ctx)
+    return correr_passo
+
+
+def _corrigir_no_mapa(ctx: Contexto) -> None:
+    """corrigir_discrepancias.py (PT2): muda de dia as linhas do Mapa que só
+    estão noutro dia que o banco, quando não há dúvida (ver
+    app/services/correcoes_discrepancias.py). Uma falha aqui não pára a
+    corrida - a verificação a seguir mostra o que ficou por resolver."""
+    if ctx.api is None or ctx.lancar_script is None:
+        ctx.linha("[AVISO] O agente não sabe lançar o corrigir_discrepancias (agente antigo?) - passo saltado.")
+        return
+    _esperar_preencher_livre(ctx)
+    desde = _agora_iso()
+    ctx.lancar_script("corrigir_discrepancias")
+    fim = []
+
+    def terminou() -> bool:
+        fim[:] = _execucoes_depois(ctx, "corrigir_discrepancias", desde)
+        return bool(fim)
+
+    if not _esperar(ctx, "corrigir_discrepancias a correr", terminou, ESPERA_MAPA):
+        ctx.linha("[AVISO] O corrigir_discrepancias não terminou em 45 min - segue para a verificação.")
+        return
+    ctx.estado["correcoes"] = fim[-1]["mensagem"]
+    ctx.linha(f"corrigir_discrepancias terminou ({fim[-1]['nivel']}): {fim[-1]['mensagem'][:300]}")
+
+
+def _verificar_discrepancias(ctx: Contexto) -> None:
+    """Cada discrepância da corrida: as que já batem certo ficam resolvidas;
+    das outras fica no log para onde foi o valor. Termina sempre
+    "Concluído" (como _verificar_discrepancia) com o resumo."""
+    extracao = ctx.estado["extracao"]
+    lista = extracao["discrepancias"]
+    resolvidas, continuam = ctx.estado.get("resolvidas_antes", 0), []
+    for d in lista:
+        ctx.estado["extracao"] = {**extracao, "dia": d["dia"], "empresa": d["empresa"],
+                                  "tipo": d.get("tipo") or TIPO_AUDITORIA}
+        try:
+            if _discrepancia_continua(ctx):
+                continuam.append(f"{d['dia'][8:10]}/{d['dia'][5:7]} {d['empresa']}{_resumo_destino(_destino(ctx))}")
+                continue
+            ctx.api("POST", "/monitorizacao/discrepancias-saldos/resolvida", {
+                "dia": d["dia"], "empresa": d["empresa"], "tipo": d.get("tipo") or TIPO_AUDITORIA})
+            resolvidas += 1
+            ctx.linha(f"Resolvida: {d['dia']} {d['empresa']} ({d.get('tipo') or TIPO_AUDITORIA})")
+        except Exception as exc:  # uma que não deu para verificar não estraga as outras
+            continuam.append(f"{d['dia'][8:10]}/{d['dia'][5:7]} {d['empresa']} (não verificada: {exc})")
+            ctx.linha(f"[AVISO] Não deu para verificar {d['dia']} {d['empresa']}: {exc}")
+    ctx.estado["extracao"] = extracao
+    total = ctx.estado.get("total_discrepancias", len(lista))
+    resumo = f"Concluído - {resolvidas} de {total} discrepância(s) resolvida(s)."
+    if ctx.estado.get("correcoes"):
+        resumo += f" Mapa: {ctx.estado['correcoes'][:200]}"
+    if continuam:
+        resumo += f" Continuam ({len(continuam)}, precisam de alguém): " + "; ".join(continuam)
+    ctx.estado["resultado"] = resumo
+
+
 def passos_atualizar(extracao: Optional[dict]) -> list:
     if not extracao or extracao.get("modo") != "periodo":
         return []
+    if extracao.get("discrepancias"):
+        return [
+            ("Reauditar com o Mapa relido (sem ir ao banco)", _reauditar_primeiro),
+            (f"Extrair todas as empresas de {extracao['inicio']} a {extracao['fim']} (uma sessão do banco)",
+             _se_houver_o_que_fazer(_cgd_extrair_dias)),
+            ("Atualizar Mapa de Saldos e Mapa de Pagamentos e Recebimentos desses dias",
+             _se_houver_o_que_fazer(_atualizar_mapas)),
+            ("Corrigir no Mapa o que é seguro (linhas noutro dia)", _se_houver_o_que_fazer(_corrigir_no_mapa)),
+            (f"Verificar as {len(extracao['discrepancias'])} discrepância(s)",
+             _se_houver_o_que_fazer(_verificar_discrepancias)),
+        ]
     if extracao.get("empresa"):
         return [
             (f"Reextrair {extracao['empresa']} de {extracao['inicio']} a {extracao['fim']}", _cgd_extrair_dias),
@@ -564,6 +692,9 @@ ALVOS = {
     # botão "Atualizar" de uma discrepância: não instala nada - só os passos
     # de passos_atualizar (reextrair, Mapas desse dia, verificar)
     "reextrair_discrepancia": [],
+    # todas as discrepâncias numa corrida (reextracao_automatica.py): só os
+    # passos de passos_atualizar
+    "corrigir_discrepancias": [],
     "tesouraria_preenchimento": [
         ("Atualizar o código (git pull)", _pt2_git_pull),
         ("Correr os testes", _pt2_testes),
@@ -574,7 +705,7 @@ ALVOS = {
 
 
 def correr(alvo: str, reportar: Callable[..., None], extracao: Optional[dict] = None, api=None,
-           lancar=None) -> bool:
+           lancar=None, lancar_script=None) -> bool:
     """Corre os passos de `alvo`. reportar(estado=, passo=, total_passos=,
     mensagem=, erro=, linhas=) envia o progresso à API. `extracao` (só
     scripts_cgd): o que a extração anual reiniciada faz - ver
@@ -583,13 +714,14 @@ def correr(alvo: str, reportar: Callable[..., None], extracao: Optional[dict] = 
     if passos is None:
         reportar(estado="erro", erro=f"Alvo de deploy desconhecido: {alvo}", linhas=[])
         return False
-    if alvo.startswith(("cgd_", "scripts_cgd", "reextrair_")):
+    if alvo.startswith(("cgd_", "scripts_cgd", "reextrair_", "corrigir_")):
         passos = list(passos) + passos_atualizar(extracao)
     total = len(passos)
     ctx = Contexto(lambda **campos: reportar(estado="a_correr", **campos))
     ctx.estado["extracao"] = extracao
     ctx.api = api
     ctx.lancar = lancar  # lancar(argumentos): Atualizar Mapa Tesouraria desses dias, sem elevação
+    ctx.lancar_script = lancar_script  # lancar_script(nome): outro script do PT2 (ex. corrigir_discrepancias)
     inicio = time.monotonic()
     try:
         for indice, (descricao, funcao) in enumerate(passos):
