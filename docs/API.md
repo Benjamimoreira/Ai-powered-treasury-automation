@@ -8,6 +8,7 @@ Referência completa dos endpoints HTTP (FastAPI, `app/main.py` +
 como falha**.
 
 Índice:
+[Como funciona](#como-funciona) ·
 [Convenções](#convenções) ·
 [Autenticação](#autenticação) ·
 [Estado](#estado) ·
@@ -25,6 +26,60 @@ como falha**.
 [Monitorização](#monitorização) ·
 [Deploys](#deploys) ·
 [Servidor MCP](#servidor-mcp)
+
+## Como funciona
+
+Visão rápida de como a API está montada e de quem fala com ela. O detalhe
+dos componentes e do modelo de dados está em
+[ARQUITETURA.md](ARQUITETURA.md).
+
+```
+ dashboard (:8501) ─┐
+ exes CGD / scripts ─┤                    ┌─ app/routers/*  (HTTP: validar e responder)
+ sincronizador ──────┼─► API :8000 ─► middleware ─┤
+ agente do Windows ──┘   (uvicorn)   X-API-Key    └─► app/services/*  (a lógica)
+                                                         │        │
+                                                         ▼        ▼
+                                                  Postgres   OneDrive /onedrive (só leitura)
+                                                  (+pgvector) extratos .xlsx, Mapas, faturas
+```
+
+**Um pedido.** O middleware `exigir_chave` (`app/main.py`) valida o
+`X-API-Key` (ver [Autenticação](#autenticação)); o router chama o serviço
+correspondente com uma sessão SQLAlchemy aberta só para esse pedido
+(`get_db`). Os routers são finos: a lógica está toda em `app/services/`,
+que é também o que o servidor MCP chama diretamente.
+
+**Arranque** (`lifespan` em `app/main.py`):
+
+1. `criar_tabelas` cria as tabelas que faltam (nunca altera as que já
+   existem: colunas novas precisam de `ALTER TABLE` à mão).
+2. Sem `API_TOKEN` avisa no log que a API está aberta à rede.
+3. Liga o tracing dos LLM (Phoenix/LangSmith, se configurados).
+4. Lança o ciclo da **reextração automática das discrepâncias**: de 10 em
+   10 min pede um deploy `reextrair_discrepancia` para **uma** discrepância
+   de saldos ainda não tentada (fora de hoje, até 7 dias atrás, fora das
+   janelas das tarefas CGD 08:00–08:30 e 15:00–15:15). Desliga-se com
+   `REEXTRACAO_AUTOMATICA=0`. Ver `app/services/reextracao_automatica.py`.
+5. O agente do Assistente (subprocesso MCP) **não** arranca aqui: é
+   criado na primeira pergunta ao `/chat`.
+
+**A API não mexe no Windows.** Corre em Docker e só lê o OneDrive
+(montado em `/onedrive:ro`). Tudo o que tem de acontecer no PC — correr o
+`preencher_mapa`, compilar e instalar executáveis, reextrair do banco — é
+uma **fila na base de dados**: a API grava um pedido (botão Correr ou
+deploy), o agente do Windows (`scripts/agente_pedidos.py`) consulta-a de
+15 em 15 s, executa e reporta o estado de volta pela API.
+
+**Quem chama o quê, num dia normal:**
+
+| Quando | Quem | Pedido | Efeito |
+|---|---|---|---|
+| Início/fim de cada extração | exes CGD (`monitorizacao_cgd.py`) | `/monitorizacao/scripts/{script}/inicio` e `/executar` | Estado na Monitorização; no fim importa hoje e ontem e pede o `preencher_mapa` ao agente. |
+| 15 em 15 min, 07h–21h | `sincronizador` | `/atualizar-dados`, `/faturas/recebidas/importar` | Movimentos, saldos e folhas do Mapa novas; faturas do Excel mensal. |
+| 15 s / 60 s | agente | `/monitorizacao/pedidos`, `/deploys`, `/tarefas-agendadas` | Executa pedidos pendentes; reporta as tarefas agendadas. |
+| 30 em 30 s | dashboard | `/sync/estado` | Recarrega quando entram dados novos. |
+| A pedido | dashboard | o resto | Leituras, reconciliação, ambíguos, previsão, Assistente. |
 
 ## Convenções
 
@@ -225,9 +280,10 @@ Lê o índice do Departamento Comercial (`COMERCIAL_INDICE_PATH` ou
 
 | Método | Caminho | E | Quem | Descrição |
 |---|---|---|---|---|
-| POST | `/faturas/recebidas` | ✏️ | script | Corpo `{"linhas": [FaturaRecebidaIn, …]}` (`outlook_id` e `data_recebido` obrigatórios). Deduplica por `outlook_id`; devolve `{novas, duplicadas}`. Sem chave. |
+| POST | `/faturas/recebidas` | ✏️ | script | Corpo `{"linhas": [FaturaRecebidaIn, …]}` (`outlook_id` e `data_recebido` obrigatórios). Deduplica por `outlook_id`; devolve `{novas, duplicadas}`. Sem chave. Desde 09/10/2026 o script de faturas já não o chama (ver a linha seguinte). |
+| POST | `/faturas/recebidas/importar?ano=&mes=&reportar_sem_novas=true` | ✏️📥 | dash, sinc | Importa as faturas do Excel mensal do SharePoint que o `recolher_faturas_recebidas.py` escreve (omissão: mês corrente; `ano` e `mes` têm de vir juntos, senão 422). Deduplica por id do Outlook. Regista a corrida na Monitorização como `importar_faturas_recebidas`; com `reportar_sem_novas=false` (o sincronizador) só regista se houver novas ou erros. Devolve `{novas, duplicadas, linhas, erros}`; Excel em falta ou `ONEDRIVE_RAIZ` por configurar vêm em `erros`, com 200. Precisa de chave. |
 | GET | `/faturas/recebidas?dia=&desde=&ate=&pesquisa=&limit=200` | | dash | Faturas, com `fornecedor_normalizado` e `fonte_fornecedor` (`extraido`/`nif`/`remetente`); `fornecedor` mantém o original. |
-| GET | `/faturas/recebidas/{id}/pdf` | | dash | O PDF, `inline`. Com chave ou link assinado (ver [Autenticação](#autenticação)). 503 sem `FORNECEDORES_RAIZ`; 404 se a fatura não tiver PDF, o ficheiro não existir ou o caminho sair da pasta montada. |
+| GET | `/faturas/recebidas/{id}/pdf` | | dash | O PDF, `inline`. Com chave ou link assinado (ver [Autenticação](#autenticação)). Procura primeiro na pasta do ano no SharePoint (onde o script grava hoje) e depois em `FORNECEDORES_RAIZ` (faturas antigas). 404 se a fatura não tiver PDF, o ficheiro não existir em nenhuma das duas ou o caminho sair da pasta. |
 
 ## Assistente
 
