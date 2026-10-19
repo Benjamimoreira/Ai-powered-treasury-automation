@@ -52,3 +52,39 @@ def test_imputacoes_do_mapa_e_das_previsoes(client, db_session):
     client.post("/previsoes-manuais", json=LINHA)
     assert client.get("/previsoes-manuais/imputacoes").json()["imputacoes"] == ["Impostos", "Ordenados", "Rendas"]
     assert client.get("/previsoes-manuais/imputacoes", params={"tipo": "recebimento"}).json()["imputacoes"] == ["Rendas"]
+
+
+def test_previsoes_entram_na_previsao_de_saldo_do_grupo(db_session):
+    from datetime import timedelta
+
+    from app.db.models import PrevisaoManual
+    from app.services.previsao import _previsto_mapa_por_dia
+    from app.services.previsao_ancorada import carregar_contexto, fluxos_conhecidos_no_horizonte
+    from app.services.previsoes_manuais import linhas_previstas
+
+    amanha, depois = date.today() + timedelta(days=1), date.today() + timedelta(days=5)
+    db_session.add_all([
+        PrevisaoManual(dia=amanha, tipo="pagamento", descricao="Flexinsstal", valor=17193.39, imputacao="Equipamentos",
+                       estado="aplicada"),
+        PrevisaoManual(dia=depois, tipo="recebimento", descricao="Sinal Loja A", valor=5000, imputacao="Sinais"),
+        PrevisaoManual(dia=date.today() - timedelta(days=3), tipo="pagamento", descricao="Antiga", valor=1,
+                       imputacao="x"),
+        # a mesma linha já lida do Mapa (com empresa): não conta duas vezes
+        LinhaMapa(dia=depois, tipo="recebimento", linha=7, empresa="H.I.I", descricao="Sinal  loja A", previsto=5000),
+    ])
+    db_session.commit()
+
+    linhas = linhas_previstas(db_session, depois_de=date.today(), linhas_mapa=db_session.query(LinhaMapa).all())
+    assert [(l.dia, l.previsto, l.empresa) for l in linhas] == [(amanha, -17193.39, "")]
+
+    contexto = carregar_contexto(db_session, recebimentos_comerciais=[])
+    dias = [date.today() + timedelta(days=i) for i in range(1, 31)]
+    grupo = [f for f in fluxos_conhecidos_no_horizonte(contexto, dias) if f["fonte"] == "mapa"]
+    assert sorted(f["valor"] for f in grupo) == [-17193.39, 5000.0]
+    # numa empresa não entra (não tem empresa)
+    assert all(f["descricao"] != "Flexinsstal"
+               for f in fluxos_conhecidos_no_horizonte(contexto, dias, empresa="HABISERVE INVESTIMENTOS IMOBILIARIOS,LDA"))
+    # no backtest (ate) não entra
+    assert carregar_contexto(db_session, ate=date.today(), recebimentos_comerciais=[]).linhas_mapa_futuras == []
+    # "Previsto (Mapa)" dos gráficos dos modelos
+    assert _previsto_mapa_por_dia(db_session, [amanha, depois]) == {amanha: -17193.39, depois: 5000}

@@ -734,6 +734,11 @@ def _previsto_mapa_por_dia(db: Session, dias: list, empresa: str = None) -> dict
     linhas = db.query(LinhaMapa).filter(LinhaMapa.dia.in_(dias), LinhaMapa.previsto.isnot(None)).all()
     if empresa:
         linhas = [l for l in linhas if empresa_do_mapa_corresponde(l.empresa, empresa)]
+    else:
+        # previsões acrescentadas no dashboard: sem empresa, só no grupo
+        from app.services.previsoes_manuais import linhas_previstas
+
+        linhas = linhas + linhas_previstas(db, dias=dias, linhas_mapa=linhas)
 
     por_dia: dict = {}
     for l in linhas:

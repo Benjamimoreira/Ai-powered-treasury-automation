@@ -1706,6 +1706,11 @@ def _secao_previsao_manual() -> None:
     aplicar_previsoes_manuais.py (PT2), ver app/services/previsoes_manuais.py."""
     with st.container(border=True):
         st.markdown("**Acrescentar previsão ao Mapa de Pagamentos e Recebimentos**")
+        # mensagem da previsão acabada de guardar (a página recarrega para a
+        # previsão de saldo, lá em cima, já a incluir)
+        aviso = st.session_state.pop("aviso_previsao_manual", None)
+        if aviso:
+            (st.success if aviso[0] == "ok" else st.warning)(aviso[1])
         try:
             opcoes_imputacao = api.imputacoes_previsao()
         except Exception:
@@ -1728,11 +1733,15 @@ def _secao_previsao_manual() -> None:
             try:
                 r = api.criar_previsao_manual(int(dia), int(mes), int(ano), tipo or "pagamento", descricao,
                                               float(valor), imputacao or "")
-                if r.get("mapa") == "pedido":
-                    st.success(f"Previsão guardada - o agente do Windows vai escrevê-la no Mapa, folha do dia "
-                               f"{date.fromisoformat(r['dia']):%d/%m/%Y}.")
-                else:
-                    st.warning(f"Previsão guardada, mas a escrita no Mapa não foi pedida ({r.get('mapa')}).")
+                dia_txt = f"{date.fromisoformat(r['dia']):%d/%m/%Y}"
+                st.session_state["aviso_previsao_manual"] = (
+                    ("ok", f"Previsão guardada e já incluída na previsão de saldo do grupo - o agente do Windows "
+                           f"vai escrevê-la no Mapa, folha do dia {dia_txt}.")
+                    if r.get("mapa") == "pedido" else
+                    ("aviso", f"Previsão guardada e incluída na previsão de saldo, mas a escrita no Mapa não foi "
+                              f"pedida ({r.get('mapa')})."))
+                _limpar_cache_previsoes()
+                st.rerun()
             except ValueError as e:
                 st.error(str(e))
             except Exception as e:
@@ -1775,9 +1784,11 @@ def _secao_previsao_manual() -> None:
                     key="apagar_previsao_manual", width=320)
                 if escolhida is not None and st.button("Apagar", key="botao_apagar_previsao_manual"):
                     api.apagar_previsao_manual(escolhida)
+                    _limpar_cache_previsoes()
                     st.rerun()
         st.caption("Escrita como linha de Valor Previsto (com a imputação, sem empresa) na secção de "
-                   "recebimentos ou de pagamentos da folha desse dia - entra na Previsão do Resumo do Mapa. "
+                   "recebimentos ou de pagamentos da folha desse dia - entra na Previsão do Resumo do Mapa e, "
+                   "aqui, na previsão de saldo do grupo (Fluxos já conhecidos, cash-flow, risco de liquidez). "
                    "Uma previsão já no Mapa corrige-se ou apaga-se no próprio Excel.")
 
 

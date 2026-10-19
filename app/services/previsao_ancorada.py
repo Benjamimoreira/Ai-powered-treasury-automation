@@ -18,7 +18,9 @@ fluxos com data e valor conhecidos, nos dois sentidos -
 - rendas e recorrentes (fluxos_conhecidos.py);
 - linhas do Mapa de Pagamentos e Recebimentos com data FUTURA (o que a
   tesouraria já planeou - hoje o Mapa só é preenchido no próprio dia, por
-  isso normalmente não há nenhuma; fora do backtest, onde seriam batota).
+  isso normalmente não há nenhuma; fora do backtest, onde seriam batota) e
+  as previsões acrescentadas à mão no dashboard (previsoes_manuais.py - só
+  no grupo, não têm empresa).
 Os recebimentos do índice comercial (sinal/reforços/escritura - ver
 comercial.py::listar_recebimentos_previstos) ficam numa segunda série,
 "com recebimentos do comercial", e não na central: só se conhecem as
@@ -151,6 +153,12 @@ def carregar_contexto(db: Session, ate: date = None, recebimentos_comerciais: li
     linhas_mapa = [] if ate is not None else (
         db.query(LinhaMapa).filter(LinhaMapa.dia > date.today(), LinhaMapa.previsto.isnot(None)).all()
     )
+    if ate is None:
+        # as previsões acrescentadas no dashboard (Predição > Acrescentar
+        # previsão): sem empresa, por isso só entram no grupo
+        from app.services.previsoes_manuais import linhas_previstas
+
+        linhas_mapa = linhas_mapa + linhas_previstas(db, depois_de=date.today(), linhas_mapa=linhas_mapa)
     return ContextoPrevisao(fluxos, ids, recebimentos_comerciais, linhas_mapa)
 
 
