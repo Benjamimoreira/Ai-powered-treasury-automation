@@ -1794,9 +1794,10 @@ def _secao_previsao_manual() -> None:
 
 if aba_forecast.open:
     with aba_forecast:
+        # primeiro, acima do saldo real e previsto (pedido 19/10/2026)
+        _secao_previsao_manual()
         _painel_forecast()
         _secao_previsao_mensal()
-        _secao_previsao_manual()
 
 if aba_visao_geral.open:
     with aba_visao_geral:
