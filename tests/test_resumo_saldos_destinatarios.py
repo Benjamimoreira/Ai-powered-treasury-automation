@@ -5,19 +5,22 @@ from app.db.models import LinhaMapa, SaldoDiario
 
 # ------------------------------------------------- destinatários do Mapa
 
-def test_destinatarios_do_mapa_comecam_no_pduarte_e_aceitam_mais(client):
+def test_destinatarios_do_mapa_so_os_acrescentados(client):
     url = "/monitorizacao/destinatarios-mapa"
-    assert client.get(url).json()["destinatarios"] == ["pduarte@vidor.pt"]
+    # sem ninguém acrescentado, ninguém - nunca um destinatário por omissão
+    assert client.get(url).json()["destinatarios"] == []
 
-    corpo = client.post(url, json={"email": "  Outro@Vidor.pt "}).json()
-    assert corpo["destinatarios"] == ["pduarte@vidor.pt", "outro@vidor.pt"]
+    corpo = client.post(url, json={"email": "  Benjamim.Moreira@Vidor.pt "}).json()
+    assert corpo["destinatarios"] == ["benjamim.moreira@vidor.pt"]
+    corpo = client.post(url, json={"email": "outro@vidor.pt"}).json()
+    assert corpo["destinatarios"] == ["benjamim.moreira@vidor.pt", "outro@vidor.pt"]
     # repetido não duplica
     assert client.post(url, json={"email": "outro@vidor.pt"}).json()["destinatarios"] == corpo["destinatarios"]
     assert client.post(url, json={"email": "nao-e-email"}).status_code == 422
 
-    assert client.delete(f"{url}/outro@vidor.pt").json()["destinatarios"] == ["pduarte@vidor.pt"]
-    # nunca fica vazio: sem ninguém, volta o pduarte
-    assert client.delete(f"{url}/pduarte@vidor.pt").json()["destinatarios"] == ["pduarte@vidor.pt"]
+    assert client.delete(f"{url}/outro@vidor.pt").json()["destinatarios"] == ["benjamim.moreira@vidor.pt"]
+    # removido o último, fica vazio (não volta ninguém sozinho)
+    assert client.delete(f"{url}/benjamim.moreira@vidor.pt").json()["destinatarios"] == []
 
 
 # ------------------------------------------------------ resumo mensal

@@ -46,7 +46,7 @@ class DestinatarioRequest(BaseModel):
 @router.get("/destinatarios-mapa")
 def listar_destinatarios_mapa(db: Session = Depends(get_db)):
     """Para quem o enviar_mapa_smtp.py manda o Mapa (lido pelo script antes
-    de cada envio). Nunca vazio: sem ninguém, volta o pduarte@vidor.pt."""
+    de cada envio) - só para estes; vazia, não envia."""
     return {"destinatarios": listar_destinatarios(db)}
 
 

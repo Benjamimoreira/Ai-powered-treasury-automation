@@ -2378,7 +2378,7 @@ def _secao_discrepancias_saldos() -> None:
 
 def _seccao_destinatarios_mapa() -> None:
     """Para quem o enviar_mapa_smtp manda o Mapa: o script lê esta lista
-    antes de cada envio (pduarte@vidor.pt por omissão - nunca fica vazia)."""
+    antes de cada envio e manda SÓ para estes (vazia, não envia)."""
     with st.container(border=True):
         st.markdown("**Destinatários do Mapa (Enviar Mapa Tesouraria)**")
         try:
@@ -2386,6 +2386,8 @@ def _seccao_destinatarios_mapa() -> None:
         except Exception as e:
             st.warning(f"Não foi possível carregar os destinatários: {e}")
             return
+        if not destinatarios:
+            st.warning("Ninguém na lista - o Mapa não é enviado até acrescentares um email.")
         for email in destinatarios:
             with st.container(horizontal=True, vertical_alignment="center"):
                 st.markdown(f"✉️ {email}")
