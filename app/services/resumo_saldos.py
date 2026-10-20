@@ -23,10 +23,18 @@ Também devolve a liquidez dia a dia com essas entradas, para o gráfico do
 mês escolhido no dashboard.
 
 Num mês com Mapa de Pagamentos e Recebimentos (pedido 19/10/2026: o resumo
-tem de bater com o Mapa do mês), recebido, pago, saldo bancário, saldo
-bancário disponível, CPCVs e escrituras vêm da folha Resumo desse Mapa
-(resumo_mapa_excel.py) - "fonte": "mapa". O que está acima fica só para os
-meses sem Mapa (ou quando o Mapa não se consegue ler).
+tem de bater com o Mapa do mês), saldo bancário, saldo bancário disponível,
+CPCVs e escrituras vêm da folha Resumo desse Mapa (resumo_mapa_excel.py) -
+"fonte": "mapa". Recebido e pago vêm SEMPRE dos extratos (pedido 20/10/2026:
+"só tens de fazer a soma total de quanto recebeu e de quanto pagou" - os
+Mapas de janeiro-setembro ficaram com linhas a mais nas corridas desse dia e
+os totais do Resumo inchavam).
+
+Janeiro-março só tinham extratos mensais; a 20/10/2026 passaram a ter
+também pastas diárias e os mesmos movimentos entraram outra vez na BD, vindos
+dos ficheiros diários. Não se apagam (pedido explícito): num dia/empresa com
+movimentos do extrato mensal, os dos ficheiros diários não contam
+(sem_duplicados_mensal_diario).
 """
 from collections import defaultdict
 from datetime import date
@@ -68,6 +76,19 @@ def _vazio_vendas() -> Dict[str, float]:
     campos.update({f"n_{t}": 0 for t in TIPOS_VENDA})
     campos.update({f"pendente_{t}": 0.0 for t in TIPOS_VENDA})
     return campos
+
+
+PREFIXO_ORIGEM_MENSAL = "mensal:"  # = onedrive_sync.PREFIXO_ORIGEM_MENSAL
+
+
+def sem_duplicados_mensal_diario(movimentos: list) -> list:
+    """Os movimentos sem os dos ficheiros diários de um dia/empresa que
+    também tem movimentos do extrato mensal (os mesmos, importados duas
+    vezes - ver docstring do módulo)."""
+    com_mensal = {(m.dia, m.empresa) for m in movimentos
+                  if (m.ficheiro_origem or "").startswith(PREFIXO_ORIGEM_MENSAL)}
+    return [m for m in movimentos
+            if (m.ficheiro_origem or "").startswith(PREFIXO_ORIGEM_MENSAL) or (m.dia, m.empresa) not in com_mensal]
 
 
 def transferencias_internas_mesmo_dia(movimentos: list) -> set:
@@ -126,7 +147,7 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
     recebido_dia: Dict[date, float] = defaultdict(float)
     pago_dia: Dict[date, float] = defaultdict(float)
     internas_dia: Dict[date, float] = defaultdict(float)
-    movimentos = (
+    movimentos = sem_duplicados_mensal_diario(
         db.query(MovimentoBancario)
         .filter(MovimentoBancario.dia >= inicio, MovimentoBancario.dia <= fim)
         .all()
@@ -199,8 +220,8 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
             diario.append({
                 "dia": dia.isoformat(), "liquidez": round(liquidez, 2),
                 "saldo_contabilistico": round(contabilistico or 0.0, 2),
-                "recebido": round(m["recebido"] or 0.0, 2), "pago": round(m["pago"] or 0.0, 2),
-                "transferencias_internas": None,
+                "recebido": round(recebido_dia.get(dia, 0.0), 2), "pago": round(pago_dia.get(dia, 0.0), 2),
+                "transferencias_internas": round(internas_dia.get(dia, 0.0), 2),
                 "cpcv": round(m["cpcv"] or 0.0, 2), "reforco_sinal": round(v["reforco_sinal"], 2),
                 "escritura": round(m["escritura"] or 0.0, 2), "fonte": "mapa",
             })
@@ -249,7 +270,9 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
         linha["transferencias_internas"] = round(sum(v for d, v in internas_dia.items() if d.month == mes), 2)
         linha["fonte"] = "extratos"
         if mes in meses_com_mapa:
+            do_banco = {c: linha[c] for c in ("recebido", "pago", "transferencias_internas")}
             linha.update(_totais_do_mapa([(d, v) for d, v in sorted(mapa.items()) if d.month == mes and d <= date.today()]))
+            linha.update(do_banco)  # recebido/pago: sempre a soma do banco
         meses.append(linha)
 
     return {"ano": ano, "meses": meses, "diario": diario}

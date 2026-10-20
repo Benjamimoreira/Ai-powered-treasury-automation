@@ -116,12 +116,19 @@ def _importar_movimentos_em_falta(db: Session, caminho: str, dia: date) -> int:
     BD). Nunca apaga - os movimentos já importados podem ter reconciliações
     e resoluções manuais associadas."""
     origem = os.path.basename(caminho)
+    empresa = nome_empresa_do_ficheiro(caminho)
+    # dia/empresa que já veio do extrato mensal (jan-mar de 2026): os mesmos
+    # movimentos - 20/10/2026 esses meses passaram a ter também pastas diárias
+    # e entraram todos duas vezes
+    if db.query(MovimentoBancario.id).filter(
+            MovimentoBancario.dia == dia, MovimentoBancario.empresa == empresa,
+            MovimentoBancario.ficheiro_origem.like(f"{PREFIXO_ORIGEM_MENSAL}%")).first():
+        return 0
     ja_importados = Counter(
         (descricao, valor) for descricao, valor in
         db.query(MovimentoBancario.descricao, MovimentoBancario.valor)
         .filter(MovimentoBancario.dia == dia, MovimentoBancario.ficheiro_origem == origem)
     )
-    empresa = nome_empresa_do_ficheiro(caminho)
     inseridos = 0
     for mov in ler_movimentos_do_extrato(caminho):
         chave = (mov["descricao"], mov["valor"])

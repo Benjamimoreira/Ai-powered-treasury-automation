@@ -53,8 +53,8 @@ def test_le_o_resumo_como_o_excel(tmp_path):
 
 
 def test_resumo_mensal_usa_o_mapa_do_mes(client, db_session, monkeypatch):
-    """Num mês com Mapa, recebido/pago/saldos/CPCVs são os do Resumo do Mapa,
-    não os dos extratos."""
+    """Num mês com Mapa, saldos/CPCVs/escrituras são os do Resumo do Mapa;
+    recebido e pago são sempre a soma do banco (20/10/2026)."""
     from app.db.models import MovimentoBancario, SaldoDiario
 
     db_session.add_all([
@@ -75,12 +75,12 @@ def test_resumo_mensal_usa_o_mapa_do_mes(client, db_session, monkeypatch):
     outubro = [m for m in r["meses"] if m["mes"] == 10][0]
     assert outubro["fonte"] == "mapa"
     assert (outubro["recebido"], outubro["pago"], outubro["cpcv"], outubro["n_cpcv"], outubro["escritura"]) == (
-        1500.5, 550.0, 162500.0, 2, 38000.0)
+        999999.0, 0.0, 162500.0, 2, 38000.0)
     assert (outubro["saldo_fim"], outubro["saldo_contabilistico_fim"]) == (100.0, 120.0)
     diario = {d["dia"]: d for d in r["diario"]}
-    assert (diario["2026-10-01"]["recebido"], diario["2026-10-01"]["liquidez"]) == (1500.5, 100.0)
+    assert (diario["2026-10-01"]["recebido"], diario["2026-10-01"]["liquidez"]) == (999999.0, 100.0)
     # dia sem saldo na linha do Resumo: o do dia antes
-    assert (diario["2026-10-02"]["pago"], diario["2026-10-02"]["liquidez"]) == (350.0, 100.0)
+    assert (diario["2026-10-02"]["pago"], diario["2026-10-02"]["liquidez"]) == (0.0, 100.0)
 
 
 def test_le_o_resumo_antigo_de_janeiro_a_maio(tmp_path):
@@ -128,3 +128,50 @@ def test_valores_escritos_como_formula_nas_linhas_contam(tmp_path):
     assert round(dias[5]["recebido"], 2) == 309.87  # 100 + 9.87 + 200
     assert dias[5]["pago"] == 11.5
     assert dias[6]["recebido"] is None  # erro no Mapa: sem valor, nunca um total errado
+
+
+def test_movimentos_do_extrato_mensal_e_dos_diarios_contam_uma_vez(client, db_session, monkeypatch):
+    """Jan-mar só tinham extratos mensais; a 20/10/2026 passaram a ter também
+    pastas diárias e os mesmos movimentos entraram duas vezes na BD. Não se
+    apagam: os dos ficheiros diários de um dia/empresa com extrato mensal
+    não contam."""
+    from app.db.models import MovimentoBancario, SaldoDiario
+
+    monkeypatch.setattr(resumo_saldos, "resumo_do_mes", lambda ano, mes: None)
+    db_session.add_all([
+        SaldoDiario(dia=date(2026, 2, 3), entidade="A,LDA", saldo_contabilistico=1, saldo_disponivel=1),
+        MovimentoBancario(dia=date(2026, 2, 3), empresa="A,LDA", descricao="TRF", valor=100,
+                          ficheiro_origem="mensal:A,LDA.xlsx"),
+        MovimentoBancario(dia=date(2026, 2, 3), empresa="A,LDA", descricao="EDP", valor=-40,
+                          ficheiro_origem="mensal:A,LDA.xlsx"),
+        MovimentoBancario(dia=date(2026, 2, 3), empresa="A,LDA", descricao="TRF", valor=100,
+                          ficheiro_origem="03-02-2026_A,LDA.xlsx"),  # o mesmo, outra vez
+        MovimentoBancario(dia=date(2026, 2, 3), empresa="B,LDA", descricao="TRF", valor=7,
+                          ficheiro_origem="03-02-2026_B,LDA.xlsx"),  # B sem extrato mensal: conta
+    ])
+    db_session.commit()
+    r = client.get("/saldos/resumo-mensal", params={"ano": 2026}).json()
+    fevereiro = [m for m in r["meses"] if m["mes"] == 2][0]
+    assert (fevereiro["recebido"], fevereiro["pago"]) == (107.0, 40.0)
+    assert {d["dia"]: d for d in r["diario"]}["2026-02-03"]["recebido"] == 107.0
+    assert db_session.query(MovimentoBancario).count() == 4  # nada apagado
+
+
+def test_importador_nao_volta_a_importar_um_dia_que_veio_do_extrato_mensal(tmp_path, db_session):
+    from app.db.models import MovimentoBancario
+    from app.services import onedrive_sync
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Data mov. ", "Data-valor ", "Descrição ", "Montante ", "Saldo contabilístico após movimento "])
+    ws.append(["03-02-2026", "03-02-2026", "TRF ", "100,00", "1.100,00"])
+    for empresa in ("A,LDA", "B,LDA"):
+        wb.save(tmp_path / f"03-02-2026_{empresa}.xlsx")
+    db_session.add(MovimentoBancario(dia=date(2026, 2, 3), empresa="A,LDA", descricao="TRF", valor=100,
+                                     ficheiro_origem="mensal:A,LDA.xlsx"))
+    db_session.commit()
+    assert onedrive_sync._importar_movimentos_em_falta(db_session, str(tmp_path / "03-02-2026_A,LDA.xlsx"),
+                                                       date(2026, 2, 3)) == 0
+    assert onedrive_sync._importar_movimentos_em_falta(db_session, str(tmp_path / "03-02-2026_B,LDA.xlsx"),
+                                                       date(2026, 2, 3)) == 1
+    assert db_session.query(MovimentoBancario).count() == 2
