@@ -97,12 +97,13 @@ def _validar_extracao(extracao: Optional[Dict[str, Any]]) -> Optional[Dict[str, 
     if fim < inicio:
         raise ValueError("A data de fim da extração é anterior à de início.")
     resultado = {"modo": "periodo", "inicio": inicio.isoformat(), "fim": fim.isoformat()}
-    # "intervalo": cada empresa pesquisada uma vez com o intervalo inteiro
-    # no calendário da CGD (--uma-pesquisa); por omissão, um dia de cada vez
-    pesquisa = extracao.get("pesquisa") or "dia"
-    if pesquisa not in ("dia", "intervalo"):
+    # "intervalo" (o que o agente faz se não vier nada): cada empresa
+    # pesquisada uma vez com o intervalo inteiro no calendário da CGD
+    # (--uma-pesquisa); "dia": uma pesquisa por dia
+    pesquisa = extracao.get("pesquisa")
+    if pesquisa not in (None, "", "dia", "intervalo"):
         raise ValueError(f"Pesquisa desconhecida: {pesquisa}")
-    if pesquisa == "intervalo":
+    if pesquisa:
         resultado["pesquisa"] = pesquisa
     # reextração de uma discrepância: a empresa, o tipo e o dia dela (para a
     # verificar - a extração vai uma semana para trás desse dia)

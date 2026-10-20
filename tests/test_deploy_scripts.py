@@ -149,8 +149,8 @@ def test_deploy_guarda_a_extracao_escolhida_e_valida(client):
 
 
 def test_deploy_guarda_a_pesquisa_do_intervalo_no_banco(client):
-    """Intervalo de dias "numa só pesquisa": a API guarda-o; "dia" (um dia de
-    cada vez) é o de sempre e não fica no pedido."""
+    """A pesquisa pedida fica no pedido; sem nenhuma, o agente faz uma só
+    pesquisa por empresa (ver test_extrair_dias_numa_so_pesquisa...)."""
     periodo = {"modo": "periodo", "inicio": "2026-10-01", "fim": "2026-10-05"}
     corpo = client.post("/monitorizacao/deploys", json={
         "alvo": "scripts_cgd", "extracao": {**periodo, "pesquisa": "intervalo"}}).json()
@@ -158,7 +158,7 @@ def test_deploy_guarda_a_pesquisa_do_intervalo_no_banco(client):
 
     corpo = client.post("/monitorizacao/deploys", json={
         "alvo": "tesouraria_preenchimento", "extracao": {**periodo, "pesquisa": "dia"}}).json()
-    assert corpo["extracao"] == periodo
+    assert corpo["extracao"] == {**periodo, "pesquisa": "dia"}
     assert client.post("/monitorizacao/deploys", json={
         "alvo": "scripts_cgd", "extracao": {**periodo, "pesquisa": "semana"}}).status_code == 422
 
@@ -175,10 +175,17 @@ def test_extrair_dias_numa_so_pesquisa_passa_uma_pesquisa_ao_exe(tmp_path, monke
     periodo = {"modo": "periodo", "inicio": "2026-10-01", "fim": "2026-10-05"}
     ctx.estado["extracao"] = {**periodo, "pesquisa": "intervalo"}
     deploy_windows._cgd_extrair_dias(ctx)
-    ctx.estado["extracao"] = periodo  # um dia de cada vez, como antes
+    # sem "pesquisa" (corrigir discrepâncias, reextrair uma discrepância): também uma só
+    ctx.estado["extracao"] = {**periodo, "discrepancias": [{"dia": "2026-10-03", "empresa": "X", "tipo": ""}]}
+    deploy_windows._cgd_extrair_dias(ctx)
+    ctx.estado["extracao"] = {**periodo, "empresa": "EMP", "dia": "2026-10-05"}
+    deploy_windows._cgd_extrair_dias(ctx)
+    ctx.estado["extracao"] = {**periodo, "pesquisa": "dia"}  # um dia de cada vez, como antes
     deploy_windows._cgd_extrair_dias(ctx)
 
     assert [c[1:] for c in comandos] == [["--dias", "2026-10-01:2026-10-05", "--uma-pesquisa"],
+                                         ["--dias", "2026-10-01:2026-10-05", "--uma-pesquisa"],
+                                         ["--dias", "2026-10-01:2026-10-05", "--empresa", "EMP", "--uma-pesquisa"],
                                          ["--dias", "2026-10-01:2026-10-05"]]
 
 

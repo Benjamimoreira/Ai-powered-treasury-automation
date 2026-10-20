@@ -382,8 +382,10 @@ def _cgd_extrair_dias(ctx: Contexto) -> None:
     comando = [exe, "--dias", f"{extracao['inicio']}:{extracao['fim']}"]
     if extracao.get("empresa"):
         comando += ["--empresa", extracao["empresa"]]
-    if extracao.get("pesquisa") == "intervalo":
-        comando.append("--uma-pesquisa")  # de inicio a fim numa só pesquisa por empresa
+    # de inicio a fim numa só pesquisa por empresa (também nas correções de
+    # discrepâncias e reextrações); "dia" = uma pesquisa por dia, como antes
+    if extracao.get("pesquisa", "intervalo") == "intervalo":
+        comando.append("--uma-pesquisa")
     ctx.correr(comando, cwd=pasta)
 
 
