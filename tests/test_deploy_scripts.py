@@ -148,6 +148,40 @@ def test_deploy_guarda_a_extracao_escolhida_e_valida(client):
         "alvo": "tesouraria_preenchimento", "extracao": {"modo": "qualquer"}}).status_code == 422
 
 
+def test_deploy_guarda_a_pesquisa_do_intervalo_no_banco(client):
+    """Intervalo de dias "numa só pesquisa": a API guarda-o; "dia" (um dia de
+    cada vez) é o de sempre e não fica no pedido."""
+    periodo = {"modo": "periodo", "inicio": "2026-10-01", "fim": "2026-10-05"}
+    corpo = client.post("/monitorizacao/deploys", json={
+        "alvo": "scripts_cgd", "extracao": {**periodo, "pesquisa": "intervalo"}}).json()
+    assert corpo["extracao"] == {**periodo, "pesquisa": "intervalo"}
+
+    corpo = client.post("/monitorizacao/deploys", json={
+        "alvo": "tesouraria_preenchimento", "extracao": {**periodo, "pesquisa": "dia"}}).json()
+    assert corpo["extracao"] == periodo
+    assert client.post("/monitorizacao/deploys", json={
+        "alvo": "scripts_cgd", "extracao": {**periodo, "pesquisa": "semana"}}).status_code == 422
+
+
+def test_extrair_dias_numa_so_pesquisa_passa_uma_pesquisa_ao_exe(tmp_path, monkeypatch):
+    pasta = tmp_path / "Movimentos Diários CGD"
+    pasta.mkdir()
+    (pasta / "MovimentosEscolherDiaCGD.exe").write_bytes(b"")
+    monkeypatch.setattr(deploy_windows, "PASTA_CGD_INSTALADA", tmp_path)
+    comandos = []
+    ctx = deploy_windows.Contexto(lambda **campos: None)
+    monkeypatch.setattr(ctx, "correr", lambda comando, **kw: comandos.append([str(c) for c in comando]))
+
+    periodo = {"modo": "periodo", "inicio": "2026-10-01", "fim": "2026-10-05"}
+    ctx.estado["extracao"] = {**periodo, "pesquisa": "intervalo"}
+    deploy_windows._cgd_extrair_dias(ctx)
+    ctx.estado["extracao"] = periodo  # um dia de cada vez, como antes
+    deploy_windows._cgd_extrair_dias(ctx)
+
+    assert [c[1:] for c in comandos] == [["--dias", "2026-10-01:2026-10-05", "--uma-pesquisa"],
+                                         ["--dias", "2026-10-01:2026-10-05"]]
+
+
 def test_reiniciar_anual_escreve_a_extracao_pedida(tmp_path, monkeypatch):
     import json
 

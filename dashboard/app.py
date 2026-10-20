@@ -2435,9 +2435,13 @@ def _escolha_extracao_deploy():
             intervalo = st.date_input("De / até", value=(hoje - timedelta(days=1), hoje), max_value=hoje,
                                       key="intervalo_extracao_deploy", width=260)
             if isinstance(intervalo, (list, tuple)) and len(intervalo) == 2:
-                return ({"modo": "periodo", "inicio": intervalo[0].isoformat(), "fim": intervalo[1].isoformat()},
-                        f"extrai de {intervalo[0]:%d/%m/%Y} a {intervalo[1]:%d/%m/%Y} e atualiza o Mapa de Saldos, "
-                        "o Mapa de Pagamentos e Recebimentos e o dashboard")
+                # no site da CGD, o intervalo inteiro no calendário numa só
+                # pesquisa por empresa (não um dia de cada vez), dividida
+                # depois por dia (MovimentosEscolherDiaCGD --uma-pesquisa)
+                return ({"modo": "periodo", "inicio": intervalo[0].isoformat(), "fim": intervalo[1].isoformat(),
+                         "pesquisa": "intervalo"},
+                        f"extrai de {intervalo[0]:%d/%m/%Y} a {intervalo[1]:%d/%m/%Y} (uma só pesquisa por empresa "
+                        "no banco) e atualiza o Mapa de Saldos, o Mapa de Pagamentos e Recebimentos e o dashboard")
             return {"modo": "nenhuma"}, "só instala (escolhe as duas datas do intervalo)"
         if modo == "ano":
             return {"modo": "ano"}, "faz a extração anual do ano inteiro (o banco pede código SMS)"
@@ -2523,6 +2527,24 @@ def _pedir_corrida(nome_script: str):
                    "~15 s. O estado em cima atualiza quando a corrida terminar.")
     else:
         st.success(f"Execução de '{nome_script}' iniciada. O estado atualiza quando terminar.")
+
+
+def _botao_corrigir_corrida(item: dict, indice: int, corriveis: set):
+    """Botão de uma corrida com erro no Histórico de logs: corrigir = voltar
+    a correr o script (o mesmo pedido que o "Correr"), que refaz as tasks
+    que falharam. Os scripts sem "Correr" (CGD, sincronizador...) só dizem
+    porquê. Pede confirmação: o envio do Mapa manda o email a sério."""
+    script = item.get("script") or ""
+    if script not in corriveis:
+        st.caption(f"↳ '{script}' não pode ser corrido a partir do dashboard - corre na próxima execução agendada.")
+        return
+    nome = NOMES_BOTAO_CORRER.get(script, script)
+    with st.popover("🔧 Corrigir erros da corrida"):
+        st.markdown(f"Volta a correr **{nome}** (como a tarefa agendada) para refazer o que falhou nesta corrida"
+                    + (" - isto **envia o Mapa por email** outra vez." if script == "enviar_mapa_smtp" else "."))
+        if st.button("Corrigir agora", key=f"corrigir_corrida_{indice}_{script}_{item.get('timestamp')}",
+                     type="primary"):
+            _pedir_corrida(script)
 
 
 def _botoes_correr_scripts(nomes: list):
@@ -2736,8 +2758,9 @@ if aba_monitorizacao.open:
                     limit=20, dia=dia_logs.isoformat() if dia_logs else None,
                 ).get("logs", [])
                 if logs_lista:
+                    corriveis = {s["nome"] for s in scripts if s.get("corrivel")}
                     with st.container(height=520):
-                        for item in reversed(logs_lista):
+                        for i, item in enumerate(reversed(logs_lista)):
                             nivel = str(item.get("nivel", "info")).lower()
                             _linha_log(
                                 item.get("timestamp") or "-", item.get("script") or "script", nivel,
@@ -2745,6 +2768,8 @@ if aba_monitorizacao.open:
                             )
                             if item.get("detalhe"):
                                 _renderizar_detalhe_tarefas(item["detalhe"])
+                            if nivel == "erro":
+                                _botao_corrigir_corrida(item, i, corriveis)
                 else:
                     st.info("Sem logs de execução neste dia." if filtrar_por_dia else "Sem logs de execução.")
             except Exception as e:
