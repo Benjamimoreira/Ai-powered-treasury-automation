@@ -267,3 +267,74 @@ def resumo_do_mes(ano: int, mes: int) -> Optional[Dict[date, Dict[str, Any]]]:
         except ValueError:  # 31 num mês de 30 dias
             continue
     return resultado
+
+
+_REF_FOLHA_DIA = re.compile(r"^=\+?'(\d{2})'!\$?([A-Z]{1,3})\$?(\d+)$")
+_INICIO_TOTAL = ("=SUM(", "=+SUM(", "=SUBTOTAL(", "=+SUBTOTAL(")
+_CACHE_AVISOS: Dict[tuple, list] = {}
+
+
+def _linha_total_coluna(ws, coluna: str) -> Optional[int]:
+    """A linha do total dessa coluna na folha do dia (primeira =SUM/=SUBTOTAL)."""
+    c = openpyxl.utils.column_index_from_string(coluna)
+    for r in range(5, ws.max_row + 1):
+        v = ws.cell(r, c).value
+        if isinstance(v, str) and v.strip().upper().startswith(_INICIO_TOTAL):
+            return r
+    return None
+
+
+def referencias_desalinhadas(caminho: str) -> list:
+    """Avisos das células do Resumo que leem uma folha de dia mas não o total
+    desse dia: outra folha ('03' na linha do dia 4) ou outra linha (a linha do
+    total desceu e a fórmula ficou para trás). 21/10/2026: no Resumo de
+    setembro, os dias 8, 18 e 25 liam linhas sem nada e contavam 0 no total.
+    O preencher_mapa corrige-as no mês que preenche; os meses fechados ficam
+    como estão, por isso o dashboard avisa."""
+    try:
+        estado = os.stat(caminho)
+    except OSError:
+        return []
+    chave = (caminho, estado.st_mtime_ns, estado.st_size)
+    if chave in _CACHE_AVISOS:
+        return _CACHE_AVISOS[chave]
+    avisos = []
+    try:
+        wb = openpyxl.load_workbook(caminho)
+    except Exception:
+        return []
+    if "Resumo" in wb.sheetnames:
+        ws = wb["Resumo"]
+        totais: Dict[tuple, Optional[int]] = {}
+        for r in range(1, ws.max_row + 1):
+            dia = ws[f"A{r}"].value
+            if not isinstance(dia, int) or not 1 <= dia <= 31:
+                continue
+            for cel in ws[r]:
+                m = _REF_FOLHA_DIA.match(str(cel.value or "").strip())
+                if not m:
+                    continue
+                folha, coluna, linha = m.group(1), m.group(2), int(m.group(3))
+                if folha != f"{dia:02d}":
+                    avisos.append(f"dia {dia}: {cel.coordinate} lê a folha '{folha}' ({cel.value}) em vez da folha '{dia:02d}'")
+                    continue
+                if folha not in wb.sheetnames:
+                    continue
+                if (folha, coluna) not in totais:
+                    totais[(folha, coluna)] = _linha_total_coluna(wb[folha], coluna)
+                total = totais[(folha, coluna)]
+                if total and linha != total:
+                    avisos.append(f"dia {dia}: {cel.coordinate} lê {coluna}{linha} da folha '{folha}', "
+                                  f"mas o total do dia está em {coluna}{total}")
+    if len(_CACHE_AVISOS) > 24:
+        _CACHE_AVISOS.clear()
+    _CACHE_AVISOS[chave] = avisos
+    return avisos
+
+
+def avisos_do_mes(ano: int, mes: int) -> list:
+    """referencias_desalinhadas do Mapa desse mês ([] sem Mapa/sem acesso)."""
+    try:
+        return referencias_desalinhadas(caminho_mapa(date(ano, mes, 1)))
+    except Exception:
+        return []

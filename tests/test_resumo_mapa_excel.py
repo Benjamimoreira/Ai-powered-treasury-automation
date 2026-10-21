@@ -175,3 +175,25 @@ def test_importador_nao_volta_a_importar_um_dia_que_veio_do_extrato_mensal(tmp_p
     assert onedrive_sync._importar_movimentos_em_falta(db_session, str(tmp_path / "03-02-2026_B,LDA.xlsx"),
                                                        date(2026, 2, 3)) == 1
     assert db_session.query(MovimentoBancario).count() == 2
+
+
+def test_avisa_celulas_do_resumo_que_nao_leem_o_total_do_dia(tmp_path):
+    """21/10/2026, Resumo de setembro: o dia 8 lia '08'!D31 com o total já
+    em D37 (contava 0); em julho o dia 4 lia a folha do dia 2."""
+    wb = openpyxl.Workbook()
+    res = wb.active
+    res.title = "Resumo"
+    for nome, total in (("04", 30), ("08", 37), ("09", 20)):
+        folha = wb.create_sheet(nome)
+        folha[f"D{total}"], folha[f"J{total}"] = f"=SUM(D5:D{total - 1})", f"=SUM(J5:J{total - 1})"
+    wb.create_sheet("02")["D52"] = "=SUM(D5:D51)"
+    res["A9"], res["C9"] = 4, "=+'02'!D52"                      # outra folha
+    res["A13"], res["C13"], res["L13"] = 8, "='08'!D31", "='08'!J37"  # C: linha errada; L: certa
+    res["A14"], res["C14"], res["L14"] = 9, "='09'!D20", "='09'!J20"  # certas
+    caminho = tmp_path / "09 - Mapa.xlsx"
+    wb.save(caminho)
+
+    avisos = resumo_mapa_excel.referencias_desalinhadas(str(caminho))
+
+    assert avisos == ["dia 4: C9 lê a folha '02' (=+'02'!D52) em vez da folha '04'",
+                      "dia 8: C13 lê D31 da folha '08', mas o total do dia está em D37"]

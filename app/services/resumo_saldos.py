@@ -44,7 +44,7 @@ from sqlalchemy.orm import Session
 from app.db.models import LinhaMapa, MovimentoBancario
 from app.services.reconciliador import _e_cpcv_ou_escritura, remover_acentos
 from app.services.mapa_saldos_excel import serie_saldo_total_bruta
-from app.services.resumo_mapa_excel import resumo_do_mes
+from app.services.resumo_mapa_excel import avisos_do_mes, resumo_do_mes
 
 TIPOS_VENDA = ("cpcv", "reforco_sinal", "escritura")
 
@@ -270,6 +270,8 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
         linha["fonte"] = "extratos"
         if mes in meses_com_mapa:
             linha.update(_totais_do_mapa([(d, v) for d, v in sorted(mapa.items()) if d.month == mes and d <= date.today()]))
+            # células do Resumo que não leem o total do dia (ver referencias_desalinhadas)
+            linha["avisos_resumo"] = avisos_do_mes(ano, mes)
         meses.append(linha)
 
     return {"ano": ano, "meses": meses, "diario": diario}

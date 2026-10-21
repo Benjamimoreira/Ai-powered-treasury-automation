@@ -3699,6 +3699,14 @@ def _resumo_mapa_do_mes(ano: int, mes: int, resumo: dict, diario: list) -> None:
                        "Saldo Bancário Disponível, saldo bancário (disponível + indisponível), CPCVs e escrituras "
                        "(Valor Recebido). Os reforços de sinal não têm coluna no Resumo: vêm das linhas do Mapa e "
                        "não entram no total das vendas.")
+            avisos_resumo = resumo.get("avisos_resumo") or []
+            if avisos_resumo:
+                # o Resumo lê uma linha que não é o total do dia: esse dia fica mal somado
+                st.warning(f"⚠️ O Resumo do Mapa de {MESES_NOME_COMPLETO[mes - 1].lower()} tem "
+                           f"{len(avisos_resumo)} célula(s) que não leem o total do dia - o Recebido/Pago do mês "
+                           "está errado nesses dias. Corrigir no Excel (ou correr o Atualizar Mapa desse mês):\n\n"
+                           + "\n".join(f"- {a}" for a in avisos_resumo[:15])
+                           + (f"\n- … e mais {len(avisos_resumo) - 15}" if len(avisos_resumo) > 15 else ""))
         else:
             st.caption("Recebido e pago: movimentos dos extratos, no dia em que o banco os fez (os do fim de semana "
                        "ficam no sábado/domingo, não na segunda), sem as transferências entre empresas do grupo no "
