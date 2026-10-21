@@ -23,12 +23,11 @@ Também devolve a liquidez dia a dia com essas entradas, para o gráfico do
 mês escolhido no dashboard.
 
 Num mês com Mapa de Pagamentos e Recebimentos (pedido 19/10/2026: o resumo
-tem de bater com o Mapa do mês), saldo bancário, saldo bancário disponível,
-CPCVs e escrituras vêm da folha Resumo desse Mapa (resumo_mapa_excel.py) -
-"fonte": "mapa". Recebido e pago vêm SEMPRE dos extratos (pedido 20/10/2026:
-"só tens de fazer a soma total de quanto recebeu e de quanto pagou" - os
-Mapas de janeiro-setembro ficaram com linhas a mais nas corridas desse dia e
-os totais do Resumo inchavam).
+tem de bater com o Mapa do mês), recebido, pago, saldo bancário, saldo
+bancário disponível, CPCVs e escrituras vêm da folha Resumo desse Mapa
+(resumo_mapa_excel.py) - "fonte": "mapa" - os valores das células, como o
+Excel os mostra (21/10/2026: a soma do banco não é o que o Resumo mostra).
+O que está acima fica só para os meses sem Mapa.
 
 Janeiro-março só tinham extratos mensais; a 20/10/2026 passaram a ter
 também pastas diárias e os mesmos movimentos entraram outra vez na BD, vindos
@@ -220,8 +219,8 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
             diario.append({
                 "dia": dia.isoformat(), "liquidez": round(liquidez, 2),
                 "saldo_contabilistico": round(contabilistico or 0.0, 2),
-                "recebido": round(recebido_dia.get(dia, 0.0), 2), "pago": round(pago_dia.get(dia, 0.0), 2),
-                "transferencias_internas": round(internas_dia.get(dia, 0.0), 2),
+                "recebido": round(m["recebido"] or 0.0, 2), "pago": round(m["pago"] or 0.0, 2),
+                "transferencias_internas": None,
                 "cpcv": round(m["cpcv"] or 0.0, 2), "reforco_sinal": round(v["reforco_sinal"], 2),
                 "escritura": round(m["escritura"] or 0.0, 2), "fonte": "mapa",
             })
@@ -270,9 +269,7 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
         linha["transferencias_internas"] = round(sum(v for d, v in internas_dia.items() if d.month == mes), 2)
         linha["fonte"] = "extratos"
         if mes in meses_com_mapa:
-            do_banco = {c: linha[c] for c in ("recebido", "pago", "transferencias_internas")}
             linha.update(_totais_do_mapa([(d, v) for d, v in sorted(mapa.items()) if d.month == mes and d <= date.today()]))
-            linha.update(do_banco)  # recebido/pago: sempre a soma do banco
         meses.append(linha)
 
     return {"ano": ano, "meses": meses, "diario": diario}

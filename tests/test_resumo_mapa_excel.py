@@ -53,8 +53,8 @@ def test_le_o_resumo_como_o_excel(tmp_path):
 
 
 def test_resumo_mensal_usa_o_mapa_do_mes(client, db_session, monkeypatch):
-    """Num mês com Mapa, saldos/CPCVs/escrituras são os do Resumo do Mapa;
-    recebido e pago são sempre a soma do banco (20/10/2026)."""
+    """Num mês com Mapa, recebido/pago/saldos/CPCVs são os do Resumo do Mapa
+    (os valores das células), não os dos extratos."""
     from app.db.models import MovimentoBancario, SaldoDiario
 
     db_session.add_all([
@@ -75,12 +75,12 @@ def test_resumo_mensal_usa_o_mapa_do_mes(client, db_session, monkeypatch):
     outubro = [m for m in r["meses"] if m["mes"] == 10][0]
     assert outubro["fonte"] == "mapa"
     assert (outubro["recebido"], outubro["pago"], outubro["cpcv"], outubro["n_cpcv"], outubro["escritura"]) == (
-        999999.0, 0.0, 162500.0, 2, 38000.0)
+        1500.5, 550.0, 162500.0, 2, 38000.0)
     assert (outubro["saldo_fim"], outubro["saldo_contabilistico_fim"]) == (100.0, 120.0)
     diario = {d["dia"]: d for d in r["diario"]}
-    assert (diario["2026-10-01"]["recebido"], diario["2026-10-01"]["liquidez"]) == (999999.0, 100.0)
+    assert (diario["2026-10-01"]["recebido"], diario["2026-10-01"]["liquidez"]) == (1500.5, 100.0)
     # dia sem saldo na linha do Resumo: o do dia antes
-    assert (diario["2026-10-02"]["pago"], diario["2026-10-02"]["liquidez"]) == (0.0, 100.0)
+    assert (diario["2026-10-02"]["pago"], diario["2026-10-02"]["liquidez"]) == (350.0, 100.0)
 
 
 def test_le_o_resumo_antigo_de_janeiro_a_maio(tmp_path):

@@ -3694,12 +3694,11 @@ def _resumo_mapa_do_mes(ano: int, mes: int, resumo: dict, diario: list) -> None:
                     f" - {MESES_NOME_COMPLETO[mes - 1]} {ano}**")
         internas = resumo.get("transferencias_internas") or 0
         if do_mapa:
-            st.caption("Recebido e pago: a soma do que entrou e saiu no banco este mês (extratos, no dia do banco), "
-                       "sem as transferências entre empresas do grupo no mesmo dia"
-                       + (f" ({_n(internas, 2)} € este mês)" if internas else "")
-                       + ". Da folha Resumo do Mapa de Pagamentos e Recebimentos: Saldo Bancário Disponível, saldo "
-                       "bancário (disponível + indisponível), CPCVs e escrituras (Valor Recebido). Os reforços de "
-                       "sinal não têm coluna no Resumo: vêm das linhas do Mapa e não entram no total das vendas.")
+            st.caption("Os valores da folha Resumo do Mapa de Pagamentos e Recebimentos deste mês: Recebido e Pago "
+                       "(totais das folhas de cada dia - os movimentos do fim de semana ficam na folha de segunda), "
+                       "Saldo Bancário Disponível, saldo bancário (disponível + indisponível), CPCVs e escrituras "
+                       "(Valor Recebido). Os reforços de sinal não têm coluna no Resumo: vêm das linhas do Mapa e "
+                       "não entram no total das vendas.")
         else:
             st.caption("Recebido e pago: movimentos dos extratos, no dia em que o banco os fez (os do fim de semana "
                        "ficam no sábado/domingo, não na segunda), sem as transferências entre empresas do grupo no "
