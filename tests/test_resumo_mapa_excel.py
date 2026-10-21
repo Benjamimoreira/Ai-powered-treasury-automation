@@ -183,6 +183,8 @@ def test_avisa_celulas_do_resumo_que_nao_leem_o_total_do_dia(tmp_path):
     wb = openpyxl.Workbook()
     res = wb.active
     res.title = "Resumo"
+    res["B2"], res["K2"] = "Recebimentos", "Pagamentos"  # formato atual: Recebido em C, Pago em L
+    res["B3"], res["C3"], res["K3"], res["L3"] = "Previsão", "Recebido", "Previsão", "Pago"
     for nome, total in (("04", 30), ("08", 37), ("09", 20)):
         folha = wb.create_sheet(nome)
         folha[f"D{total}"], folha[f"J{total}"] = f"=SUM(D5:D{total - 1})", f"=SUM(J5:J{total - 1})"
@@ -197,3 +199,22 @@ def test_avisa_celulas_do_resumo_que_nao_leem_o_total_do_dia(tmp_path):
 
     assert avisos == ["dia 4: C9 lê a folha '02' (=+'02'!D52) em vez da folha '04'",
                       "dia 8: C13 lê D31 da folha '08', mas o total do dia está em D37"]
+
+
+def test_resumo_no_formato_antigo_nao_da_avisos(tmp_path):
+    """Jan-jun: folhas dos dias com outra disposição e vários subtotais (o
+    total do dia 9 de janeiro é J32, com um =SUM(I30) solto em J30) - os
+    avisos eram falsos alarmes."""
+    wb = openpyxl.Workbook()
+    res = wb.active
+    res.title = "Resumo"
+    res["B3"], res["G3"] = "Recebimentos", "Pagamentos"
+    for col, texto in zip("BCDEFGHIJ", ["Previsão", "Recebido", "Desvio", "Excepcional", "Total RECEBIDO",
+                                        "Previsão", "Pago", "Desvio", "Valor PAGO"]):
+        res[f"{col}4"] = texto
+    dia = wb.create_sheet("09")
+    dia["J30"], dia["J32"] = "=SUM(I30)", "=SUM(J5:J30)"
+    res["A14"], res["C14"] = 9, "='09'!J32"
+    caminho = tmp_path / "01 - Mapa.xlsx"
+    wb.save(caminho)
+    assert resumo_mapa_excel.referencias_desalinhadas(str(caminho)) == []

@@ -303,6 +303,14 @@ def referencias_desalinhadas(caminho: str) -> list:
         wb = openpyxl.load_workbook(caminho)
     except Exception:
         return []
+    colunas = colunas_do_resumo(wb["Resumo"]) if "Resumo" in wb.sheetnames else None
+    # Só no formato atual (Recebido em C, Pago em L - desde julho de 2026). Nos
+    # Resumos antigos as folhas dos dias têm outra disposição e vários
+    # subtotais, linhas de fim de semana e etiquetas de dia trocadas: os
+    # avisos eram falsos alarmes e os totais estão certos (confirmado 21/10/2026).
+    if not colunas or (colunas["recebido"], colunas["pago"]) != ("C", "L"):
+        _CACHE_AVISOS[chave] = avisos
+        return avisos
     if "Resumo" in wb.sheetnames:
         ws = wb["Resumo"]
         totais: Dict[tuple, Optional[int]] = {}
