@@ -403,6 +403,20 @@ def _dias_por_mes(extracao: dict) -> list:
     return [(f"{a}-{m:02d}", f"{d[0]}" if len(d) == 1 else f"{d[0]}-{d[-1]}") for (a, m), d in meses.items()]
 
 
+def _mes_aberto(mes: str, hoje=None) -> bool:
+    """"AAAA-MM" é o mês de hoje ou o anterior? Só esses se voltam a preencher:
+    a 20/10/2026 um deploy de 01-01 a 20-10 voltou a preencher os Mapas de
+    meses fechados (janeiro-junho noutro formato, julho-setembro com linhas
+    que lá não estavam) e estragou-os. Os extratos desses meses continuam a
+    ser extraídos - só o Mapa fica como está."""
+    from datetime import date as _date
+
+    hoje = hoje or _date.today()
+    ano, mes_n = map(int, mes.split("-"))
+    anterior = (hoje.year, hoje.month - 1) if hoje.month > 1 else (hoje.year - 1, 12)
+    return (ano, mes_n) in ((hoje.year, hoje.month), anterior)
+
+
 def _atualizar_mapas(ctx: Contexto) -> None:
     """Preenche o Mapa de Saldos e o Mapa de Pagamentos e Recebimentos DOS
     DIAS EXTRAÍDOS (o pedido automático do fim de uma extração só faz
@@ -411,6 +425,9 @@ def _atualizar_mapas(ctx: Contexto) -> None:
         ctx.linha("[AVISO] Sem ligação ao agente/API - não dá para preencher os Mapas daqui.")
         return
     for mes, dias in _dias_por_mes(ctx.estado["extracao"]):
+        if not _mes_aberto(mes):
+            ctx.linha(f"[INFO] Mapa de {mes} não é preenchido (mês fechado) - os extratos desses dias ficam extraídos.")
+            continue
         # outro Atualizar Mapa Tesouraria a correr (ex. o automático do fim
         # de uma extração): esperar que acabe, senão o nosso não arranca
         if _tarefa_a_correr(TAREFA_PREENCHER):

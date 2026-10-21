@@ -334,6 +334,7 @@ def test_atualizar_mapas_espera_pelo_que_ja_esta_a_correr(monkeypatch):
     estados = iter([True, True, False])  # a correr, a correr, livre
     monkeypatch.setattr(deploy_windows, "_tarefa_a_correr", lambda nome: next(estados, False))
     monkeypatch.setattr(deploy_windows.time, "sleep", lambda s: None)
+    monkeypatch.setattr(deploy_windows, "_mes_aberto", lambda mes: True)
     lancados = []
     ctx = deploy_windows.Contexto(lambda **campos: None)
     ctx.estado["extracao"] = {"inicio": "2026-10-06", "fim": "2026-10-12"}
@@ -342,6 +343,32 @@ def test_atualizar_mapas_espera_pelo_que_ja_esta_a_correr(monkeypatch):
         {"timestamp": "9999", "nivel": "info", "mensagem": "ok"}]}
     deploy_windows._atualizar_mapas(ctx)
     assert lancados == [["2026-10", "6-12"]]
+
+
+def test_so_se_preenchem_os_mapas_do_mes_atual_e_do_anterior(monkeypatch):
+    """20/10/2026: um deploy de 01-01 a 20-10 voltou a preencher os Mapas dos
+    meses fechados e estragou-os. Os extratos continuam a ser extraídos."""
+    from datetime import date
+
+    hoje = date(2026, 10, 21)
+    assert [m for m in ("2026-07", "2026-08", "2026-09", "2026-10", "2026-11")
+            if deploy_windows._mes_aberto(m, hoje)] == ["2026-09", "2026-10"]
+    assert deploy_windows._mes_aberto("2025-12", date(2026, 1, 5))  # janeiro: o anterior é dezembro
+
+    mes_aberto = deploy_windows._mes_aberto
+    monkeypatch.setattr(deploy_windows, "_tarefa_a_correr", lambda nome: False)
+    monkeypatch.setattr(deploy_windows, "_mes_aberto", lambda mes: mes_aberto(mes, hoje))
+    lancados, linhas = [], []
+    ctx = deploy_windows.Contexto(lambda **campos: None)
+    monkeypatch.setattr(ctx, "linha", linhas.append)
+    monkeypatch.setattr(ctx, "enviar_linhas", lambda: None)
+    ctx.estado["extracao"] = {"inicio": "2026-01-01", "fim": "2026-10-20"}
+    ctx.lancar = lancados.append
+    ctx.api = lambda metodo, caminho, corpo=None: {"logs": [
+        {"timestamp": "9999", "nivel": "info", "mensagem": "ok"}]}
+    deploy_windows._atualizar_mapas(ctx)
+    assert lancados == [["2026-09", "1-30"], ["2026-10", "1-20"]]
+    assert sum("mês fechado" in l for l in linhas) == 8  # janeiro a agosto
 
 
 def test_deploy_que_esperou_por_outro_nao_expira(monkeypatch):
