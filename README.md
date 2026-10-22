@@ -158,8 +158,10 @@ desenvolvimento (Docker Desktop sem WSL2 disponível).
 
 A cada push para `master`, o GitHub Actions ([ci.yml](.github/workflows/ci.yml))
 corre os testes, faz o build das imagens e publica-as no GitHub Container
-Registry (`ghcr.io/benjamimoreira/ai-powered-treasury-automation/{api,db,log-archiver,faturas-ocr}`,
-tags `latest` e `<sha do commit>`). A máquina de destino só precisa de
+Registry (`ghcr.io/benjamimoreira/ai-powered-treasury-automation/{api,db,log-archiver,faturas-ocr,scripts-diversos}`,
+tags `latest` e `<sha do commit>`). A imagem do serviço `preenchimento` (scripts
+sem janela da tesouraria preenchimento) vem do CI do repositório
+Treasury-Automation-PT2 (`ghcr.io/benjamimoreira/treasury-automation-pt2/preenchimento`). A máquina de destino só precisa de
 Docker - não compila nada nem precisa de Python.
 
 **Preparar a máquina (uma vez):**

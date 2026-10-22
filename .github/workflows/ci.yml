@@ -44,6 +44,8 @@ jobs:
             context: ./docker/log-archiver
           - name: faturas-ocr
             context: ./docker/faturas-ocr
+          - name: scripts-diversos
+            context: ./docker/scripts-diversos
     steps:
       - uses: actions/checkout@v4
       - name: Prefixo das imagens (tem de ser minúsculas)

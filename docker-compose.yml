@@ -178,6 +178,40 @@ services:
     depends_on:
       - api
 
+  # Scripts da tesouraria preenchimento (repositório Treasury-Automation-PT2,
+  # imagem publicada pelo CI de lá) que não precisam do Excel/Outlook nem de
+  # janelas - sob pedido, por exemplo:
+  #   docker compose run --rm preenchimento preencher_mapa.py ontem
+  #   docker compose run --rm preenchimento atualizar_mapa_saldos.py
+  # (também aplicar_previsao_mensal.py, aplicar_previsoes_manuais.py,
+  # corrigir_discrepancias.py). O envio do Mapa (PDFs pelo Excel) e o painel
+  # continuam no Windows. Escreve nos Mapas do SharePoint (montado com
+  # escrita) e usa a mesma pasta de dados das corridas no Windows (estado
+  # persistido, backups, logs, .env com SENHA_CONTABILIDADE). Sem argumentos
+  # só mostra o uso: um "up -d" não corre nada.
+  preenchimento:
+    image: ${PT2_IMAGE:-ghcr.io/benjamimoreira/treasury-automation-pt2/preenchimento:latest}
+    environment:
+      API_TESOURARIA_URL: http://api:8000
+      API_TOKEN: ${API_TOKEN:-}
+    volumes:
+      - "${ONEDRIVE_RAIZ_DOCKER}:/documentos"
+      - "${PT2_DADOS_DOCKER:-C:/Apps/tesouraria-preenchimento}:/dados"
+    depends_on:
+      - api
+
+  # Scripts diversos (pasta "scripts diversos" do Ambiente de Trabalho), só
+  # em linha de comando - sob pedido:
+  #   docker compose run --rm scripts-diversos pdf_depesas.py /pdfs/ficheiro.pdf
+  # Os PDFs separados ficam em /pdfs/<ficheiro>_separado. Sem o código
+  # "diario NN/NNNNN" no texto (ex.: escrito à mão) a página fica pagina_N -
+  # para os rever um a um continua a ser a janela do script no Windows.
+  scripts-diversos:
+    build: ./docker/scripts-diversos
+    image: ${IMAGE_PREFIX:-ghcr.io/benjamimoreira/ai-powered-treasury-automation}/scripts-diversos:${IMAGE_TAG:-latest}
+    volumes:
+      - "${PDFS_RAIZ_DOCKER:-./pdfs}:/pdfs"
+
 volumes:
   postgres_data:
   phoenix_data:

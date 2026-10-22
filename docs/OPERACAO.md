@@ -73,7 +73,7 @@ para a previsão).
 
 ```
 push master ─▶ test (ubuntu, pytest)
-            ─▶ build-push (api, db, log-archiver, faturas-ocr → ghcr.io/…:latest e :<sha>)
+            ─▶ build-push (api, db, log-archiver, faturas-ocr, scripts-diversos → ghcr.io/…:latest e :<sha>)
             ─▶ deploy (runner self-hosted, cmd):
                  1. diagnóstico: docker, compose, existe .env, compose config válido
                  2. docker compose pull
@@ -145,6 +145,8 @@ as tabelas que não conhece.
 | Diário | Reconciliar e auditar | Dashboard: reconciliar o dia, **Auditar este dia**; resolver os casos em **Ambíguos**. |
 | Semanal (sugestão) | Rever a qualidade da IA | Monitorização › Qualidade da IA: fila "para rever", anotar; depois `python -m app.evals.promover_golden` e rever o diff de `evals/assistente.json` antes do commit. |
 | Sob pedido | OCR de faturas | `docker compose run --rm faturas-ocr` |
+| Sob pedido | Scripts sem janela da tesouraria preenchimento, em contentor | `docker compose run --rm preenchimento preencher_mapa.py ontem` (ou `atualizar_mapa_saldos.py`, `aplicar_previsao_mensal.py`, `aplicar_previsoes_manuais.py`, `corrigir_discrepancias.py`; `preencher_mapa.py simular 21` para experimentar sem gravar). Escreve nos Mapas verdadeiros: não correr ao mesmo tempo que a corrida do Windows. |
+| Sob pedido | Separar um PDF por página (scripts diversos) | `docker compose run --rm scripts-diversos pdf_depesas.py /pdfs/ficheiro.pdf` (pasta `PDFS_RAIZ_DOCKER`, por omissão `./pdfs`) |
 | Depois de mudar o modelo de embeddings | Reindexar | `docker compose exec api python scripts/indexar_embeddings.py --modelo <modelo>` |
 
 Um script é marcado como **atrasado** quando passaram mais de 20 minutos
