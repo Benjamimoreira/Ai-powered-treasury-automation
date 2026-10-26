@@ -1,0 +1,25 @@
+# Desenvolvimento local (o teu PC, nunca o servidor): o código desta pasta é
+# montado dentro dos contentores e a API e o dashboard recarregam ao gravar.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db api dashboard
+#
+# API em http://localhost:8000/docs, dashboard em http://localhost:8501.
+# Usar com uma cópia de teste da base de dados e um .env de teste
+# (ex.: a que o exportar_copia_teste.ps1 gera no servidor) - sem SMTP nem as
+# credenciais do banco. requirements.txt mudou -> docker compose build api.
+services:
+  api:
+    volumes:
+      - ./app:/app/app
+      - ./scripts:/app/scripts
+      - ./mcp_server.py:/app/mcp_server.py
+    environment:
+      # no Docker Desktop do Windows as alterações não chegam aos contentores por eventos
+      WATCHFILES_FORCE_POLLING: "true"
+    command: >
+      sh -c "python scripts/criar_tabelas.py &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app"
+  dashboard:
+    volumes:
+      - ./dashboard:/app/dashboard
+    command: streamlit run dashboard/app.py --server.address 0.0.0.0 --server.port 8501 --server.runOnSave true --server.fileWatcherType poll
