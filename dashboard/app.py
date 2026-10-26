@@ -2286,6 +2286,8 @@ def _secao_discrepancias_saldos() -> None:
         st.success(f"Sem discrepâncias em {periodo_txt}.")
         return
     df = pd.DataFrame(discrepancias)
+    # só com discrepâncias sem valor (diferenca None em todas) a coluna fica object e o .abs() dá TypeError
+    df["diferenca"] = pd.to_numeric(df["diferenca"], errors="coerce")
     with st.container(horizontal=True, vertical_alignment="bottom"):
         tipos = st.multiselect("Tipo", sorted(df["tipo"].unique()), key="tipos_discrepancias_saldos", width=520,
                                placeholder="Todos os tipos")
