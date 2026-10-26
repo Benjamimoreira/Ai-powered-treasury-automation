@@ -14,6 +14,13 @@ from app.db.models import EventoScript, ExecucaoScript, PedidoCorrida, ScriptEmC
 
 FUSO_LOCAL = ZoneInfo("Europe/Lisbon")
 TOLERANCIA_ATRASO_MINUTOS = 20
+# Desde 26/10/2026 o Mapa (preencher, saldos e envio) corre pela cadeia completa do servidor
+# VIDOR-APP (Code\cadeia_completa.ps1): extração CGD + preencher_mapa + atualizar_mapa_saldos +
+# enviar_mapa_smtp, às 07:00 e 16:15. Pode esperar até 45 min pelo banco e a extração até 60 min
+# antes de o preencher começar - daí a tolerância maior.
+TAREFA_CADEIA_COMPLETA = "Tesouraria - Cadeia completa (07h00 e 16h15)"
+HORAS_CADEIA_COMPLETA = "07:00, 16:15"
+TOLERANCIA_CADEIA_MINUTOS = 150
 
 # Logging estruturado em JSON (pedido explícito 25/08/2026), uma linha por
 # execução registada (via POST /monitorizacao/scripts/{script}/executar,
@@ -35,13 +42,16 @@ if not _logger_json.handlers:
 
 SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
     "preencher_mapa": {
-        "descricao": "Preenchimento do Mapa de Pagamentos e Recebimentos a partir dos extratos bancários",
-        "hora_execucao": "08:50, 12:50, 14:10, 16:15, 18:30",
+        "descricao": "Preenchimento do Mapa de Pagamentos e Recebimentos a partir dos extratos bancários "
+                     "(cadeia completa às 07:00 e 16:15)",
+        "hora_execucao": HORAS_CADEIA_COMPLETA,
+        "tolerancia_minutos": TOLERANCIA_CADEIA_MINUTOS,
         "ficheiro": "preencher_mapa.py",
     },
     "atualizar_mapa_saldos": {
-        "descricao": "Atualização do Mapa de Saldos Bancários (folhas diárias)",
-        "hora_execucao": "08:55, 12:55, 14:15, 16:20, 18:35",
+        "descricao": "Atualização do Mapa de Saldos Bancários (folhas diárias; cadeia completa às 07:00 e 16:15)",
+        "hora_execucao": HORAS_CADEIA_COMPLETA,
+        "tolerancia_minutos": TOLERANCIA_CADEIA_MINUTOS,
         "ficheiro": "atualizar_mapa_saldos.py",
     },
     "avaliacao_online": {
@@ -75,8 +85,10 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
         "ficheiro": "corrigir_discrepancias.py",
     },
     "enviar_mapa_smtp": {
-        "descricao": "Envio diário do Mapa de Pagamentos e Recebimentos por email",
-        "hora_execucao": "16:30",
+        "descricao": "Envio do Mapa de Pagamentos e Recebimentos por email (cadeia completa às 07:00 e 16:15: "
+                     "para bduarte@vidor.pt, cc pduarte@vidor.pt e mario.lopes@vidor.pt)",
+        "hora_execucao": HORAS_CADEIA_COMPLETA,
+        "tolerancia_minutos": TOLERANCIA_CADEIA_MINUTOS,
         "ficheiro": "enviar_mapa_smtp.py",
     },
     # Scripts CGD (projeto script-extratos): exes PyInstaller em
@@ -145,10 +157,9 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
 # (registar_tarefas). A extração anual das 00:00/12:00 não é uma tarefa
 # (agendador interno do MovimentosCGD.exe --anual): usa hora_execucao.
 TAREFAS_DO_SCRIPT: Dict[str, List[str]] = {
-    "preencher_mapa": ["Tesouraria - Atualizar Mapas (manha - dados finais de ontem)",
-                       "Tesouraria - Atualizar Mapas (dia - dados provisorios de hoje)"],
-    "atualizar_mapa_saldos": ["Tesouraria - Atualizar Mapa Saldos (5min apos preencher)"],
-    "enviar_mapa_smtp": ["Tesouraria - Enviar Mapa Diario"],
+    "preencher_mapa": [TAREFA_CADEIA_COMPLETA],
+    "atualizar_mapa_saldos": [TAREFA_CADEIA_COMPLETA],
+    "enviar_mapa_smtp": [TAREFA_CADEIA_COMPLETA],
     "extratos_cgd": ["Extratos CGD"],
     "extratos_cgd_noite": ["Extratos CGD (Noite)"],
     "movimentos_diarios_cgd": ["Movimentos Diários CGD"],

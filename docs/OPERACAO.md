@@ -137,8 +137,7 @@ as tabelas que não conhece.
 
 | Quando | O quê | Como |
 |---|---|---|
-| Várias vezes por dia | Preencher o Mapa e os saldos | Scripts agendados (`preencher_mapa` 08:50, 12:50, 14:10, 16:15, 18:30; `atualizar_mapa_saldos` 5 min depois). Reportam à Monitorização. |
-| 16:30 | Enviar o Mapa por email | `enviar_mapa_smtp`, agendado. |
+| 07:00, 16:15 | Extrair a CGD, preencher o Mapa e os saldos e enviar o Mapa por email (para bduarte@vidor.pt, cc pduarte@vidor.pt e mario.lopes@vidor.pt) | Tarefa "Tesouraria - Cadeia completa (07h00 e 16h15)" no servidor VIDOR-APP (`Code\cadeia_completa.ps1`). `preencher_mapa`, `atualizar_mapa_saldos` e `enviar_mapa_smtp` reportam à Monitorização (até 2h30 de tolerância: a cadeia pode esperar pelo banco). |
 | 10:00, 14:00, 18:00 | Avaliações online do Assistente | Agendador do Windows: `docker exec ai-powered-treasury-automation-api-1 python -m app.evals.avaliacao_online --horas 4` |
 | De hora a hora | Arquivo de logs | `log-archiver` (automático). |
 | De 15 em 15 min, 07h-21h | Sincronizar com o OneDrive (últimos 7 dias) | Automático: serviço `sincronizador` (`app/sincronizador.py`). Na Monitorização só aparece quando traz dados novos ou dá erro. O botão **Atualizar dados** continua a funcionar para não esperar. |

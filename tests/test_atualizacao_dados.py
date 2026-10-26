@@ -105,7 +105,7 @@ def test_inicio_fim_e_agendamento_no_estado_dos_scripts(client):
     client.post("/monitorizacao/scripts/movimentos_diarios_cgd/inicio", json={"origem": "teste"})
     client.post("/monitorizacao/tarefas-agendadas", json={"tarefas": [
         {"nome": "Movimentos Diários CGD", "estado": "Ready", "proxima_execucao": "2026-10-13T07:30:00.0000000Z"},
-        {"nome": "Tesouraria - Enviar Mapa Diario", "estado": "Disabled", "proxima_execucao": "2026-10-12T15:30:00Z"},
+        {"nome": "Tesouraria - Cadeia completa (07h00 e 16h15)", "estado": "Disabled", "proxima_execucao": "2026-10-12T15:30:00Z"},
     ]})
     scripts = {s["nome"]: s for s in client.get("/monitorizacao/scripts").json()["scripts"]}
     diarios = scripts["movimentos_diarios_cgd"]
@@ -119,7 +119,7 @@ def test_inicio_fim_e_agendamento_no_estado_dos_scripts(client):
     scripts = {s["nome"]: s for s in client.get("/monitorizacao/scripts").json()["scripts"]}
     assert scripts["movimentos_diarios_cgd"]["a_correr_desde"] is None
     assert [t["nome"] for t in client.get("/monitorizacao/tarefas-agendadas").json()["tarefas"]] == [
-        "Movimentos Diários CGD", "Tesouraria - Enviar Mapa Diario"]
+        "Movimentos Diários CGD", "Tesouraria - Cadeia completa (07h00 e 16h15)"]
 
 
 def test_fim_da_extracao_pede_o_preencher_mapa_exceto_se_ja_estiver_a_correr(monkeypatch, session_factory):
