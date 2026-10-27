@@ -85,9 +85,9 @@ SCRIPT_PADRAO: Dict[str, Dict[str, str]] = {
         "ficheiro": "corrigir_discrepancias.py",
     },
     "enviar_mapa_smtp": {
-        "descricao": "Envio do Mapa de Pagamentos e Recebimentos por email (cadeia completa às 07:00 e 16:15: "
+        "descricao": "Envio do Mapa de Pagamentos e Recebimentos por email (só na cadeia completa das 16:15: "
                      "para bduarte@vidor.pt, cc pduarte@vidor.pt e mario.lopes@vidor.pt)",
-        "hora_execucao": HORAS_CADEIA_COMPLETA,
+        "hora_execucao": "16:15",
         "tolerancia_minutos": TOLERANCIA_CADEIA_MINUTOS,
         "ficheiro": "enviar_mapa_smtp.py",
     },
