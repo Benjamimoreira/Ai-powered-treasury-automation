@@ -84,7 +84,7 @@ def test_deploy_e_pedido_falhado_aparecem_nos_separadores(client):
     assert "pasta não existe" in eventos[0]["mensagem"]
 
 
-def test_diferencas_da_auditoria_aparecem_e_saem_quando_resolvidas(client, db_session):
+def test_diferencas_da_auditoria_aparecem_e_saem_quando_resolvidas(client, db_session, hoje_15_10_2026):
     from datetime import date
 
     from app.db.models import AuditoriaDia

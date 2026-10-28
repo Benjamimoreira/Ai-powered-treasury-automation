@@ -22,7 +22,7 @@ def test_horario(db_session):
     assert not ra.dentro_do_horario(datetime(2026, 10, 15, 21, 0))   # noite: ninguém responde ao SMS
 
 
-def test_pede_todas_numa_corrida_e_so_uma_vez(db_session):
+def test_pede_todas_numa_corrida_e_so_uma_vez(db_session, hoje_15_10_2026):
     _aviso(db_session, 13, "Vidor SGPS", 500)
     _aviso(db_session, 14, "HCC", 9000)
     _aviso(db_session, 15, "Hoje Lda", 9999)          # hoje: fica para as tarefas da tarde
@@ -60,7 +60,7 @@ def test_respeita_o_botao_e_o_horario(db_session):
     assert ra.pedir_proxima(db_session, AGORA) is None
 
 
-def test_tambem_pede_o_que_so_esta_noutro_dia_no_mapa(db_session):
+def test_tambem_pede_o_que_so_esta_noutro_dia_no_mapa(db_session, hoje_15_10_2026):
     # já não fica de fora: a corrida pode mudar a linha de dia no Mapa
     _aviso(db_session, 14, "HCC")
     db_session.add(MovimentoBancario(empresa="HCC", dia=date(2026, 10, 14), descricao="Trf Mbway", valor=-374.5,

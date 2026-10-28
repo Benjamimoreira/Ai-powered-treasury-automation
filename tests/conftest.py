@@ -87,3 +87,26 @@ def client(db_session):
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def hoje_15_10_2026(monkeypatch):
+    """Discrepâncias (últimos 8/14 dias a contar de hoje) com o "hoje" fixo a
+    15/10/2026 - os testes têm datas de outubro de 2026 e passavam a falhar
+    quando o dia real se afastava."""
+    from datetime import date, datetime
+
+    from app.services import correcoes_discrepancias, discrepancias_saldos
+
+    class _Date(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 10, 15)
+
+    class _Datetime(datetime):
+        @classmethod
+        def utcnow(cls):
+            return cls(2026, 10, 15, 9, 0)
+
+    monkeypatch.setattr(correcoes_discrepancias, "date", _Date)
+    monkeypatch.setattr(discrepancias_saldos, "datetime", _Datetime)
