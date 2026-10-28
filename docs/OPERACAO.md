@@ -210,6 +210,20 @@ apanhar (~15 s); com mais de 30 min sem o agente o ver, fica "Falhou"
 (expirado). Só corre um de cada vez. "Não foi possível parar ... (corre
 como administrador)" = o agente não foi instalado com `-RunLevel Highest`.
 
+### Deploy de todos agendado (07:00 e 17:30)
+
+A tarefa "Tesouraria - Deploy de todos (07h00 e 17h30)" corre
+`deploy\deploy_todos_agendado.ps1`, que pede à API o mesmo que o botão
+"🚀 Deploy de todos" (`scripts_cgd` e `tesouraria_preenchimento`, com a
+extração de hoje a seguir); o agente faz o resto e o progresso aparece na
+Monitorização. `-Extracao nenhuma` só instala. Log em
+`logs\deploy_todos_agendado.log`. Registar (uma vez, PowerShell como
+administrador):
+
+```powershell
+.\deploy\deploy_todos_agendado.ps1 -Registar                     # ou -Registar -Extracao nenhuma
+```
+
 ### Código SMS da CGD no dashboard
 
 Quando o banco pede o código SMS Token, os exes da CGD mostram o popup na
