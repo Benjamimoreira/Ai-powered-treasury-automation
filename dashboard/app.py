@@ -3725,11 +3725,24 @@ TIPOS_VENDA_RESUMO = {"cpcv": "CPCV", "reforco_sinal": "Reforço de sinal", "esc
 CORES_TIPO_VENDA = {"CPCV": "#2a78d6", "Reforço de sinal": "#eb6834", "Escritura": "#1baf7a"}
 
 
+def _refs_por(vendas: list, chave) -> dict:
+    """{(chave(venda), tipo): "00.PO.23.035, 00.PO.23.001"} - as referências
+    das frações de cada CPCV/reforço de sinal/escritura, juntas por mês ou por
+    dia; "sem REF" quando a linha do Mapa não tem o código."""
+    refs: dict = {}
+    for v in vendas:
+        lista = refs.setdefault((chave(v), v["tipo"]), [])
+        for r in v["refs"] or ["sem REF"]:
+            if r not in lista:
+                lista.append(r)
+    return {k: ", ".join(l) for k, l in refs.items()}
+
+
 def _escala_tipo_venda():
     return alt.Scale(domain=list(CORES_TIPO_VENDA), range=list(CORES_TIPO_VENDA.values()))
 
 
-def _resumo_mapa_do_mes(ano: int, mes: int, resumo: dict, diario: list) -> None:
+def _resumo_mapa_do_mes(ano: int, mes: int, resumo: dict, diario: list, vendas: list) -> None:
     """Resumo de um mês: recebido e pago (movimentos dos extratos, pelo dia
     do banco), CPCVs (do Mapa de Pagamentos e Recebimentos), reforços de sinal, escrituras, saldo bancário e saldo
     bancário disponível - o total do mês e dia a dia."""
@@ -3783,11 +3796,20 @@ def _resumo_mapa_do_mes(ano: int, mes: int, resumo: dict, diario: list) -> None:
         total = {"Dia": "Total", **{c: dias[c].sum() for c in ("recebido", "pago", "liquidez_diaria", *TIPOS_VENDA_RESUMO)},
                  "saldo_contabilistico": None, "liquidez": None}
         dias["Dia"] = pd.to_datetime(dias["dia"]).dt.strftime("%d/%m/%Y")
+        # referência das frações ao lado do valor de cada tipo
+        refs_dia = _refs_por(vendas, lambda v: v["dia"])
+        for chave in TIPOS_VENDA_RESUMO:
+            dias[f"ref_{chave}"] = dias["dia"].map(lambda d, c=chave: refs_dia.get((d, c), ""))
         tabela = pd.concat([dias, pd.DataFrame([total])], ignore_index=True)
-        colunas = ["Dia", "recebido", "pago", "liquidez_diaria", *TIPOS_VENDA_RESUMO, "saldo_contabilistico", "liquidez"]
+        colunas = ["Dia", "recebido", "pago", "liquidez_diaria",
+                   *[c for chave in TIPOS_VENDA_RESUMO for c in (chave, f"ref_{chave}")],
+                   "saldo_contabilistico", "liquidez"]
         nomes = {"recebido": "Recebido", "pago": "Pago", "liquidez_diaria": "Liquidez diária", **TIPOS_VENDA_RESUMO,
+                 **{f"ref_{chave}": f"Ref. {nome}" for chave, nome in TIPOS_VENDA_RESUMO.items()},
                  "saldo_contabilistico": "Saldo bancário", "liquidez": "Saldo bancário disponível"}
         tabela = tabela[colunas].rename(columns=nomes)
+        tabela[[f"Ref. {nome}" for nome in TIPOS_VENDA_RESUMO.values()]] = (
+            tabela[[f"Ref. {nome}" for nome in TIPOS_VENDA_RESUMO.values()]].fillna(""))
 
         def _cor_liquidez(valor):
             if pd.isna(valor) or abs(valor) < 0.005:
@@ -3796,7 +3818,7 @@ def _resumo_mapa_do_mes(ano: int, mes: int, resumo: dict, diario: list) -> None:
                 return "color: #0b7a3e; background-color: #e3f5ea; font-weight: 600"
             return "color: #b3261e; background-color: #fbe4e2; font-weight: 600"
 
-        euros = [nomes[c] for c in colunas if c != "Dia"]
+        euros = [nomes[c] for c in colunas if c != "Dia" and not c.startswith("ref_")]
         estilo = (tabela.style
                   .map(_cor_liquidez, subset=["Liquidez diária"])
                   .format(lambda v: "" if pd.isna(v) else f"{_n(v, 2)} €", subset=euros)
@@ -3835,15 +3857,15 @@ def _espaco_fracao_por_ref() -> dict:
 
 
 def _referencias_cpcv_reforcos(ano: int, mes, vendas: list) -> None:
-    """Cada CPCV e reforço de sinal do mês (ou do ano) com a referência da
+    """Cada CPCV, reforço de sinal e escritura do mês (ou do ano) com a referência da
     fração (REF da Descrição/Imputação da linha do Mapa) e o espaço/fração
     do Índice Comercial."""
     vendas = [v for v in vendas if mes is None or int(v["dia"][5:7]) == mes]
     periodo = f"{MESES_NOME_COMPLETO[mes - 1]} {ano}" if mes else str(ano)
     with st.container(border=True):
-        st.markdown(f"**Referências dos CPCVs e reforços de sinal - {periodo}**")
+        st.markdown(f"**Referências dos CPCVs, reforços de sinal e escrituras - {periodo}**")
         if not vendas:
-            st.info("Sem CPCVs nem reforços de sinal no Mapa de Pagamentos e Recebimentos neste período.")
+            st.info("Sem CPCVs, reforços de sinal nem escrituras no Mapa de Pagamentos e Recebimentos neste período.")
             return
         por_ref = _espaco_fracao_por_ref()
 
@@ -3904,16 +3926,19 @@ def _secao_resumo_mensal_saldos():
 
     df = pd.DataFrame(meses)
     df["Mês"] = df["mes"].map(lambda m: f"{MESES_NOME_CURTO[m - 1]} {ano}")
+    vendas = dados.get("vendas") or []
+    refs_mes = _refs_por(vendas, lambda v: int(v["dia"][5:7]))
     for chave, nome in TIPOS_VENDA_RESUMO.items():
         df[nome] = df[chave]
         df[f"N.º {nome}"] = df[f"n_{chave}"]
+        df[f"Ref. {nome}"] = df["mes"].map(lambda m, c=chave: refs_mes.get((m, c), ""))
     df["Por confirmar"] = sum(df[f"pendente_{chave}"] for chave in TIPOS_VENDA_RESUMO)
     euro = st.column_config.NumberColumn(format="euro")
     if mes_escolhido is None:
         # o ano: uma linha por mês
-        colunas = ["Mês", "recebido", "pago", "CPCV", "N.º CPCV", "Reforço de sinal", "N.º Reforço de sinal",
-                   "Escritura", "N.º Escritura", "saldo_contabilistico_fim", "saldo_fim", "liquidez_media",
-                   "Por confirmar"]
+        colunas = ["Mês", "recebido", "pago", "CPCV", "N.º CPCV", "Ref. CPCV", "Reforço de sinal",
+                   "N.º Reforço de sinal", "Ref. Reforço de sinal", "Escritura", "N.º Escritura", "Ref. Escritura",
+                   "saldo_contabilistico_fim", "saldo_fim", "liquidez_media", "Por confirmar"]
         st.dataframe(
             df[[c for c in colunas if c in df.columns]], width="stretch", hide_index=True,
             column_config={
@@ -3927,8 +3952,9 @@ def _secao_resumo_mensal_saldos():
             },
         )
     else:
-        _resumo_mapa_do_mes(ano, mes_escolhido, next(m for m in meses if m["mes"] == mes_escolhido), diario)
-    _referencias_cpcv_reforcos(ano, mes_escolhido, dados.get("vendas") or [])
+        _resumo_mapa_do_mes(ano, mes_escolhido, next(m for m in meses if m["mes"] == mes_escolhido), diario,
+                            [v for v in vendas if int(v["dia"][5:7]) == mes_escolhido])
+    _referencias_cpcv_reforcos(ano, mes_escolhido, vendas)
 
     # vendas por mês (barras empilhadas) ao lado da liquidez média
     df_vendas = df.melt(id_vars=["mes"], value_vars=list(TIPOS_VENDA_RESUMO.values()),

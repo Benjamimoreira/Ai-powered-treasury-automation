@@ -177,13 +177,13 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
         .filter(LinhaMapa.dia >= inicio, LinhaMapa.dia <= fim)
         .all()
     )
-    # cada CPCV/reforço de sinal com a referência, para a lista do mês
+    # cada CPCV/reforço de sinal/escritura com a referência, para o Resumo mensal
     vendas_detalhe: List[Dict[str, Any]] = []
     for l in linhas:
         tipo = tipo_venda(l)
         if tipo is None:
             continue
-        if tipo in ("cpcv", "reforco_sinal") and (l.pago is not None or l.previsto):
+        if l.pago is not None or l.previsto:
             vendas_detalhe.append({
                 "dia": l.dia.isoformat(), "tipo": tipo, "refs": refs_da_linha(l), "empresa": l.empresa,
                 "descricao": l.descricao, "imputacao": l.imputacao,

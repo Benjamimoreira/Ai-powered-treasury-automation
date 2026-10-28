@@ -65,10 +65,11 @@ def test_resumo_mensal_liquidez_e_vendas(client, db_session):
     assert (dia_2["liquidez"], dia_2["cpcv"], dia_2["reforco_sinal"]) == (450, 41750, 41000)
     assert [m["mes"] for m in corpo["meses"]] == [9, 10]
 
-    # CPCVs e reforços de sinal com a referência (da Descrição ou da Imputação); escrituras não
+    # CPCVs, reforços de sinal e escrituras com a referência (da Descrição ou da Imputação)
     assert [(v["dia"], v["tipo"], v["refs"], v["valor"], v["confirmado"]) for v in corpo["vendas"]] == [
         ("2026-09-02", "cpcv", ["00.PO.23.035"], 41750, True),
         ("2026-09-02", "reforco_sinal", ["00.PO.23.001"], 41000, True),
+        ("2026-09-03", "escritura", ["00.AV.04.002"], 265000, True),
         ("2026-09-03", "reforco_sinal", ["00.PO.23.020"], 39000, False),
     ]
 
