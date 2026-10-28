@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.services import codigo_sms
 from app.services.atualizacao_dados import sincronizar_apos_script
 from app.db.models import DeployScripts
 from app.services.deploy_scripts import ALVOS_COM_EXTRACAO, ALVOS_DEPLOY, ESTADOS_ATIVOS, listar_deploys, obter_deploy, pedir_deploy, registar_progresso
@@ -199,6 +200,59 @@ def progresso_deploy_scripts(deploy_id: int, payload: DeployProgressoRequest, db
     if deploy is None:
         raise HTTPException(status_code=409, detail="Deploy inexistente ou já terminado")
     return deploy
+
+
+class PedidoCodigoSmsRequest(BaseModel):
+    id: str = Field(..., description="32 hexadecimais aleatórios, escolhidos pelo exe")
+    script: str
+    descricao: Optional[str] = None
+
+
+class CodigoSmsRequest(BaseModel):
+    codigo: str
+
+
+@router.post("/sms/pedidos")
+def abrir_pedido_codigo_sms(payload: PedidoCodigoSmsRequest):
+    """Exe da CGD: o banco pediu o código SMS - aparece no dashboard."""
+    try:
+        return codigo_sms.abrir_pedido(payload.id, payload.script, payload.descricao)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/sms/pedidos")
+def listar_pedidos_codigo_sms():
+    return {"pedidos": codigo_sms.listar_pendentes()}
+
+
+@router.post("/sms/pedidos/{pedido_id}/codigo")
+def entregar_codigo_sms(pedido_id: str, payload: CodigoSmsRequest):
+    """Dashboard: o código recebido no telemóvel. 409 se o pedido já
+    expirou ou já foi respondido (no popup ou por outro utilizador)."""
+    try:
+        entregue = codigo_sms.entregar_codigo(pedido_id, payload.codigo)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not entregue:
+        raise HTTPException(status_code=409, detail="O pedido já expirou ou já foi respondido")
+    return {"ok": True}
+
+
+@router.get("/sms/pedidos/{pedido_id}/codigo")
+def levantar_codigo_sms(pedido_id: str):
+    """Exe da CGD: {"codigo": null} enquanto ninguém respondeu; 404 se o
+    pedido já não existe."""
+    try:
+        return {"codigo": codigo_sms.levantar_codigo(pedido_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Pedido inexistente ou expirado") from exc
+
+
+@router.delete("/sms/pedidos/{pedido_id}")
+def fechar_pedido_codigo_sms(pedido_id: str):
+    codigo_sms.fechar_pedido(pedido_id)
+    return {"ok": True}
 
 
 @router.get("/logs")

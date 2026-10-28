@@ -496,6 +496,21 @@ def aplicar_previsoes_manuais() -> dict:
     return r.json()
 
 
+def listar_pedidos_codigo_sms() -> list:
+    """Pedidos de código SMS da CGD à espera de resposta (app/services/codigo_sms.py)."""
+    r = requests.get(f"{API_BASE_URL}/monitorizacao/sms/pedidos", timeout=5)
+    r.raise_for_status()
+    return r.json()["pedidos"]
+
+
+def entregar_codigo_sms(pedido_id: str, codigo: str) -> None:
+    """409 (requests.HTTPError) se o pedido já expirou ou já foi respondido;
+    422 se o código não for só dígitos."""
+    r = requests.post(f"{API_BASE_URL}/monitorizacao/sms/pedidos/{pedido_id}/codigo",
+                      json={"codigo": codigo}, timeout=10)
+    r.raise_for_status()
+
+
 def listar_deploys(limit: int = 10) -> list:
     """Deploys dos scripts, mais recentes primeiro (com passo/total_passos)."""
     r = requests.get(f"{API_BASE_URL}/monitorizacao/deploys", params={"limit": limit}, timeout=10)

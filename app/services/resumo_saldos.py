@@ -42,7 +42,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.db.models import LinhaMapa, MovimentoBancario
-from app.services.reconciliador import _e_cpcv_ou_escritura, remover_acentos
+from app.services.reconciliador import PADRAO_REF_FRACAO, _e_cpcv_ou_escritura, remover_acentos
 from app.services.mapa_saldos_excel import serie_saldo_total_bruta
 from app.services.resumo_mapa_excel import avisos_do_mes, resumo_do_mes
 
@@ -68,6 +68,18 @@ def tipo_venda(l: LinhaMapa) -> Optional[str]:
     if "cpcv" in texto or _e_cpcv_ou_escritura(l):
         return "cpcv"
     return None
+
+
+def refs_da_linha(l: LinhaMapa) -> List[str]:
+    """Códigos REF (ex. 00.PO.23.035) da Descrição e da Imputação, sem
+    repetir - nos CPCVs o REF vem muitas vezes só na Imputação ("00.PO.23.035
+    Cpcv ALVA Lote 3 AI")."""
+    refs: List[str] = []
+    for texto in (l.descricao, l.imputacao):
+        for ref in PADRAO_REF_FRACAO.findall(texto or ""):
+            if ref.upper() not in refs:
+                refs.append(ref.upper())
+    return refs
 
 
 def _vazio_vendas() -> Dict[str, float]:
@@ -165,10 +177,19 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
         .filter(LinhaMapa.dia >= inicio, LinhaMapa.dia <= fim)
         .all()
     )
+    # cada CPCV/reforço de sinal com a referência, para a lista do mês
+    vendas_detalhe: List[Dict[str, Any]] = []
     for l in linhas:
         tipo = tipo_venda(l)
         if tipo is None:
             continue
+        if tipo in ("cpcv", "reforco_sinal") and (l.pago is not None or l.previsto):
+            vendas_detalhe.append({
+                "dia": l.dia.isoformat(), "tipo": tipo, "refs": refs_da_linha(l), "empresa": l.empresa,
+                "descricao": l.descricao, "imputacao": l.imputacao,
+                "valor": round(l.pago if l.pago is not None else l.previsto, 2),
+                "confirmado": l.pago is not None,
+            })
         v = vendas_dia[l.dia]
         if l.pago is not None:
             v[tipo] += l.pago
@@ -274,4 +295,5 @@ def resumo_mensal_saldos(db: Session, ano: int) -> Dict[str, Any]:
             linha["avisos_resumo"] = avisos_do_mes(ano, mes)
         meses.append(linha)
 
-    return {"ano": ano, "meses": meses, "diario": diario}
+    vendas_detalhe.sort(key=lambda d: (d["dia"], d["tipo"], d["refs"]))
+    return {"ano": ano, "meses": meses, "diario": diario, "vendas": vendas_detalhe}

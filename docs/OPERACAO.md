@@ -210,6 +210,22 @@ apanhar (~15 s); com mais de 30 min sem o agente o ver, fica "Falhou"
 (expirado). Só corre um de cada vez. "Não foi possível parar ... (corre
 como administrador)" = o agente não foi instalado com `-RunLevel Highest`.
 
+### Código SMS da CGD no dashboard
+
+Quando o banco pede o código SMS Token, os exes da CGD mostram o popup na
+sessão de quem os corre **e** abrem um pedido na API
+(`/monitorizacao/sms/pedidos`, `app/services/codigo_sms.py`). O dashboard
+mostra-o no topo de todas as páginas, a qualquer utilizador, com o campo
+para o código; o exe vai buscá-lo de 2 em 2 s. Vale o primeiro que chegar
+(popup ou dashboard) e o popup fecha-se sozinho. O popup continua a
+encerrar a extração aos 2 min sem resposta. Os pedidos ficam só em
+memória: expiram ao fim de 5 min ou se a API reiniciar.
+
+Os exes abrem o pedido, vão buscar o código e fecham o pedido sem a chave
+da API (só com o id aleatório do pedido); listar os pedidos e entregar o
+código pedem a chave, como o resto do dashboard. Precisa dos exes
+recompilados (Deploy `scripts_cgd`) com o `monitorizacao_cgd.py` novo.
+
 ### Dashboard no servidor
 
 O servidor só corre o dashboard (`docker-compose.dashboard.yml`); a produção

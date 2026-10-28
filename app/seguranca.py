@@ -9,6 +9,10 @@ X-API-Key com esse valor, exceto:
   - o que os scripts agendados reportam (início, resultado, eventos,
     faturas recebidas, extratos prontos) - são muitos e compilados noutros
     repositórios (exes da CGD, Fornecedores); só acrescentam registos;
+  - o pedido do código SMS da CGD pelos mesmos exes: abrir, levantar o
+    código e fechar - só com o id do pedido, que é aleatório e só o exe e
+    quem tem a chave conhecem (app/services/codigo_sms.py); entregar o
+    código e listar os pedidos continua a pedir a chave;
   - o PDF de uma fatura com link assinado (o browser abre-o diretamente,
     sem poder mandar cabeçalhos - ver assinar_pdf);
   - "/" (estado) e a documentação (/docs).
@@ -30,6 +34,9 @@ _ABERTOS = [
     ("POST", re.compile(r"/monitorizacao/scripts/[^/]+/(inicio|executar|eventos)")),
     ("POST", re.compile(r"/faturas/recebidas")),
     ("POST", re.compile(r"/extratos/prontos")),
+    ("POST", re.compile(r"/monitorizacao/sms/pedidos")),
+    ("GET", re.compile(r"/monitorizacao/sms/pedidos/[0-9a-f]{32}/codigo")),
+    ("DELETE", re.compile(r"/monitorizacao/sms/pedidos/[0-9a-f]{32}")),
 ]
 _PDF = re.compile(r"/faturas/recebidas/(\d+)/pdf")
 

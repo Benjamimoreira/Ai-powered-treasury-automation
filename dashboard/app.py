@@ -569,6 +569,49 @@ if "_aviso_dados_novos" in st.session_state:
     st.toast(f"Dados atualizados ({_aviso.get('origem')}){': ' + _dias if _dias else ''}", icon="🔄")
 
 
+@st.fragment(run_every=5)
+def _pedidos_codigo_sms() -> None:
+    """O banco pediu o código SMS Token a uma extração da CGD: aparece aqui,
+    no topo de todas as páginas e para qualquer utilizador, com o campo para
+    o código. Os exes também mostram um popup, mas só na sessão de quem os
+    corre - vale o primeiro que responder (app/services/codigo_sms.py)."""
+    try:
+        pedidos = api.listar_pedidos_codigo_sms()
+    except Exception:
+        return  # API em baixo ou antiga - não estorvar o resto da página
+    enviados = st.session_state.setdefault("_codigos_sms_enviados", set())
+    for pedido in pedidos:
+        if pedido["id"] in enviados:
+            continue
+        restante = pedido["segundos_restantes"]
+        with st.container(border=True):
+            st.error(f"📱 **A CGD pediu o código SMS Token** - {pedido['descricao'] or pedido['script']}. "
+                     f"Introduza o código recebido no telemóvel (faltam ~{restante // 60}:{restante % 60:02d}).")
+            with st.form(f"codigo_sms_{pedido['id']}", clear_on_submit=True):
+                col_codigo, col_botao = st.columns([3, 1])
+                codigo = col_codigo.text_input("Código SMS", max_chars=8, type="password",
+                                               label_visibility="collapsed", placeholder="Código SMS")
+                if col_botao.form_submit_button("Enviar código", type="primary", width="stretch"):
+                    codigo = codigo.strip()
+                    if not codigo.isdigit():
+                        st.warning("O código só tem dígitos.")
+                    else:
+                        try:
+                            api.entregar_codigo_sms(pedido["id"], codigo)
+                        except Exception as e:
+                            if getattr(getattr(e, "response", None), "status_code", None) == 409:
+                                st.info("Este pedido já foi respondido ou expirou.")
+                            else:
+                                st.error(f"Não foi possível enviar o código: {e}")
+                        else:
+                            enviados.add(pedido["id"])
+                            st.toast("Código SMS enviado para a extração.", icon="✅")
+                            st.rerun(scope="fragment")
+
+
+_pedidos_codigo_sms()
+
+
 def _n(valor, casas: int = 0, sinal: bool = False) -> str:
     """Número no formato português: 170 249 / 1 234,56 / +7 885 (espaço
     inquebrável nos milhares, vírgula decimal) - as tabelas já mostravam
@@ -3783,6 +3826,51 @@ def _resumo_mapa_do_mes(ano: int, mes: int, resumo: dict, diario: list) -> None:
         st.altair_chart((zero + linha + pontos).properties(height=320), width="stretch")
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def _espaco_fracao_por_ref() -> dict:
+    try:
+        return api.espaco_fracao_por_ref()
+    except Exception:
+        return {}  # sem Índice Comercial a lista fica só com o REF
+
+
+def _referencias_cpcv_reforcos(ano: int, mes, vendas: list) -> None:
+    """Cada CPCV e reforço de sinal do mês (ou do ano) com a referência da
+    fração (REF da Descrição/Imputação da linha do Mapa) e o espaço/fração
+    do Índice Comercial."""
+    vendas = [v for v in vendas if mes is None or int(v["dia"][5:7]) == mes]
+    periodo = f"{MESES_NOME_COMPLETO[mes - 1]} {ano}" if mes else str(ano)
+    with st.container(border=True):
+        st.markdown(f"**Referências dos CPCVs e reforços de sinal - {periodo}**")
+        if not vendas:
+            st.info("Sem CPCVs nem reforços de sinal no Mapa de Pagamentos e Recebimentos neste período.")
+            return
+        por_ref = _espaco_fracao_por_ref()
+
+        def _do_indice(refs, campo):
+            return ", ".join(filter(None, ((por_ref.get(r) or {}).get(campo) for r in refs)))
+
+        tabela = pd.DataFrame([{
+            "Dia": pd.to_datetime(v["dia"]),
+            "Tipo": TIPOS_VENDA_RESUMO[v["tipo"]],
+            "Referência": ", ".join(v["refs"]) or "— sem REF no Mapa",
+            "Espaço físico": _do_indice(v["refs"], "espaco_fisico"),
+            "Fração": _do_indice(v["refs"], "fracao"),
+            "Empresa": v["empresa"],
+            "Descrição": v.get("descricao") or "",
+            "Valor": v["valor"],
+            "Estado": "✅ recebido" if v["confirmado"] else "⏳ por confirmar",
+        } for v in vendas]).sort_values(["Dia", "Tipo"], ascending=[False, True])
+        sem_ref = sum(1 for v in vendas if not v["refs"])
+        st.caption("Referência = código da fração (ex. 00.PO.23.035) escrito na Descrição ou na Imputação da linha "
+                   "do Mapa; espaço físico e fração vêm do Índice do Departamento Comercial. \"Por confirmar\" = "
+                   "previsto no Mapa, ainda sem extrato (valor previsto)."
+                   + (f" {sem_ref} linha(s) sem REF - acrescentar o código na Descrição do Mapa." if sem_ref else ""))
+        st.dataframe(tabela, width="stretch", hide_index=True,
+                     column_config={"Valor": st.column_config.NumberColumn(format="euro"),
+                                    "Dia": st.column_config.DateColumn(format="DD/MM/YYYY")})
+
+
 def _secao_resumo_mensal_saldos():
     """Liquidez (saldo disponível de todas as contas juntas) mês a mês, e o
     que entrou de CPCVs, reforços de sinal e escrituras - ver
@@ -3840,6 +3928,7 @@ def _secao_resumo_mensal_saldos():
         )
     else:
         _resumo_mapa_do_mes(ano, mes_escolhido, next(m for m in meses if m["mes"] == mes_escolhido), diario)
+    _referencias_cpcv_reforcos(ano, mes_escolhido, dados.get("vendas") or [])
 
     # vendas por mês (barras empilhadas) ao lado da liquidez média
     df_vendas = df.melt(id_vars=["mes"], value_vars=list(TIPOS_VENDA_RESUMO.values()),
